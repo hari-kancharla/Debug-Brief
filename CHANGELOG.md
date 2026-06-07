@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Derived reports. Reports now reconstruct the investigation from recorded
+  events instead of restating counts: a one-line summary built from true facts,
+  reproduce/verify commands, a red-to-green window that correlates the files that
+  changed between a failing and a passing check (correlation, never claimed
+  cause), a full timeline with per-command durations, the observed error quoted
+  verbatim, and what was ruled out. Sections render only when they have real
+  content.
+- Per-command git snapshots. Each captured command records the HEAD short SHA and
+  the changed-file set at that moment, used to correlate changes in the
+  red-to-green window. Best effort and backward compatible.
+- Secret redaction at capture time. Captured stdout/stderr previews and the
+  command text are scrubbed of common secret shapes (provider keys, bearer and
+  authorization values, private key blocks, `scheme://user:password@host`
+  connection strings, and sensitive `name=value` pairs) and replaced with
+  `[redacted]` before anything is written. On by default; `debugbrief run
+  --no-redact` stores raw text. Reports note when redaction was applied.
+- JSON report output. `debugbrief end --format md|json|both` (default `md`)
+  writes a structured JSON report with the same derived fields next to the
+  markdown.
+- Auto-start. `debugbrief run` and `debugbrief note` auto-start a session (with a
+  clear notice) when none is active, so a capture is never dropped.
+- A documented one-line recipe for posting a brief to a pull request with the
+  GitHub CLI.
+
+### Changed
+
+- The PR report dropped the templated Overview paragraph and the
+  "No outstanding risks were detected" line in favor of the derived sections.
+- Handoff next steps are now drawn only from recorded notes, never inferred.
+- The "Modified files" section is omitted when there are no changes, rather than
+  printed with a placeholder.
+- README rewritten to be short and scannable, with the full per-command
+  reference moved to `docs/COMMANDS.md` and a real sample report in
+  `examples/sample-pr.md`.
+- Packaging metadata uses the PEP 639 SPDX `license = "MIT"` string and
+  `license-files` instead of the deprecated license table and classifier, so the
+  build is warning-free (requires setuptools 77+ to build).
+
+### Notes on decisions not fully specified
+
+- The per-command snapshot uses two lightweight git calls (`rev-parse --short`
+  and `status --porcelain`) rather than literally one, so it can record both the
+  HEAD and the changed-file set. It runs only inside a repo and is best effort.
+- Redaction can modify the stored command string. This supersedes the earlier
+  "command is always preserved verbatim" wording; use `--no-redact` for verbatim
+  storage.
+- Red-to-green requires a git repo. When a transition exists but no tracked files
+  changed in the window, the section shows the window and states plainly that no
+  file changes were recorded.
+- The observed-error section appears in incident mode (the mode that calls for a
+  verbatim error); pr and handoff surface failures under "What was ruled out".
+- Handoff next-step detection matches forward-looking words on word boundaries
+  so "retry" is not mistaken for "try".
+- The README references a real sample report (`examples/sample-pr.md`, generated
+  from an actual run with only the absolute path sanitized) and an inline
+  quickstart in place of a demo gif, since no gif asset is shipped.
+- `tests/test_reporters.py` assertions were updated to the new report structure;
+  removing the Overview/Risks sections is incompatible with the previous
+  assertions.
+
 ## [1.0.0] - 2026-06-07
 
 ### Added

@@ -1,0 +1,254 @@
+# DebugBrief commands
+
+Full reference for every command. The README has the short version; this is the
+detail.
+
+```text
+debugbrief start "<session title>"            Start a session
+debugbrief note  "<note text>"                Record a note
+debugbrief run   "<command>"                  Execute and capture a command
+debugbrief end   --mode pr|handoff|incident   Finalize and write a report
+debugbrief status                             Show the active session
+debugbrief doctor [--fix]                     Health-check the project and state
+debugbrief last                               Show the most recent report
+debugbrief open  [--last | --path PATH]       Open a report in $EDITOR
+debugbrief list  [--json]                     List recorded sessions
+debugbrief show  <session_id> [--json]        Show one session summary
+```
+
+`run` and `note` auto-start a session if none is active (see below).
+
+## start
+
+Starts a session and records the initial Git state.
+
+```bash
+debugbrief start "Fix auth token refresh race"
+```
+
+When inside a Git repo, `start` also adds `.debugbrief/` to `.git/info/exclude`
+(a local, untracked ignore file). It never touches a shared `.gitignore`. If the
+exclude file cannot be written (for example in a worktree or submodule), it
+records a warning and continues.
+
+`start --shell` (experimental shell-history capture) is intentionally not
+implemented; see [Experimental shell mode](#experimental-shell-mode).
+
+## note
+
+Records a note on the active session.
+
+```bash
+debugbrief note "Token refresh fails when two requests retry at once."
+```
+
+If no session is active, `note` auto-starts one first.
+
+## run
+
+The primary, reliable capture mechanism. It:
+
+- executes the command from the project root,
+- captures the command text, start/end timestamps, duration, exit code, and
+  bounded stdout/stderr previews,
+- records a lightweight per-command Git snapshot (HEAD and changed files) so the
+  report can correlate file changes with what happened,
+- classifies whether the command is a test or a verification command,
+- marks pass/fail strictly from the exit code,
+- redacts secret-like values before writing anything to disk (see below),
+- persists the event immediately, and
+- returns the same exit code as the executed command.
+
+By default the command is parsed with `shlex.split` and run without a shell. For
+pipes, redirection, or `&&`, pass `--shell`:
+
+```bash
+debugbrief run --shell "pytest -q | tee out.txt"
+```
+
+If no session is active, `run` auto-starts one first.
+
+### Timeouts
+
+The default timeout is 300 seconds. Override with `--timeout`:
+
+```bash
+debugbrief run --timeout 600 "pytest tests/"
+```
+
+On timeout the command is terminated, the event is recorded with status
+`timed_out` and a `null` exit code, and a nonzero code is returned.
+
+### Redaction
+
+Captured stdout/stderr previews and the command text are passed through a
+conservative, best-effort secret scrubber before they are written. Recognized
+shapes (provider keys, bearer/authorization values, private key blocks,
+`scheme://user:password@host` connection strings, and `name=value` pairs whose
+name looks sensitive) are replaced with `[redacted]`. Redaction is on by
+default. It is best effort and does not catch everything.
+
+To store raw output verbatim (only when you know it is safe):
+
+```bash
+debugbrief run --no-redact "echo $MY_PUBLIC_VALUE"
+```
+
+When a report includes output that had something masked, it says so.
+
+## end
+
+Finalizes the session, captures final Git state, and writes a report.
+
+```bash
+debugbrief end --mode pr
+debugbrief end --mode handoff
+debugbrief end --mode incident
+```
+
+Choose the output format with `--format` (default `md`):
+
+```bash
+debugbrief end --mode pr --format both   # writes both markdown and JSON
+debugbrief end --mode pr --format json   # JSON only
+```
+
+The JSON report carries the same derived fields as the markdown and is written
+next to it under `.debugbrief/reports/<id>-<mode>.json`.
+
+### Report modes
+
+- `pr`: pull-request-ready. One-line summary, reproduce/verify commands, the
+  red-to-green window, modified files, a condensed timeline, verification, and
+  what was ruled out.
+- `handoff`: hand a tricky issue to someone else. Current status, your notes, the
+  full timeline, commands attempted, what was ruled out, current repo state, and
+  next steps drawn only from your recorded notes.
+- `incident`: a chronological note. One-line summary, time window, full timeline,
+  the observed error verbatim, resolution/current state, verification, and
+  follow-ups.
+
+Every section is rendered only when it has real content. Nothing is invented.
+
+## status
+
+Shows the active session, or reports a clear recovery path if a session looks
+interrupted (for example the active pointer exists but its session file is gone).
+
+```bash
+debugbrief status
+```
+
+## doctor
+
+A read-only health check that prints `PASS` / `WARN` / `FAIL` lines and an
+overall verdict with a matching exit code:
+
+- `0`: ready (all checks pass)
+- `1`: usable with warnings
+- `2`: blocking issues
+
+```bash
+debugbrief doctor
+debugbrief doctor --fix
+```
+
+`--fix` applies only safe changes: it creates the `.debugbrief/` directories and
+adds `.debugbrief/` to `.git/info/exclude`. It never touches `.gitignore`,
+global config, or dotfiles.
+
+## last
+
+Prints the most recent report's path, its mode, modified time, and title.
+
+```bash
+debugbrief last
+```
+
+## open
+
+Opens a report in `$EDITOR` (latest by default, or `--path PATH`). If `$EDITOR`
+is not set, it prints the path instead of guessing.
+
+```bash
+debugbrief open
+debugbrief open --path .debugbrief/reports/<id>-pr.md
+```
+
+## list
+
+Lists recorded sessions, most recent first. Pass `--json` for a structured
+summary.
+
+```bash
+debugbrief list
+debugbrief list --json
+```
+
+## show
+
+Shows a compact summary of one session. The id may be a full id or any
+unambiguous short prefix. Pass `--json` for the full structured session.
+
+```bash
+debugbrief show 3f8a1c2d
+debugbrief show 3f8a1c2d --json
+```
+
+You can run any command without installing the console script:
+
+```bash
+python -m debugbrief list
+```
+
+## Post a brief to a pull request
+
+The markdown report is plain text, so posting it as a PR comment with the GitHub
+CLI is a one-liner (`gh` is optional and never required by DebugBrief):
+
+```bash
+debugbrief end --mode pr
+gh pr comment --body-file "$(ls -t .debugbrief/reports/*-pr.md | head -1)"
+```
+
+## Local storage
+
+All state lives under the project root:
+
+```text
+.debugbrief/
+  active_session.json            # pointer to the active session
+  sessions/<session_id>.json     # the full, canonical session record
+  reports/<session_id>-<mode>.md # generated reports (and .json with --format)
+```
+
+The project root is the Git repo root when inside a repo, otherwise the current
+working directory.
+
+## Recovery for interrupted sessions
+
+The canonical record is the session file under `.debugbrief/sessions/<id>.json`,
+rewritten after every note and command, so a crash never loses captured work.
+`active_session.json` is a small pointer removed only on a clean `end`. If the
+pointer exists but the session file is missing, `status` reports it and prints
+recovery steps.
+
+## Experimental shell mode
+
+Capturing arbitrary shell history reliably across shells and platforms is hard
+and easy to get subtly wrong. Rather than ship something that silently produces
+incomplete or fabricated history, `start --shell` is not implemented. Running it
+prints a clear message pointing to the reliable model: explicit `debugbrief run`.
+
+This is different from `run --shell`, which runs a single command through the
+system shell and is fully supported.
+
+## Snapshot-tested reports
+
+Report rendering is covered by snapshot tests under `tests/snapshots/`. The
+committed snapshots double as concrete sample reports. To regenerate them on
+purpose:
+
+```bash
+DEBUGBRIEF_UPDATE_SNAPSHOTS=1 pytest tests/test_snapshots.py
+```

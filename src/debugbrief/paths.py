@@ -119,10 +119,9 @@ def ensure_local_ignore(paths: ProjectPaths) -> Tuple[bool, List[str]]:
             with open(exclude_file, "a", encoding="utf-8") as handle:
                 handle.write(f"{prefix}{entry}\n")
             return True, warnings
-        else:
-            info_dir.mkdir(parents=True, exist_ok=True)
-            exclude_file.write_text(f"{entry}\n", encoding="utf-8")
-            return True, warnings
+        info_dir.mkdir(parents=True, exist_ok=True)
+        exclude_file.write_text(f"{entry}\n", encoding="utf-8")
+        return True, warnings
     except OSError as exc:
         warnings.append(
             f"Could not update .git/info/exclude ({exc}). .debugbrief/ may not be "

@@ -423,6 +423,7 @@ def cmd_last(args: argparse.Namespace) -> int:
 def cmd_open(args: argparse.Namespace) -> int:
     paths = resolve_project_paths()
 
+    target: Optional[Path]
     if args.path:
         target = Path(args.path).expanduser()
         if not target.exists():

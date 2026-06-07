@@ -8,7 +8,7 @@ pass/fail strictly from real exit codes.
 from __future__ import annotations
 
 import shlex
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from .models import (
@@ -168,9 +168,7 @@ def is_noise_command(command: str) -> bool:
         return True
     if tokens[0] in _NOISE_SINGLE:
         return True
-    if len(tokens) >= 2 and (tokens[0], tokens[1]) in _NOISE_PAIRS:
-        return True
-    return False
+    return len(tokens) >= 2 and (tokens[0], tokens[1]) in _NOISE_PAIRS
 
 
 @dataclass
@@ -192,7 +190,11 @@ class ReportCommand:
 
     @property
     def failed(self) -> bool:
-        return self.status in (COMMAND_STATUS_FAILED, COMMAND_STATUS_TIMED_OUT, COMMAND_STATUS_ERROR)
+        return self.status in (
+            COMMAND_STATUS_FAILED,
+            COMMAND_STATUS_TIMED_OUT,
+            COMMAND_STATUS_ERROR,
+        )
 
 
 def _event_seconds(event: Event) -> float:

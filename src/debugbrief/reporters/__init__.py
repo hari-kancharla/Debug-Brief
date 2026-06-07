@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, Type
 
 from ..models import Session
-from .base import build_context, BaseReporter
+from .base import BaseReporter, build_context
 
 VALID_MODES = ("pr", "handoff", "incident")
 

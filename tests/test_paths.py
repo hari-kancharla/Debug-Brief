@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from debugbrief import paths as paths_mod
 from debugbrief.paths import (
     ProjectPaths,
     ensure_local_ignore,

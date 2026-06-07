@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import List
 
-from .base import BaseReporter, join_sections
 from ..utils import parse_iso8601
+from .base import BaseReporter, join_sections
 
 
 class IncidentReporter(BaseReporter):

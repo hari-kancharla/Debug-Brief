@@ -6,7 +6,6 @@ session, and they never mutate state.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import List, Optional, Tuple
 
 from .models import Session

@@ -42,3 +42,16 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+# "UP" is deliberately excluded to preserve the explicit typing.List/Optional
+# style required for Python 3.9 support.
+select = ["E", "F", "W", "I", "B", "SIM", "C4", "RET", "PIE"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test files carry long assertion and snapshot literals.
+"tests/*" = ["E501"]

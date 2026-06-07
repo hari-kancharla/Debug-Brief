@@ -38,7 +38,7 @@ def infer_mode(report_path: Path) -> Optional[str]:
 def first_title(report_path: Path) -> Optional[str]:
     """Return the first markdown H1 title line ('# ...') from the report."""
     try:
-        with open(report_path, "r", encoding="utf-8") as handle:
+        with open(report_path, encoding="utf-8") as handle:
             for line in handle:
                 stripped = line.strip()
                 if stripped.startswith("# "):

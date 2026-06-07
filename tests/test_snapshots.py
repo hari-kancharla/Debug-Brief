@@ -241,8 +241,7 @@ def normalize(text: str) -> str:
     # Clock times (HH:MM:SS) -- after the longer patterns above
     text = re.sub(r"\b\d{2}:\d{2}:\d{2}\b", "<TIME>", text)
     # Git SHAs (7-40 hex) -- after UUIDs are already replaced
-    text = re.sub(r"\b[0-9a-f]{7,40}\b", "<SHA>", text)
-    return text
+    return re.sub(r"\b[0-9a-f]{7,40}\b", "<SHA>", text)
 
 
 def _check_snapshot(name: str, generated: str) -> None:

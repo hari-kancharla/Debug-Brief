@@ -10,11 +10,48 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .models import GitState
 
 _GIT_TIMEOUT_SECONDS = 15
+
+# Generated/cache artifact names that should never appear in a change summary.
+_ARTIFACT_DIR_NAMES = frozenset(
+    {
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".cache",
+        ".tox",
+        ".nox",
+        ".hypothesis",
+        "node_modules",
+        ".DS_Store",
+    }
+)
+
+
+def _is_generated_artifact(path: str) -> bool:
+    """Return True for compiled/cache files that are not meaningful changes.
+
+    Filters out byte-compiled files (``*.pyc``/``*.pyo``), packaging metadata
+    (``*.egg-info``), editor/OS cruft (``.DS_Store``), and known cache or vendor
+    directories (``__pycache__``, the various ``.*_cache`` trees, ``node_modules``),
+    matching on any path segment. Real source files keep their names, so paths
+    like ``keymap.py`` or ``api_client.py`` are never filtered.
+    """
+    if path.endswith((".pyc", ".pyo")):
+        return True
+    for segment in path.replace("\\", "/").split("/"):
+        if not segment:
+            continue
+        if segment in _ARTIFACT_DIR_NAMES:
+            return True
+        if segment.endswith(".egg-info"):
+            return True
+    return False
 
 
 def _run_git(args: List[str], cwd: Path) -> Tuple[bool, str, str]:
@@ -89,9 +126,7 @@ def is_detached_head(cwd: Path) -> bool:
     if ok and out.strip():
         return False
     # If there are no commits yet, treat HEAD as not detached (branch exists).
-    if current_sha(cwd) is None:
-        return False
-    return True
+    return current_sha(cwd) is not None
 
 
 def current_branch(cwd: Path) -> Optional[str]:
@@ -137,7 +172,7 @@ def name_status(cwd: Path) -> List[Tuple[str, str]]:
     ok, out, _ = _run_git(["status", "--porcelain"], cwd)
     if not ok:
         return []
-    seen = {}
+    seen: Dict[str, str] = {}
     for line in out.splitlines():
         if not line.strip() or len(line) < 3:
             continue
@@ -148,6 +183,8 @@ def name_status(cwd: Path) -> List[Tuple[str, str]]:
             path_part = path_part.split(" -> ", 1)[1]
         path_part = path_part.strip().strip('"')
         if not path_part:
+            continue
+        if _is_generated_artifact(path_part):
             continue
         label = _porcelain_label(code)
         # If a path appears twice, keep the first (most significant) label.

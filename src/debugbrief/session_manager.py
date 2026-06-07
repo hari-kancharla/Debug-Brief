@@ -8,10 +8,9 @@ pointer to the currently-active session and is removed on a clean ``end``.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from . import filters, git_utils
+from . import git_utils
 from .command_runner import RunResult
 from .models import (
     COMMAND_STATUS_ERROR,
@@ -24,6 +23,7 @@ from .models import (
     SessionStatus,
 )
 from .paths import ProjectPaths
+from .redaction import redact_text
 from .utils import atomic_write_json, now_iso8601, read_json
 
 
@@ -46,7 +46,7 @@ class SessionManager:
             raise SessionError(
                 f"active_session.json exists but could not be read ({exc}). "
                 "Inspect or remove .debugbrief/active_session.json to recover."
-            )
+            ) from exc
         if not isinstance(data, dict) or "session_id" not in data:
             raise SessionError(
                 "active_session.json is malformed. Remove "
@@ -76,7 +76,7 @@ class SessionManager:
         except OSError as exc:  # pragma: no cover - defensive
             raise SessionError(
                 f"Could not clear active_session.json ({exc}). Remove it manually."
-            )
+            ) from exc
 
     def has_active(self) -> bool:
         return self.paths.active_session_file.exists()
@@ -95,7 +95,7 @@ class SessionManager:
         try:
             return Session.from_dict(read_json(path))
         except (ValueError, OSError) as exc:
-            raise SessionError(f"Could not read session {session_id}: {exc}")
+            raise SessionError(f"Could not read session {session_id}: {exc}") from exc
 
     def load_active(self) -> Optional[Session]:
         """Return the active Session, or None if no session is active.
@@ -187,7 +187,14 @@ class SessionManager:
         clean = text.strip()
         if not clean:
             raise SessionError("Note text must not be empty.")
-        session.events.append(Event.note(clean, now_iso8601()))
+        # Notes are persisted to the session JSON and surfaced in reports, so a
+        # secret pasted into a note (an env var, a log line) must be scrubbed
+        # before it ever reaches disk, the same as captured command output.
+        clean, n_redacted = redact_text(clean)
+        note_event = Event.note(clean, now_iso8601())
+        if n_redacted:
+            note_event.data["redacted"] = True
+        session.events.append(note_event)
         self.save_session(session)
         self._write_active_pointer(session)
         return session

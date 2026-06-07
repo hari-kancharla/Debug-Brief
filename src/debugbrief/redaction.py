@@ -13,14 +13,30 @@ literal placeholder ``[redacted]``.
 from __future__ import annotations
 
 import re
-from typing import Tuple
+from typing import Callable, List, Tuple, Union
 
 PLACEHOLDER = "[redacted]"
 
-# Substring tokens that mark a key as sensitive in a key/value pair.
+# Tokens that mark a key as sensitive in a key/value pair. These must appear as a
+# whole segment of the key name (delimited by the start/end of the key or by a
+# ``_``/``-``/``.`` separator) so embedded substrings like the "key" in "monkey"
+# or the "api" in "rapid_mode" are not mistaken for secrets.
 _SENSITIVE_KEY = (
-    r"(?:password|passwd|pwd|secret|token|api[_\-]?key|apikey|api|key|credential)"
+    r"(?:password|passwd|pwd|secret|token|api[_\-]?key|apikey|credential|api|key)"
 )
+
+# A key name is sensitive when one of its segments is a sensitive token. The
+# token must be flanked by a non-alphanumeric boundary on both sides (start/end
+# of the key or a separator), while still allowing other segments around it.
+_SENSITIVE_KEY_NAME = (
+    r"(?P<key>[A-Za-z0-9_.\-]*?(?<![A-Za-z0-9])"
+    + _SENSITIVE_KEY
+    + r"(?![A-Za-z0-9])[A-Za-z0-9_.\-]*\s*[:=]\s*)"
+)
+
+# A redaction replacement is either a literal string or a match-to-string
+# callback, matching the two forms accepted by ``re.Pattern.subn``.
+_Replacement = Union[str, Callable[["re.Match[str]"], str]]
 
 
 def _kv_repl(match: "re.Match[str]") -> str:
@@ -30,7 +46,7 @@ def _kv_repl(match: "re.Match[str]") -> str:
 
 
 # Order matters: multi-line and structured shapes first, broad key/value last.
-_RULES = [
+_RULES: List[Tuple["re.Pattern[str]", _Replacement]] = [
     # PEM-style private key blocks (any key type), including the body.
     (
         re.compile(
@@ -61,8 +77,7 @@ _RULES = [
     # Generic key/value pairs whose key name looks sensitive.
     (
         re.compile(
-            r"(?i)(?P<key>[A-Za-z0-9_.\-]*" + _SENSITIVE_KEY + r"[A-Za-z0-9_.\-]*\s*[:=]\s*)"
-            r"(?P<q>[\"'])?(?P<val>[^\s\"',;]+)(?P=q)?"
+            r"(?i)" + _SENSITIVE_KEY_NAME + r"(?P<q>[\"'])?(?P<val>[^\s\"',;]+)(?P=q)?"
         ),
         _kv_repl,
     ),

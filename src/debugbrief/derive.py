@@ -21,7 +21,6 @@ from .models import (
     COMMAND_STATUS_PASSED,
     COMMAND_STATUS_TIMED_OUT,
     CommandData,
-    EventType,
     Session,
 )
 from .utils import human_duration, parse_iso8601
@@ -205,12 +204,9 @@ def _extract_observed_error(records: List[CommandRecord]) -> Optional[str]:
     Prefers the first failing verification command, then any failing command.
     The text was already redacted at capture time.
     """
-    candidates = [
-        r for r in records if r.failed and r.is_verification_candidate and r.stderr_preview.strip()
-    ]
-    candidates += [
-        r for r in records if r.failed and not r.is_verification_candidate and r.stderr_preview.strip()
-    ]
+    failing = [r for r in records if r.failed and r.stderr_preview.strip()]
+    candidates = [r for r in failing if r.is_verification_candidate]
+    candidates += [r for r in failing if not r.is_verification_candidate]
     for rec in candidates:
         line = _pick_error_line(rec.stderr_preview)
         if line:
@@ -341,6 +337,10 @@ def derive(session: Session) -> Derivation:
         (r.command for r in records if r.is_verification_candidate and r.passed), None
     )
 
+    notes_redacted = any(
+        bool((e.data or {}).get("redacted")) for e in session.note_events()
+    )
+
     return Derivation(
         one_liner=_build_one_liner(session, records, red_to_green),
         reproduce_command=reproduce,
@@ -348,6 +348,6 @@ def derive(session: Session) -> Derivation:
         red_to_green=red_to_green,
         observed_error=_extract_observed_error(records),
         ruled_out=[r for r in records if r.failed],
-        redaction_applied=any(r.redacted for r in records),
+        redaction_applied=any(r.redacted for r in records) or notes_redacted,
         command_records=records,
     )

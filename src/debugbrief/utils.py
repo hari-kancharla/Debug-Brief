@@ -68,10 +68,17 @@ def human_duration(seconds: float) -> str:
 
 
 def truncate_text(text: str, limit: int) -> Tuple[str, bool]:
-    """Truncate ``text`` to ``limit`` characters.
+    """Truncate ``text`` to ``limit`` characters, keeping the head and tail.
 
     Returns a tuple of (possibly truncated text, was_truncated). A ``limit`` of
     zero or negative is treated as "no limit".
+
+    When the text is longer than ``limit`` we keep a small head and a larger
+    tail with an elision marker in between. The decisive output of a debugging
+    run (tracebacks, assertions, the final build error) lands at the end, so the
+    tail gets the larger share: the head is the first ``limit // 3`` characters
+    and the tail is the remaining budget. The kept original content totals
+    ``limit`` characters; the marker is added on top.
     """
     if text is None:
         return "", False
@@ -79,7 +86,13 @@ def truncate_text(text: str, limit: int) -> Tuple[str, bool]:
         return text, False
     if len(text) <= limit:
         return text, False
-    return text[:limit], True
+    head_len = limit // 3
+    tail_len = limit - head_len
+    omitted = len(text) - limit
+    marker = f"\n... [{omitted} characters omitted] ...\n"
+    head = text[:head_len]
+    tail = text[len(text) - tail_len:]
+    return head + marker + tail, True
 
 
 def atomic_write_json(path: Path, data: Any) -> None:
@@ -112,7 +125,7 @@ def atomic_write_json(path: Path, data: Any) -> None:
 
 def read_json(path: Path) -> Any:
     """Read and parse JSON from ``path``."""
-    with open(path, "r", encoding="utf-8") as handle:
+    with open(path, encoding="utf-8") as handle:
         return json.load(handle)
 
 

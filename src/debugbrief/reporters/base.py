@@ -207,8 +207,8 @@ class BaseReporter:
             )
         if redacted:
             lines.append(
-                "- Secret-like values in captured output or commands were "
-                "replaced with `[redacted]`. Redaction is best effort and "
+                "- Secret-like values in captured output, commands, or notes "
+                "were replaced with `[redacted]`. Redaction is best effort and "
                 "conservative; it does not catch everything."
             )
         for warning in warnings:

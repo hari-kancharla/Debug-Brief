@@ -33,6 +33,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A documented one-line recipe for posting a brief to a pull request with the
   GitHub CLI.
 
+### Fixed
+
+- Redaction no longer masks values whose key merely contains a sensitive
+  substring. The sensitive token must now be a whole, separator-delimited
+  segment of the key, so `monkey:`, `turkey_count=`, `rapid_mode=`, `apiary`,
+  and `keyboard=` are left intact while `password=`, `api_key`, `api-key`,
+  `apikey`, `aws_secret_access_key`, `*_token`, and a bare `key=` are still
+  redacted.
+- Free-text notes are now scrubbed through the same redaction pass before they
+  are written to the session file, so a secret pasted into a note (an env var or
+  a log line) no longer lands raw on disk or in a report.
+- Output truncation keeps both the head and a larger tail of long output (head
+  is the first third of the budget) with an elision marker in between, instead
+  of only the head. End-of-output content such as a trailing error or traceback
+  now survives truncation.
+- The changed-file summary excludes generated and cache artifacts
+  (`__pycache__`, `*.pyc`/`*.pyo`, `*.egg-info`, `node_modules`, `.DS_Store`,
+  and common cache directories such as `.pytest_cache`, `.mypy_cache`, and
+  `.ruff_cache`) so reports list meaningful changes only.
+- Resolved static type-checking errors in the redaction rule table, the
+  changed-file accumulator, and the report-open target path.
+
 ### Changed
 
 - The PR report dropped the templated Overview paragraph and the

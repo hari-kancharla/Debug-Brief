@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
 
 from debugbrief import git_utils
 
@@ -82,7 +81,7 @@ def test_name_status_labels(git_repo):
     _git(["commit", "-q", "-m", "add file to delete"], git_repo)
     (git_repo / "to_delete.txt").unlink()
 
-    pairs = dict((path, label) for label, path in git_utils.name_status(git_repo))
+    pairs = {path: label for label, path in git_utils.name_status(git_repo)}
     assert pairs["seed.txt"] == "M"
     assert pairs["added.txt"] == "A"
     assert pairs["to_delete.txt"] == "D"
@@ -94,6 +93,57 @@ def test_name_status_labels(git_repo):
 
 def test_name_status_outside_repo_is_empty(tmp_path):
     assert git_utils.name_status(tmp_path) == []
+
+
+def test_name_status_excludes_generated_artifacts(git_repo):
+    # A real source change that must survive the filtering.
+    (git_repo / "real.py").write_text("print('hi')\n", encoding="utf-8")
+
+    # Generated/cache artifacts. Fully-untracked directories are reported by
+    # porcelain as a single directory entry, while individual untracked files
+    # (here the bare .pyo at the repo root) are reported by path.
+    cache = git_repo / "__pycache__"
+    cache.mkdir()
+    (cache / "real.cpython-39.pyc").write_text("x", encoding="utf-8")
+    (git_repo / "module.pyo").write_text("x", encoding="utf-8")
+
+    egg = git_repo / "pkg.egg-info"
+    egg.mkdir()
+    (egg / "SOURCES.txt").write_text("real.py\n", encoding="utf-8")
+
+    for cache_dir in (".pytest_cache", ".mypy_cache", ".ruff_cache"):
+        d = git_repo / cache_dir
+        d.mkdir()
+        (d / "entry").write_text("x", encoding="utf-8")
+
+    files = git_utils.changed_files(git_repo)
+    assert "real.py" in files
+    assert all(
+        not git_utils._is_generated_artifact(path) for path in files
+    ), files
+    # None of the artifact paths should leak into the change summary.
+    joined = "\n".join(files)
+    for needle in ("__pycache__", ".pyo", ".egg-info", ".pytest_cache",
+                   ".mypy_cache", ".ruff_cache"):
+        assert needle not in joined
+
+
+def test_is_generated_artifact_helper():
+    assert git_utils._is_generated_artifact("pkg/__pycache__/mod.cpython-39.pyc")
+    assert git_utils._is_generated_artifact("build/foo.pyo")
+    assert git_utils._is_generated_artifact("src/thing.egg-info/PKG-INFO")
+    assert git_utils._is_generated_artifact(".mypy_cache/3.9/foo.json")
+    assert git_utils._is_generated_artifact(".pytest_cache/v/cache/lastfailed")
+    assert git_utils._is_generated_artifact("frontend/node_modules/pkg/index.js")
+    assert git_utils._is_generated_artifact("docs/.DS_Store")
+    # Real source files must never be filtered, even when the name contains a
+    # sensitive-looking token.
+    assert not git_utils._is_generated_artifact("src/debugbrief/redaction.py")
+    assert not git_utils._is_generated_artifact("src/app/keymap.py")
+    assert not git_utils._is_generated_artifact("src/app/api_client.py")
+    assert not git_utils._is_generated_artifact("README.md")
+    # "egg-info" must be a full segment suffix, not an embedded substring.
+    assert not git_utils._is_generated_artifact("my.egg-info.txt")
 
 
 def test_porcelain_label_mapping():

@@ -77,7 +77,13 @@ def test_stdout_truncation(tmp_path):
     )
     data = result.command_data
     assert data.stdout_truncated is True
-    assert len(data.stdout_preview) == 10
+    # Truncation keeps a small head and a larger tail with an elision marker
+    # between them; the kept original content is the limit and the marker is
+    # added on top. The output ends in a newline, so the tail preserves it.
+    assert "omitted" in data.stdout_preview
+    assert data.stdout_preview.startswith("xxx")
+    assert data.stdout_preview.endswith("\n")
+    assert data.stdout_preview.count("x") == 9  # 3 head + 6 tail (tail keeps the newline)
 
 
 def test_shell_mode_supports_pipes(tmp_path):

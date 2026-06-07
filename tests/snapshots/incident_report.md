@@ -1,5 +1,9 @@
 # Fix auth token refresh race condition
 
+## Summary
+
+Failing check `python -m pytest tests/test_auth.py` passed after 3 attempts over 1m 25s, changes touched src/auth/refresh.py, tests/test_auth.py, docs/old.md.
+
 ## Session metadata
 
 - **Session ID:** `<UUID>`
@@ -11,10 +15,6 @@
 - **Initial commit:** `<SHA>`  **Final commit:** `<SHA>`
 - **Notes:** 2  **Commands:** 3  **Failed commands:** 1
 
-## Executive summary
-
-Incident note for "Fix auth token refresh race condition". 3 command(s) and 2 note(s) were recorded. At least one verification command passed.
-
 ## Time window
 
 - **Start:** <TIMESTAMP>
@@ -23,18 +23,21 @@ Incident note for "Fix auth token refresh race condition". 3 command(s) and 2 no
 
 ## Chronological event timeline
 
-- `<TIME>` **snapshot**: Session started.
-- `<TIME>` **note**: Token refresh fails when two requests retry simultaneously.
-- `<TIME>` **command**: `python -m pytest tests/test_auth.py` -> failed (exit 1)
-- `<TIME>` **note**: Refresh state is shared across concurrent requests.
-- `<TIME>` **command**: `python -m pytest tests/test_auth.py` -> passed (exit 0)
-- `<TIME>` **command**: `npm run build` -> passed (exit 0)
-- `<TIME>` **snapshot**: Session ended.
+- `<TIME>` (snapshot) Session started.
+- `<TIME>` (note) Token refresh fails when two requests retry simultaneously.
+- `<TIME>` (command) `python -m pytest tests/test_auth.py` -> failed (exit 1) [0.25s]
+- `<TIME>` (note) Refresh state is shared across concurrent requests.
+- `<TIME>` (command) `python -m pytest tests/test_auth.py` -> passed (exit 0) [0.25s]
+- `<TIME>` (command) `npm run build` -> passed (exit 0) [0.25s]
+- `<TIME>` (snapshot) Session ended.
 
-## Actions taken
+## Observed error
 
-- `python -m pytest tests/test_auth.py` x2 -> passed (exit 0)
-- `npm run build` -> passed (exit 0)
+Quoted verbatim from real command output:
+
+```
+AssertionError: token refreshed twice
+```
 
 ## Resolution / current state
 
@@ -46,10 +49,6 @@ Working tree: 3 file(s) changed, +42 / -7 lines.
 
 - [passed] test (pytest): `python -m pytest tests/test_auth.py` x2
 - [passed] check (npm): `npm run build`
-
-## Follow-up items
-
-- No automatic follow-up items were derived.
 
 ---
 

@@ -10,17 +10,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
+from ..derive import Derivation, derive
 from ..filters import ReportCommand, build_report_commands
 from ..models import (
     COMMAND_STATUS_ERROR,
     COMMAND_STATUS_PASSED,
     COMMAND_STATUS_TIMED_OUT,
     CommandData,
-    Event,
     EventType,
     Session,
 )
-from ..utils import parse_iso8601
+from ..utils import human_duration, parse_iso8601
 
 
 @dataclass
@@ -39,6 +39,7 @@ class ReportContext:
     test_commands: List[ReportCommand] = field(default_factory=list)
     notes: List[Tuple[str, str]] = field(default_factory=list)
     timeline: List[TimelineEntry] = field(default_factory=list)
+    derivation: Derivation = field(default_factory=Derivation)
 
 
 def _short_time(iso_timestamp: Optional[str]) -> str:
@@ -94,6 +95,7 @@ def build_context(session: Session) -> ReportContext:
         test_commands=tests,
         notes=notes,
         timeline=timeline,
+        derivation=derive(session),
     )
 
 
@@ -108,11 +110,12 @@ def _build_timeline(session: Session) -> List[TimelineEntry]:
             data = CommandData.from_dict(event.data)
             label = status_label(data.classification.status)
             exit_repr = "n/a" if data.exit_code is None else str(data.exit_code)
+            duration = f" [{_fmt_duration(data.duration_seconds)}]"
             entries.append(
                 TimelineEntry(
                     event.timestamp,
                     "command",
-                    f"`{data.command}` -> {label} (exit {exit_repr})",
+                    f"`{data.command}` -> {label} (exit {exit_repr}){duration}",
                 )
             )
         elif event.type == EventType.WARNING.value:
@@ -138,6 +141,13 @@ def _safe_seconds(iso_timestamp: str) -> float:
         return parse_iso8601(iso_timestamp).timestamp()
     except (ValueError, TypeError):
         return 0.0
+
+
+def _fmt_duration(seconds: float) -> str:
+    """Compact per-command duration, e.g. ``0.25s`` or ``3s``."""
+    if seconds < 10:
+        return f"{seconds:g}s"
+    return human_duration(seconds)
 
 
 class BaseReporter:
@@ -186,7 +196,8 @@ class BaseReporter:
     def warnings_section(self) -> List[str]:
         warnings = self.session.warnings
         capture = self.session.summary.command_capture_status
-        if not warnings and capture == "full":
+        redacted = self.ctx.derivation.redaction_applied
+        if not warnings and capture == "full" and not redacted:
             return []
         lines = ["## Warnings and limitations", ""]
         if capture != "full":
@@ -194,17 +205,14 @@ class BaseReporter:
                 f"- Command capture status: **{capture}** "
                 "(some commands may not have been recorded)."
             )
+        if redacted:
+            lines.append(
+                "- Secret-like values in captured output or commands were "
+                "replaced with `[redacted]`. Redaction is best effort and "
+                "conservative; it does not catch everything."
+            )
         for warning in warnings:
             lines.append(f"- {warning}")
-        return lines
-
-    def notes_section(self, heading: str = "## Notes") -> List[str]:
-        lines = [heading, ""]
-        if not self.ctx.notes:
-            lines.append("_No notes were recorded during this session._")
-            return lines
-        for timestamp, text in self.ctx.notes:
-            lines.append(f"- {text}")
         return lines
 
     _STATUS_WORDS = {
@@ -217,18 +225,15 @@ class BaseReporter:
 
     def changed_files_section(self) -> List[str]:
         s = self.session
-        lines = ["## Modified files", ""]
+        # Only render inside a repo and only when files actually changed. With
+        # no real content the section is omitted rather than padded.
         if not s.git.is_repo:
-            lines.append(
-                "_Git metadata is unavailable (not a Git repository); file "
-                "changes were not tracked._"
-            )
-            return lines
+            return []
         file_changes = s.summary.file_changes
         files = s.summary.modified_files
         if not file_changes and not files:
-            lines.append("_No file changes were detected in the working tree._")
-            return lines
+            return []
+        lines = ["## Modified files", ""]
         count = len(file_changes) if file_changes else len(files)
         lines.append(
             f"_{count} file(s) changed, "
@@ -266,24 +271,6 @@ class BaseReporter:
             lines.append(f"- [passed] {kind}{tool}: `{rc.command}`{repeat}")
         return lines
 
-    def failed_commands_section(self) -> List[str]:
-        lines = ["## Failed commands", ""]
-        failed = self.ctx.failed_commands
-        if not failed:
-            lines.append("_No commands failed during this session._")
-            return lines
-        for rc in failed:
-            repeat = f" x{rc.count}" if rc.count > 1 else ""
-            exit_repr = "n/a" if rc.exit_code is None else str(rc.exit_code)
-            lines.append(
-                f"- `{rc.command}`{repeat} -> {status_label(rc.status)} "
-                f"(exit {exit_repr})"
-            )
-            snippet = _first_nonempty_line(rc.stderr_preview)
-            if snippet:
-                lines.append(f"  - stderr: {snippet}")
-        return lines
-
     def relevant_commands_section(
         self, heading: str = "## Relevant commands"
     ) -> List[str]:
@@ -301,6 +288,88 @@ class BaseReporter:
             )
         return lines
 
+    # Derived sections --------------------------------------------------------
+    def one_liner_section(self) -> List[str]:
+        one_liner = self.ctx.derivation.one_liner
+        if not one_liner:
+            return []
+        return ["## Summary", "", one_liner]
+
+    def reproduce_verify_section(self) -> List[str]:
+        d = self.ctx.derivation
+        if not d.reproduce_command and not d.verify_command:
+            return []
+        lines = ["## Reproduce and verify", ""]
+        if d.reproduce_command:
+            lines.append(f"- Reproduce (failed): `{d.reproduce_command}`")
+        if d.verify_command:
+            lines.append(f"- Verify (passed): `{d.verify_command}`")
+        return lines
+
+    def red_to_green_section(self) -> List[str]:
+        rtg = self.ctx.derivation.red_to_green
+        if rtg is None:
+            return []
+        lines = ["## Red to green", ""]
+        window = human_duration(rtg.window_seconds)
+        lines.append(
+            f"A check failed at `{_clock(rtg.failed_at)}` and `{rtg.command}` "
+            f"passed at `{_clock(rtg.passed_at)}` (window {window})."
+        )
+        if rtg.changed_files:
+            lines.append("")
+            lines.append(
+                "Between the failing and passing checks, these files changed "
+                "(correlation, not proven cause):"
+            )
+            for path in rtg.changed_files:
+                lines.append(f"- `{path}`")
+        else:
+            lines.append("")
+            lines.append(
+                "No tracked file changes were recorded across this window."
+            )
+        return lines
+
+    def timeline_section(
+        self, heading: str = "## Timeline", condensed: bool = False
+    ) -> List[str]:
+        entries = self.ctx.timeline
+        if condensed:
+            entries = [e for e in entries if e.kind in ("note", "command", "warning")]
+        if not entries:
+            return []
+        lines = [heading, ""]
+        for entry in entries:
+            lines.append(f"- `{_clock(entry.timestamp)}` ({entry.kind}) {entry.text}")
+        return lines
+
+    def observed_error_section(self) -> List[str]:
+        error = self.ctx.derivation.observed_error
+        if not error:
+            return []
+        return [
+            "## Observed error",
+            "",
+            "Quoted verbatim from real command output:",
+            "",
+            "```",
+            error,
+            "```",
+        ]
+
+    def ruled_out_section(self) -> List[str]:
+        ruled = self.ctx.derivation.ruled_out
+        if not ruled:
+            return []
+        lines = ["## What was ruled out", ""]
+        for rec in ruled:
+            exit_repr = "n/a" if rec.exit_code is None else str(rec.exit_code)
+            lines.append(
+                f"- `{rec.command}` -> {status_label(rec.status)} (exit {exit_repr})"
+            )
+        return lines
+
     def footer(self) -> List[str]:
         return [
             "---",
@@ -315,18 +384,6 @@ def _sha(value: Optional[str]) -> str:
     if not value:
         return "n/a"
     return value[:12]
-
-
-def _first_nonempty_line(text: str) -> Optional[str]:
-    if not text:
-        return None
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped:
-            if len(stripped) > 200:
-                return stripped[:200] + " ..."
-            return stripped
-    return None
 
 
 def join_sections(*blocks: List[str]) -> str:

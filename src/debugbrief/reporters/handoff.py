@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import List
 
-from .base import BaseReporter, _clock, join_sections, status_label
+from ..derive import next_step_notes
+from .base import BaseReporter, join_sections
 
 
 class HandoffReporter(BaseReporter):
@@ -13,13 +14,14 @@ class HandoffReporter(BaseReporter):
     def render(self) -> str:
         return join_sections(
             [self.title_line()],
+            self.one_liner_section(),
             self.metadata_lines(),
             self.warnings_section(),
             self._current_status_section(),
             self._hypotheses_section(),
-            self._timeline_section(),
-            self._commands_attempted_section(),
-            self.changed_files_section(),
+            self.timeline_section("## Timeline", condensed=False),
+            self.relevant_commands_section("## Commands attempted"),
+            self.ruled_out_section(),
             self._repo_state_section(),
             self._next_steps_section(),
             self.footer(),
@@ -60,36 +62,11 @@ class HandoffReporter(BaseReporter):
             lines.append(f"- {text}")
         return lines
 
-    def _timeline_section(self) -> List[str]:
-        lines = ["## Timeline of meaningful steps", ""]
-        meaningful = [e for e in self.ctx.timeline if e.kind in ("note", "command", "warning")]
-        if not meaningful:
-            lines.append("_No meaningful steps were recorded._")
-            return lines
-        for entry in meaningful:
-            lines.append(f"- `{_clock(entry.timestamp)}` ({entry.kind}) {entry.text}")
-        return lines
-
-    def _commands_attempted_section(self) -> List[str]:
-        lines = ["## Commands attempted", ""]
-        if not self.ctx.report_commands:
-            lines.append("_No notable commands were recorded._")
-            return lines
-        for rc in self.ctx.report_commands:
-            repeat = f" x{rc.count}" if rc.count > 1 else ""
-            exit_repr = "n/a" if rc.exit_code is None else str(rc.exit_code)
-            lines.append(
-                f"- `{rc.command}`{repeat} -> {status_label(rc.status)} "
-                f"(exit {exit_repr})"
-            )
-        return lines
-
     def _repo_state_section(self) -> List[str]:
         s = self.session
-        lines = ["## Current repo state", ""]
         if not s.git.is_repo:
-            lines.append("_Not a Git repository._")
-            return lines
+            return []
+        lines = ["## Current repo state", ""]
         branch = s.git.branch or (
             "(detached HEAD)" if s.git.detached_head else "(unknown)"
         )
@@ -102,24 +79,14 @@ class HandoffReporter(BaseReporter):
         return lines
 
     def _next_steps_section(self) -> List[str]:
+        # Next steps are drawn only from recorded notes, never inferred.
+        steps = next_step_notes(self.session)
+        if not steps:
+            return []
         lines = ["## Suggested next steps", ""]
-        items: List[str] = []
-        for rc in self.ctx.failed_commands:
-            items.append(f"Investigate the failing command `{rc.command}`.")
-        if not self.ctx.verification_commands:
-            items.append(
-                "Run and pass a verification command (tests/build/lint/typecheck) "
-                "to confirm the fix."
-            )
-        if self.session.git.is_repo and self.session.summary.modified_files:
-            items.append("Review the uncommitted changes listed above.")
-        if not items:
-            items.append(
-                "No automatic next steps were derived. Use the notes and timeline "
-                "above to continue."
-            )
-        for item in items:
-            lines.append(f"- {item}")
+        lines.append("_Based only on the notes you recorded:_")
+        for note in steps:
+            lines.append(f"- {note}")
         return lines
 
 

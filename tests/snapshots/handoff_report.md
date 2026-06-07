@@ -1,5 +1,9 @@
 # Fix auth token refresh race condition
 
+## Summary
+
+Failing check `python -m pytest tests/test_auth.py` passed after 3 attempts over 1m 25s, changes touched src/auth/refresh.py, tests/test_auth.py, docs/old.md.
+
 ## Session metadata
 
 - **Session ID:** `<UUID>`
@@ -20,36 +24,30 @@ At least one verification command passed and no recorded commands are currently 
 - Token refresh fails when two requests retry simultaneously.
 - Refresh state is shared across concurrent requests.
 
-## Timeline of meaningful steps
+## Timeline
 
+- `<TIME>` (snapshot) Session started.
 - `<TIME>` (note) Token refresh fails when two requests retry simultaneously.
-- `<TIME>` (command) `python -m pytest tests/test_auth.py` -> failed (exit 1)
+- `<TIME>` (command) `python -m pytest tests/test_auth.py` -> failed (exit 1) [0.25s]
 - `<TIME>` (note) Refresh state is shared across concurrent requests.
-- `<TIME>` (command) `python -m pytest tests/test_auth.py` -> passed (exit 0)
-- `<TIME>` (command) `npm run build` -> passed (exit 0)
+- `<TIME>` (command) `python -m pytest tests/test_auth.py` -> passed (exit 0) [0.25s]
+- `<TIME>` (command) `npm run build` -> passed (exit 0) [0.25s]
+- `<TIME>` (snapshot) Session ended.
 
 ## Commands attempted
 
 - `python -m pytest tests/test_auth.py` x2 -> passed (exit 0)
 - `npm run build` -> passed (exit 0)
 
-## Modified files
+## What was ruled out
 
-_3 file(s) changed, +42 / -7 lines._
-
-- `M` modified: `src/auth/refresh.py`
-- `A` added: `tests/test_auth.py`
-- `D` deleted: `docs/old.md`
+- `python -m pytest tests/test_auth.py` -> failed (exit 1)
 
 ## Current repo state
 
 - Branch: feature/auth-refresh
 - HEAD at session end: `<SHA>`
 - Uncommitted changes: 3 file(s), +42 / -7 lines.
-
-## Suggested next steps
-
-- Review the uncommitted changes listed above.
 
 ---
 

@@ -20,7 +20,7 @@ from debugbrief.reporters import VALID_MODES, render_report
 from debugbrief.utils import to_iso8601, utc_now
 
 
-def _command_event(command, status, ts, exit_code, **cls_kwargs):
+def _command_event(command, status, ts, exit_code, changed_files=None, **cls_kwargs):
     data = CommandData(
         command=command,
         started_at=ts,
@@ -29,6 +29,7 @@ def _command_event(command, status, ts, exit_code, **cls_kwargs):
         exit_code=exit_code,
         stderr_preview=cls_kwargs.pop("stderr_preview", ""),
         classification=CommandClassification(status=status, **cls_kwargs),
+        git_changed_files=list(changed_files or []),
     )
     return Event.command(data, ts)
 
@@ -59,6 +60,7 @@ def _rich_session():
             COMMAND_STATUS_FAILED,
             t0,
             1,
+            changed_files=["src/auth.py"],
             is_test=True,
             tool="pytest",
             stderr_preview="AssertionError: token mismatch",
@@ -70,6 +72,7 @@ def _rich_session():
             COMMAND_STATUS_PASSED,
             t1,
             0,
+            changed_files=["src/auth.py", "tests/test_auth.py"],
             is_test=True,
             is_verification=True,
             tool="pytest",
@@ -100,19 +103,31 @@ def test_all_modes_render_nonempty():
 def test_pr_required_sections():
     report = render_report(_rich_session(), "pr")
     for header in [
-        "## Overview",
-        "## Key findings",
-        "## Changes implemented",
+        "## Summary",
+        "## Reproduce and verify",
+        "## Red to green",
         "## Modified files",
+        "## Timeline",
         "## Verification and tests",
-        "## Relevant commands",
-        "## Risks / follow-up",
+        "## What was ruled out",
     ]:
         assert header in report, header
+    # Derived one-liner reflects the real transition, not a templated overview.
+    assert "Failing check `pytest tests/test_auth.py` passed" in report
     # Verification passed once: must be reflected, not fabricated.
     assert "[passed] test (pytest)" in report
-    # Notes surfaced as key findings.
-    assert "Refresh state shared across requests." in report
+    # Removed templated sections must be gone.
+    assert "## Overview" not in report
+    assert "## Risks / follow-up" not in report
+    assert "No outstanding risks were detected" not in report
+
+
+def test_pr_red_to_green_correlates_files():
+    report = render_report(_rich_session(), "pr")
+    assert "correlation, not proven cause" in report
+    assert "`src/auth.py`" in report
+    # Honest phrasing: never claims the files fixed it.
+    assert "fixed" not in report.lower()
 
 
 def test_handoff_required_sections():
@@ -120,11 +135,9 @@ def test_handoff_required_sections():
     for header in [
         "## Current status",
         "## Working hypotheses / findings",
-        "## Timeline of meaningful steps",
+        "## Timeline",
         "## Commands attempted",
-        "## Modified files",
         "## Current repo state",
-        "## Suggested next steps",
     ]:
         assert header in report, header
 
@@ -132,29 +145,33 @@ def test_handoff_required_sections():
 def test_incident_required_sections():
     report = render_report(_rich_session(), "incident")
     for header in [
-        "## Executive summary",
         "## Time window",
         "## Chronological event timeline",
-        "## Actions taken",
+        "## Observed error",
         "## Resolution / current state",
         "## Verification and tests",
-        "## Follow-up items",
     ]:
         assert header in report, header
+    # Observed error is quoted verbatim from real stderr.
+    assert "AssertionError: token mismatch" in report
 
 
 def test_dedup_in_report_actions():
-    # The two identical pytest commands within 5s should squash to one entry.
-    report = render_report(_rich_session(), "incident")
+    # The two identical pytest commands within 5s should squash to one entry in
+    # the deduplicated command list (Commands attempted), even though the raw
+    # timeline keeps both.
+    report = render_report(_rich_session(), "handoff")
     assert "`pytest tests/test_auth.py` x2" in report
 
 
-def test_no_notes_is_conservative():
+def test_no_notes_does_not_fabricate():
     session = _rich_session()
     session.events = [e for e in session.events if e.type != "note"]
     session.summary.notes_count = 0
     report = render_report(session, "pr")
-    assert "No findings were recorded" in report
+    # The report still renders and never invents findings.
+    assert report.startswith("# Fix auth token refresh race")
+    assert "## Timeline" in report
 
 
 def test_no_verification_is_honest():
@@ -172,11 +189,11 @@ def test_no_verification_is_honest():
     )
     session.summary = Summary(commands_count=1, command_capture_status="full")
     report = render_report(session, "pr")
-    assert "not** backed by a passing verification" in report or "no verification" in report.lower()
+    assert "no verification commands were run" in report.lower()
     assert "No verification commands" in report
 
 
-def test_no_changes_stated_plainly():
+def test_no_changes_omits_modified_files():
     now = utc_now()
     ts = to_iso8601(now)
     session = Session(
@@ -189,13 +206,54 @@ def test_no_changes_stated_plainly():
     session.events.append(Event.note("Just thinking out loud.", ts))
     session.summary = Summary(notes_count=1, command_capture_status="full")
     report = render_report(session, "pr")
-    assert "No file changes were detected" in report
+    # With no file changes the section is omitted, not padded with filler.
+    assert "## Modified files" not in report
+    # Notes still surface in the timeline.
     assert "Just thinking out loud." in report
 
 
-def test_failed_command_appears():
+def test_failed_command_is_ruled_out():
     report = render_report(_rich_session(), "pr")
-    # The failing pytest run was squashed with the later pass within 5s, so the
-    # most recent (passing) outcome wins -- failed section may be empty, which is
-    # honest. Instead assert the relevant-commands list reflects the real run.
-    assert "pytest tests/test_auth.py" in report
+    # The failing pytest run is surfaced under "What was ruled out".
+    assert "## What was ruled out" in report
+    assert "pytest tests/test_auth.py` -> failed (exit 1)" in report
+
+
+def test_old_format_session_still_renders():
+    # A session whose command events lack the new fields (git snapshot,
+    # redacted flag) must still load and render in every mode.
+    now = utc_now()
+    ts = to_iso8601(now)
+    raw = {
+        "session_id": "old-0000",
+        "title": "Legacy session",
+        "status": SessionStatus.COMPLETED.value,
+        "project_root": "/repo",
+        "git": {"is_repo": True, "repo_root": "/repo", "initial_sha": "a", "final_sha": "b"},
+        "timestamps": {"start": ts, "end": ts},
+        "events": [
+            {"type": "note", "timestamp": ts, "data": {"text": "old note"}},
+            {
+                "type": "command",
+                "timestamp": ts,
+                "data": {
+                    "command": "pytest",
+                    "started_at": ts,
+                    "ended_at": ts,
+                    "duration_seconds": 0.1,
+                    "exit_code": 0,
+                    "classification": {
+                        "is_test": True,
+                        "is_verification": True,
+                        "tool": "pytest",
+                        "status": COMMAND_STATUS_PASSED,
+                    },
+                },
+            },
+        ],
+        "summary": {"notes_count": 1, "commands_count": 1},
+    }
+    session = Session.from_dict(raw)
+    for mode in VALID_MODES:
+        report = render_report(session, mode)
+        assert report.startswith("# Legacy session")

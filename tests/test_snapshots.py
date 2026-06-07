@@ -1,9 +1,15 @@
-"""Snapshot tests for the three report modes.
+"""Snapshot tests for the derived report across modes and scenarios.
 
 Reports are generated from deterministic, fully in-memory fake session data.
 Dynamic fields (UUIDs, timestamps, Git SHAs, and the absolute project path) are
 normalized to stable placeholders before comparison, so snapshots are not
 brittle across machines or runs.
+
+The fixtures deliberately exercise the new derived report:
+
+- a real red-to-green transition with per-event git snapshots,
+- a notes-only / no-test session, and
+- a failing-command session with a captured error.
 
 To regenerate snapshots intentionally:
 
@@ -45,7 +51,7 @@ _T1 = "2026-01-02T03:04:10.000Z"
 _T2 = "2026-01-02T03:05:30.000Z"
 
 
-def _command_event(command, status, ts, exit_code, **cls_kwargs):
+def _command_event(command, status, ts, exit_code, changed_files=None, **cls_kwargs):
     stderr = cls_kwargs.pop("stderr_preview", "")
     data = CommandData(
         command=command,
@@ -55,11 +61,13 @@ def _command_event(command, status, ts, exit_code, **cls_kwargs):
         exit_code=exit_code,
         stderr_preview=stderr,
         classification=CommandClassification(status=status, **cls_kwargs),
+        git_changed_files=list(changed_files or []),
+        git_head="abc123a" if changed_files is not None else None,
     )
     return Event.command(data, ts)
 
 
-def _build_session() -> Session:
+def _red_to_green_session() -> Session:
     session = Session(
         title="Fix auth token refresh race condition",
         project_root=PROJECT_ROOT,
@@ -85,6 +93,7 @@ def _build_session() -> Session:
             COMMAND_STATUS_FAILED,
             _T0,
             1,
+            changed_files=["src/auth/refresh.py"],
             is_test=True,
             tool="pytest",
             stderr_preview="AssertionError: token refreshed twice",
@@ -99,6 +108,7 @@ def _build_session() -> Session:
             COMMAND_STATUS_PASSED,
             _T1,
             0,
+            changed_files=["src/auth/refresh.py", "tests/test_auth.py"],
             is_test=True,
             is_verification=True,
             tool="pytest",
@@ -110,6 +120,7 @@ def _build_session() -> Session:
             COMMAND_STATUS_PASSED,
             _T2,
             0,
+            changed_files=["src/auth/refresh.py", "tests/test_auth.py"],
             tool="npm",
             is_verification=True,
         )
@@ -128,6 +139,81 @@ def _build_session() -> Session:
         tests_run=["python -m pytest tests/test_auth.py"],
         notes_count=2,
         commands_count=3,
+        failed_commands_count=1,
+        command_capture_status="full",
+    )
+    return session
+
+
+def _no_test_session() -> Session:
+    session = Session(
+        title="Look into slow startup",
+        project_root=PROJECT_ROOT,
+        session_id=_FIXED_UUID,
+        status=SessionStatus.COMPLETED.value,
+        git=GitState(
+            is_repo=True,
+            repo_root=PROJECT_ROOT,
+            initial_sha=_INITIAL_SHA,
+            final_sha=_INITIAL_SHA,
+            branch="main",
+        ),
+        timestamps=Timestamps(start=_T0, end=_T1),
+    )
+    session.events.append(Event.snapshot({"phase": "start"}, _T0))
+    session.events.append(Event.note("Startup feels slow on a cold cache.", _T0))
+    session.events.append(
+        _command_event("echo checking", COMMAND_STATUS_PASSED, _T0, 0)
+    )
+    session.events.append(Event.snapshot({"phase": "end"}, _T1))
+    session.summary = Summary(
+        notes_count=1, commands_count=1, command_capture_status="full"
+    )
+    return session
+
+
+def _failing_session() -> Session:
+    session = Session(
+        title="Track down the failing migration",
+        project_root=PROJECT_ROOT,
+        session_id=_FIXED_UUID,
+        status=SessionStatus.COMPLETED.value,
+        git=GitState(
+            is_repo=True,
+            repo_root=PROJECT_ROOT,
+            initial_sha=_INITIAL_SHA,
+            final_sha=_FINAL_SHA,
+            branch="fix/migration",
+        ),
+        timestamps=Timestamps(start=_T0, end=_T1),
+    )
+    session.events.append(Event.snapshot({"phase": "start"}, _T0))
+    session.events.append(Event.note("Migration 014 errors on a missing column.", _T0))
+    session.events.append(
+        _command_event(
+            "python -m pytest tests/test_migrations.py",
+            COMMAND_STATUS_FAILED,
+            _T1,
+            1,
+            changed_files=["migrations/014_add_column.py"],
+            is_test=True,
+            tool="pytest",
+            stderr_preview=(
+                "Traceback (most recent call last):\n"
+                "  File \"x.py\", line 9\n"
+                "OperationalError: no such column: tenant_id"
+            ),
+        )
+    )
+    session.events.append(Event.snapshot({"phase": "end"}, _T1))
+    session.summary = Summary(
+        modified_files=["migrations/014_add_column.py"],
+        file_changes=[FileChange("M", "migrations/014_add_column.py")],
+        lines_added=3,
+        lines_deleted=0,
+        tests_run=["python -m pytest tests/test_migrations.py"],
+        notes_count=1,
+        commands_count=1,
         failed_commands_count=1,
         command_capture_status="full",
     )
@@ -159,26 +245,43 @@ def normalize(text: str) -> str:
     return text
 
 
-@pytest.mark.parametrize("mode", VALID_MODES)
-def test_report_snapshot(mode):
-    session = _build_session()
-    generated = normalize(render_report(session, mode))
-    snapshot_path = SNAPSHOT_DIR / f"{mode}_report.md"
-
+def _check_snapshot(name: str, generated: str) -> None:
+    snapshot_path = SNAPSHOT_DIR / f"{name}.md"
     if os.environ.get("DEBUGBRIEF_UPDATE_SNAPSHOTS"):
         SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
         snapshot_path.write_text(generated, encoding="utf-8")
-
     assert snapshot_path.exists(), (
         f"Missing snapshot {snapshot_path}. Regenerate with "
         "DEBUGBRIEF_UPDATE_SNAPSHOTS=1 pytest tests/test_snapshots.py"
     )
     expected = snapshot_path.read_text(encoding="utf-8")
     assert generated == expected, (
-        f"{mode} report drifted from snapshot {snapshot_path}.\n"
+        f"{name} report drifted from snapshot {snapshot_path}.\n"
         "If this change is intentional, regenerate with "
         "DEBUGBRIEF_UPDATE_SNAPSHOTS=1."
     )
+
+
+@pytest.mark.parametrize("mode", VALID_MODES)
+def test_red_to_green_snapshot(mode):
+    generated = normalize(render_report(_red_to_green_session(), mode))
+    _check_snapshot(f"{mode}_report", generated)
+
+
+def test_no_test_pr_snapshot():
+    generated = normalize(render_report(_no_test_session(), "pr"))
+    _check_snapshot("no_test_pr_report", generated)
+
+
+def test_failing_pr_snapshot():
+    generated = normalize(render_report(_failing_session(), "pr"))
+    _check_snapshot("failing_pr_report", generated)
+
+
+def test_failing_incident_snapshot():
+    # Incident mode surfaces the observed error verbatim from real output.
+    generated = normalize(render_report(_failing_session(), "incident"))
+    _check_snapshot("failing_incident_report", generated)
 
 
 def test_normalize_scrubs_dynamic_fields():

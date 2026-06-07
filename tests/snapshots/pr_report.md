@@ -1,5 +1,9 @@
 # Fix auth token refresh race condition
 
+## Summary
+
+Failing check `python -m pytest tests/test_auth.py` passed after 3 attempts over 1m 25s, changes touched src/auth/refresh.py, tests/test_auth.py, docs/old.md.
+
 ## Session metadata
 
 - **Session ID:** `<UUID>`
@@ -11,18 +15,18 @@
 - **Initial commit:** `<SHA>`  **Final commit:** `<SHA>`
 - **Notes:** 2  **Commands:** 3  **Failed commands:** 1
 
-## Overview
+## Reproduce and verify
 
-This pull request summarizes the debugging session "Fix auth token refresh race condition". 3 file(s) were changed (+42 / -7). 3 command(s) were recorded, 1 of which failed. Verification: at least one verification command passed.
+- Reproduce (failed): `python -m pytest tests/test_auth.py`
+- Verify (passed): `python -m pytest tests/test_auth.py`
 
-## Key findings
+## Red to green
 
-- Token refresh fails when two requests retry simultaneously.
-- Refresh state is shared across concurrent requests.
+A check failed at `<TIME>` and `python -m pytest tests/test_auth.py` passed at `<TIME>` (window 5s).
 
-## Changes implemented
-
-3 file(s) changed, +42 / -7 lines. See the modified files below; rationale, if any, is captured under Key findings.
+Between the failing and passing checks, these files changed (correlation, not proven cause):
+- `src/auth/refresh.py`
+- `tests/test_auth.py`
 
 ## Modified files
 
@@ -32,19 +36,22 @@ _3 file(s) changed, +42 / -7 lines._
 - `A` added: `tests/test_auth.py`
 - `D` deleted: `docs/old.md`
 
+## Timeline
+
+- `<TIME>` (note) Token refresh fails when two requests retry simultaneously.
+- `<TIME>` (command) `python -m pytest tests/test_auth.py` -> failed (exit 1) [0.25s]
+- `<TIME>` (note) Refresh state is shared across concurrent requests.
+- `<TIME>` (command) `python -m pytest tests/test_auth.py` -> passed (exit 0) [0.25s]
+- `<TIME>` (command) `npm run build` -> passed (exit 0) [0.25s]
+
 ## Verification and tests
 
 - [passed] test (pytest): `python -m pytest tests/test_auth.py` x2
 - [passed] check (npm): `npm run build`
 
-## Relevant commands
+## What was ruled out
 
-- `python -m pytest tests/test_auth.py` x2 -> passed (exit 0)
-- `npm run build` -> passed (exit 0)
-
-## Risks / follow-up
-
-- No outstanding risks were detected automatically. Review manually.
+- `python -m pytest tests/test_auth.py` -> failed (exit 1)
 
 ---
 

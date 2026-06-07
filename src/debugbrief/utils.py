@@ -53,6 +53,20 @@ def parse_iso8601(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def human_duration(seconds: float) -> str:
+    """Render a duration in seconds as a compact ``1h 2m 3s`` style string."""
+    total = int(round(seconds))
+    if total < 0:
+        total = 0
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes}m {secs}s"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
 def truncate_text(text: str, limit: int) -> Tuple[str, bool]:
     """Truncate ``text`` to ``limit`` characters.
 

@@ -55,6 +55,9 @@ class ProjectPaths:
     def report_file(self, session_id: str, mode: str) -> Path:
         return self.reports_dir / f"{session_id}-{mode}.md"
 
+    def report_json_file(self, session_id: str, mode: str) -> Path:
+        return self.reports_dir / f"{session_id}-{mode}.json"
+
     def ensure_directories(self) -> None:
         """Create the .debugbrief directory tree if it does not exist."""
         self.base_dir.mkdir(parents=True, exist_ok=True)

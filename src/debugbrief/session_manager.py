@@ -165,6 +165,23 @@ class SessionManager:
         self._write_active_pointer(session)
         return session
 
+    def auto_start(self, seed_text: str) -> Session:
+        """Start a session with a title derived from the time and ``seed_text``.
+
+        Used when ``run`` or ``note`` is invoked with no active session, so a
+        capture is never silently dropped.
+        """
+        from .utils import utc_now
+
+        first_line = ""
+        for line in (seed_text or "").strip().splitlines():
+            if line.strip():
+                first_line = line.strip()
+                break
+        snippet = first_line[:60] if first_line else "debug session"
+        stamp = utc_now().strftime("%Y-%m-%d %H:%M")
+        return self.start(f"Auto session {stamp}: {snippet}")
+
     def add_note(self, text: str) -> Session:
         session = self.require_active("add a note")
         clean = text.strip()
@@ -177,6 +194,13 @@ class SessionManager:
 
     def record_command(self, result: RunResult) -> Session:
         session = self.require_active("run a command")
+        # Best-effort, lightweight git snapshot at the moment of the command so
+        # later reports can correlate file changes with what happened. Safe and
+        # silent outside a repo.
+        if session.git.is_repo:
+            cwd = self.paths.project_root
+            result.command_data.git_head = git_utils.current_short_sha(cwd)
+            result.command_data.git_changed_files = git_utils.changed_files(cwd)
         session.events.append(
             Event.command(result.command_data, result.command_data.started_at)
         )
@@ -186,8 +210,9 @@ class SessionManager:
         self._write_active_pointer(session)
         return session
 
-    def end(self, mode: str) -> Session:
-        from .reporters import render_report  # local import avoids a cycle
+    def end(self, mode: str, report_format: str = "md") -> Session:
+        # Local imports avoid an import cycle with the reporters package.
+        from .reporters import render_report, render_report_json
 
         session = self.require_active("end the session")
 
@@ -213,11 +238,19 @@ class SessionManager:
         self._finalize_summary(session)
         self.save_session(session)
 
-        report_text = render_report(session, mode)
-        report_path = self.paths.report_file(session.session_id, mode)
         from .utils import write_text
 
-        write_text(report_path, report_text)
+        if report_format in ("md", "both"):
+            report_text = render_report(session, mode)
+            write_text(self.paths.report_file(session.session_id, mode), report_text)
+        if report_format in ("json", "both"):
+            import json
+
+            payload = render_report_json(session, mode)
+            write_text(
+                self.paths.report_json_file(session.session_id, mode),
+                json.dumps(payload, indent=2) + "\n",
+            )
 
         # Only clear the active pointer after the report is safely written.
         self._clear_active_pointer()

@@ -144,3 +144,29 @@ def test_no_active_status(nogit_paths):
     manager = SessionManager(nogit_paths)
     status = manager.build_status()
     assert status == {"active": False}
+
+
+def test_end_format_both_writes_md_and_json(nogit_paths):
+    import json
+
+    manager = SessionManager(nogit_paths)
+    session = manager.start("formats")
+    manager.add_note("a note")
+    _record_run(manager, f"{PY} -c \"print('x')\"")
+    manager.end("pr", report_format="both")
+
+    md_path = nogit_paths.report_file(session.session_id, "pr")
+    json_path = nogit_paths.report_json_file(session.session_id, "pr")
+    assert md_path.exists()
+    assert json_path.exists()
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    assert payload["mode"] == "pr"
+    assert payload["title"] == "formats"
+
+
+def test_end_format_json_only(nogit_paths):
+    manager = SessionManager(nogit_paths)
+    session = manager.start("json only")
+    manager.end("pr", report_format="json")
+    assert not nogit_paths.report_file(session.session_id, "pr").exists()
+    assert nogit_paths.report_json_file(session.session_id, "pr").exists()

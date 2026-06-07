@@ -3,14 +3,16 @@
 Commands:
     debugbrief start "<title>"
     debugbrief note  "<text>"
-    debugbrief run   "<command>" [--shell] [--timeout N]
-    debugbrief end   --mode pr|handoff|incident
+    debugbrief run   "<command>" [--shell] [--timeout N] [--no-redact]
+    debugbrief end   --mode pr|handoff|incident [--format md|json|both]
     debugbrief status
     debugbrief doctor [--fix]
     debugbrief last
     debugbrief open  [--last | --path PATH]
     debugbrief list  [--json]
     debugbrief show  <session_id> [--json]
+
+run and note auto-start a session if none is active.
 """
 
 from __future__ import annotations
@@ -96,6 +98,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Kill the command after this many seconds (default {DEFAULT_TIMEOUT_SECONDS}).",
     )
     p_run.add_argument(
+        "--no-redact",
+        dest="no_redact",
+        action="store_true",
+        help=(
+            "Store captured output and the command verbatim, without secret "
+            "redaction. Use only when you know the output is safe."
+        ),
+    )
+    p_run.add_argument(
         "command",
         nargs="+",
         help='The command to run, e.g. "python -m pytest". Quote it.',
@@ -111,6 +122,13 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         choices=VALID_MODES,
         help="Report style to generate.",
+    )
+    p_end.add_argument(
+        "--format",
+        dest="report_format",
+        choices=["md", "json", "both"],
+        default="md",
+        help="Report output format (default md). 'both' writes markdown and JSON.",
     )
     p_end.set_defaults(func=cmd_end)
 
@@ -179,6 +197,37 @@ def _manager() -> SessionManager:
     return SessionManager(paths)
 
 
+def _apply_local_ignore(manager, paths, session):
+    """Ensure .debugbrief/ is locally ignored; record any warning on the session."""
+    changed, warnings = ensure_local_ignore(paths)
+    if warnings:
+        from .utils import now_iso8601
+
+        for warning in warnings:
+            session.add_warning(warning, now_iso8601())
+        manager.save_session(session)
+    return changed, warnings
+
+
+def _ensure_session(manager, paths, seed_text):
+    """Return the active session, auto-starting one if none is active.
+
+    Auto-start prints a clear one-line notice and continues, so a note or a
+    command run is never silently dropped.
+    """
+    if manager.has_active():
+        return manager.load_active()
+    session = manager.auto_start(seed_text)
+    changed, warnings = _apply_local_ignore(manager, paths, session)
+    print(f"Auto-started a DebugBrief session (none was active): {session.title}")
+    print(f"  id: {session.session_id}")
+    if changed:
+        print("  ignore: added .debugbrief/ to .git/info/exclude")
+    for warning in warnings:
+        eprint(f"  warning: {warning}")
+    return session
+
+
 # Handlers -----------------------------------------------------------------
 def cmd_start(args: argparse.Namespace) -> int:
     if args.shell:
@@ -196,13 +245,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     session = manager.start(args.title)
 
     # Locally ignore .debugbrief/ via .git/info/exclude (never touches .gitignore).
-    changed, warnings = ensure_local_ignore(paths)
-    if warnings:
-        from .utils import now_iso8601
-
-        for warning in warnings:
-            session.add_warning(warning, now_iso8601())
-        manager.save_session(session)
+    changed, warnings = _apply_local_ignore(manager, paths, session)
 
     print("Started DebugBrief session.")
     print(f"  id:        {session.session_id}")
@@ -228,7 +271,9 @@ def cmd_start(args: argparse.Namespace) -> int:
 
 
 def cmd_note(args: argparse.Namespace) -> int:
-    manager = _manager()
+    paths = resolve_project_paths()
+    manager = SessionManager(paths)
+    _ensure_session(manager, paths, args.text)
     session = manager.add_note(args.text)
     print(f"Noted ({session.summary.notes_count} total).")
     return 0
@@ -236,19 +281,22 @@ def cmd_note(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     command_str = _reconstruct_command(args.command)
-    manager = _manager()
-    # Fail fast (before executing) if no session is active.
-    manager.require_active("run a command")
+    paths = resolve_project_paths()
+    manager = SessionManager(paths)
 
     if args.timeout <= 0:
         eprint("--timeout must be a positive number of seconds.")
         return 2
+
+    # Auto-start a session if none is active so the run is never dropped.
+    _ensure_session(manager, paths, command_str)
 
     result = run_command(
         command=command_str,
         cwd=manager.paths.project_root,
         use_shell=args.shell,
         timeout_seconds=args.timeout,
+        redact=not args.no_redact,
     )
     manager.record_command(result)
 
@@ -268,16 +316,25 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("  note:      stdout preview was truncated")
     if data.stderr_truncated:
         print("  note:      stderr preview was truncated")
+    if data.redacted:
+        print("  note:      secret-like values were redacted")
     return result.propagated_exit_code
 
 
 def cmd_end(args: argparse.Namespace) -> int:
     manager = _manager()
-    session = manager.end(args.mode)
-    report_path = manager.paths.report_file(session.session_id, args.mode)
+    session = manager.end(args.mode, args.report_format)
     print(f"Session completed: {session.title}")
     print(f"  mode:      {args.mode}")
-    print(f"  report:    {report_path}")
+    if args.report_format in ("md", "both"):
+        print(
+            f"  report:    {manager.paths.report_file(session.session_id, args.mode)}"
+        )
+    if args.report_format in ("json", "both"):
+        print(
+            f"  json:      "
+            f"{manager.paths.report_json_file(session.session_id, args.mode)}"
+        )
     print(f"  session:   {manager.paths.session_file(session.session_id)}")
     return 0
 

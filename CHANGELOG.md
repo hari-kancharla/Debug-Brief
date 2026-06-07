@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - JSON report output. `debugbrief end --format md|json|both` (default `md`)
   writes a structured JSON report with the same derived fields next to the
   markdown.
-- Auto-start. `debugbrief run` and `debugbrief note` auto-start a session (with a
+- Auto-start. `debugbrief run` and `debugbrief note` auto-start a session (with
   clear notice) when none is active, so a capture is never dropped.
 - A documented one-line recipe for posting a brief to a pull request with the
   GitHub CLI.

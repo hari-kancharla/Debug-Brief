@@ -1,5 +1,6 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+# 77+ understands the PEP 639 SPDX `license` string below.
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,14 +9,14 @@ version = "1.0.0"
 description = "Local-first CLI that records the meaningful context of a debugging session and turns it into a useful markdown brief."
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "DebugBrief" }]
 keywords = ["cli", "debugging", "pull-request", "handoff", "incident", "report"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX",
     "Operating System :: MacOS",
     "Programming Language :: Python :: 3",

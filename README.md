@@ -1,6 +1,6 @@
 # DebugBrief
 
-[![CI](https://github.com/harihkk/DebugBrief/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/harihkk/DebugBrief/actions/workflows/ci.yml)
+[![CI](https://github.com/harihkk/Debug-Brief/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/harihkk/Debug-Brief/actions/workflows/ci.yml)
 
 Turn a debugging session into an honest markdown brief for a PR, a handoff, or an
 incident note.

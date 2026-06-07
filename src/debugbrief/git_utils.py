@@ -71,6 +71,15 @@ def current_sha(cwd: Path) -> Optional[str]:
     return sha or None
 
 
+def current_short_sha(cwd: Path) -> Optional[str]:
+    """Return the abbreviated HEAD SHA, or None when unavailable."""
+    ok, out, _ = _run_git(["rev-parse", "--short", "HEAD"], cwd)
+    if not ok:
+        return None
+    sha = out.strip()
+    return sha or None
+
+
 def is_detached_head(cwd: Path) -> bool:
     """Return True if HEAD is detached.
 

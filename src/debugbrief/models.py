@@ -117,6 +117,13 @@ class CommandData:
     stderr_truncated: bool = False
     used_shell: bool = False
     classification: CommandClassification = field(default_factory=CommandClassification)
+    # Whether redaction masked anything in the stored command/output.
+    redacted: bool = False
+    # Lightweight git snapshot taken at the moment this command was recorded.
+    # Empty/None outside a repo or when git was unavailable (backward compatible:
+    # older session files simply omit these).
+    git_head: Optional[str] = None
+    git_changed_files: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -131,6 +138,9 @@ class CommandData:
             "stderr_truncated": self.stderr_truncated,
             "used_shell": self.used_shell,
             "classification": self.classification.to_dict(),
+            "redacted": self.redacted,
+            "git_head": self.git_head,
+            "git_changed_files": list(self.git_changed_files),
         }
 
     @classmethod
@@ -149,6 +159,9 @@ class CommandData:
             classification=CommandClassification.from_dict(
                 data.get("classification", {})
             ),
+            redacted=bool(data.get("redacted", False)),
+            git_head=data.get("git_head"),
+            git_changed_files=list(data.get("git_changed_files", [])),
         )
 
 

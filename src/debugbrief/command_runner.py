@@ -16,6 +16,7 @@ from typing import List, Optional
 
 from . import filters
 from .models import CommandData
+from .redaction import redact_text
 from .utils import (
     DEFAULT_STDERR_PREVIEW_LIMIT,
     DEFAULT_STDOUT_PREVIEW_LIMIT,
@@ -61,13 +62,17 @@ def run_command(
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     stdout_limit: int = DEFAULT_STDOUT_PREVIEW_LIMIT,
     stderr_limit: int = DEFAULT_STDERR_PREVIEW_LIMIT,
+    redact: bool = True,
 ) -> RunResult:
     """Run ``command`` from ``cwd`` and capture a :class:`CommandData`.
 
-    The original command string is always preserved verbatim in the event.
     When ``use_shell`` is False (default), the command is parsed with
     ``shlex.split`` and executed without a shell. When ``use_shell`` is True,
     the command runs through the system shell (shell features allowed).
+
+    By default captured output and the command string are passed through
+    best-effort secret redaction before they are returned, so raw secrets never
+    reach the session file. Pass ``redact=False`` to store the raw text.
     """
     started_at = now_iso8601()
     start_monotonic = time.monotonic()
@@ -141,6 +146,8 @@ def run_command(
     stdout_preview, stdout_truncated = truncate_text(stdout_text, stdout_limit)
     stderr_preview, stderr_truncated = truncate_text(stderr_text, stderr_limit)
 
+    # Classification is derived from the command tokens and the real exit code,
+    # so it is computed before redaction may alter the stored command string.
     classification = filters.classify_command(
         command=command,
         exit_code=exit_code,
@@ -148,8 +155,16 @@ def run_command(
         errored=errored,
     )
 
+    stored_command = command
+    redacted = False
+    if redact:
+        stored_command, n_cmd = redact_text(command)
+        stdout_preview, n_out = redact_text(stdout_preview)
+        stderr_preview, n_err = redact_text(stderr_preview)
+        redacted = (n_cmd + n_out + n_err) > 0
+
     command_data = CommandData(
-        command=command,
+        command=stored_command,
         started_at=started_at,
         ended_at=ended_at,
         duration_seconds=duration,
@@ -160,6 +175,7 @@ def run_command(
         stderr_truncated=stderr_truncated,
         used_shell=use_shell,
         classification=classification,
+        redacted=redacted,
     )
 
     return RunResult(

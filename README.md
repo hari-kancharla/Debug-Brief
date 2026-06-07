@@ -1,5 +1,7 @@
 # DebugBrief
 
+[![CI](https://github.com/harihkk/DebugBrief/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/harihkk/DebugBrief/actions/workflows/ci.yml)
+
 DebugBrief is a **local-first command-line tool** that records the meaningful
 context of a debugging session and turns it into a useful, honest markdown
 brief.

@@ -170,3 +170,20 @@ def test_redacted_note_triggers_report_notice(tmp_path):
     assert "## Warnings and limitations" in report
     assert "Secret-like values in captured output, commands, or notes" in report
     assert "supersecretvalue123" not in report
+
+
+def test_redaction_is_linear_on_long_unbroken_text():
+    # Long unbroken alphanumeric runs (a pasted log line, base64, minified JS)
+    # must redact in linear time. The earlier lazy key-prefix scan was
+    # quadratic: 200k characters took minutes; linear takes milliseconds. The
+    # generous bound keeps this stable on slow CI runners while still failing
+    # decisively if the quadratic behavior ever returns.
+    import time
+
+    text = "x" * 200000
+    start = time.perf_counter()
+    out, count = redact_text(text)
+    elapsed = time.perf_counter() - start
+    assert out == text
+    assert count == 0
+    assert elapsed < 2.0, f"redaction took {elapsed:.2f}s on 200k chars"

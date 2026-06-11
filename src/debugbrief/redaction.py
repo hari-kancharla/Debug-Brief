@@ -28,8 +28,12 @@ _SENSITIVE_KEY = (
 # A key name is sensitive when one of its segments is a sensitive token. The
 # token must be flanked by a non-alphanumeric boundary on both sides (start/end
 # of the key or a separator), while still allowing other segments around it.
+# The match starts at the token itself; any prefix segments are simply left in
+# place by the replacement. Anchoring at the token instead of lazily scanning
+# the whole key keeps the pass linear on long unbroken text, where the lazy
+# prefix walk was quadratic.
 _SENSITIVE_KEY_NAME = (
-    r"(?P<key>[A-Za-z0-9_.\-]*?(?<![A-Za-z0-9])"
+    r"(?P<key>(?<![A-Za-z0-9])"
     + _SENSITIVE_KEY
     + r"(?![A-Za-z0-9])[A-Za-z0-9_.\-]*\s*[:=]\s*)"
 )

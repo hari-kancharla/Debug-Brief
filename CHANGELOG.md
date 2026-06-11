@@ -65,6 +65,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Piping command output to a consumer that closes early (for example
+  `debugbrief show <id> --json | head -1`) no longer crashes with a
+  BrokenPipeError traceback. The CLI exits quietly with code 141
+  (128 + SIGPIPE), the Unix convention.
+- Redaction now runs in linear time on long unbroken text. The previous
+  key-scanning pattern was quadratic, so a pasted log line or captured
+  base64-like output could stall capture for minutes; 200k characters now
+  redact in milliseconds with identical results.
+- Auto-started session titles are seeded from the command tokens as typed
+  instead of the shlex-quoted reconstruction, so `list` shows
+  `Auto session ...: python -c print(...)` rather than nested quote noise.
+  The stored and executed command is unchanged.
 - `debugbrief run` now streams the command's stdout and stderr live to the
   terminal, line by line and unmodified, while the command runs. Previously the
   output was captured but never shown, so a failing test run displayed no
@@ -106,6 +118,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Packaging metadata uses the PEP 639 SPDX `license = "MIT"` string and
   `license-files` instead of the deprecated license table and classifier, so the
   build is warning-free (requires setuptools 77+ to build).
+- Packaging declares `[project.urls]` (homepage, repository, changelog, issues)
+  and classifiers for the full tested Python range, 3.9 through 3.13.
+- CI now also runs Python 3.9 (the supported floor) and 3.13, so the advertised
+  range is continuously verified on Linux and macOS.
 
 ### Notes on decisions not fully specified
 

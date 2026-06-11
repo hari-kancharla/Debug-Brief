@@ -9,6 +9,7 @@ debugbrief note  <text ...>                   Record a note (quoting optional)
 debugbrief run   -- <command ...>             Execute and capture a command
 debugbrief redo                               Re-run the last captured command
 debugbrief end   [--mode pr|handoff|incident] Finalize and write a report
+debugbrief cancel [--yes]                     Discard the active session
 debugbrief status                             Show the active session
 debugbrief doctor [--fix]                     Health-check the project and state
 debugbrief last                               Show the most recent report
@@ -178,6 +179,22 @@ debugbrief end --stdout | gh pr comment --body-file -
   follow-ups.
 
 Every section is rendered only when it has real content. Nothing is invented.
+
+## cancel
+
+Discards the active session without writing a report. The session file is kept
+on disk with status `ABANDONED`, so nothing is silently deleted; it simply
+never becomes a brief. Useful when auto-start kicked in on a command you did
+not mean to capture.
+
+```bash
+debugbrief cancel        # asks: Discard active session '<title>'? [y/N]
+debugbrief cancel --yes  # no prompt
+```
+
+Anything other than `y` (including no stdin at all) declines: the prompt aborts
+safely, leaves the session active and untouched, and exits nonzero. Abandoned
+sessions still show up in `list` and `show`.
 
 ## status
 

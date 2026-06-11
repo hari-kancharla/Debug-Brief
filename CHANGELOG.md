@@ -54,6 +54,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   single spaces, so `debugbrief note remember to check the lock ordering` just
   works. The quoted single-argument form is unchanged, and notes still go
   through redaction before they are stored.
+- `debugbrief cancel` discards the active session without writing a report.
+  The session file is kept with the new `ABANDONED` status (it still appears in
+  `list` and `show`), the active pointer is cleared, and nothing is reported.
+  It confirms before discarding; `--yes` skips the prompt, and anything other
+  than `y` aborts safely with the session left untouched.
+- README documents a one-line alias (`alias db="debugbrief run --"`) for daily
+  use, and the limitations now note that interactive and TUI commands behave
+  oddly under `run` because output is piped for capture.
 
 ### Fixed
 

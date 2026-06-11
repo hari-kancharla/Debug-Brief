@@ -38,8 +38,16 @@ go before the `--`. Quoting the whole command also works: `debugbrief run
 "pytest -q"`. `redo` re-runs the last captured command, and `end` defaults to
 the `pr` report mode.
 
+Tip: a one-line alias makes the capture prefix disappear in daily use:
+
+```bash
+alias db="debugbrief run --"
+db pytest -q
+```
+
 `run` and `note` auto-start a session if you forget to, so a capture is never
-lost. The resulting report leads with a derived one-liner like:
+lost (and `debugbrief cancel` discards a session you did not mean to start).
+The resulting report leads with a derived one-liner like:
 
 > Failing check `python -m pytest -q test_calc.py` passed after 2 attempts over
 > 2s, changes touched calc.py.
@@ -65,6 +73,7 @@ lost. The resulting report leads with a derived one-liner like:
 | `run -- <command ...>` | Execute and capture a command |
 | `redo` | Re-run the last captured command |
 | `end [--mode pr\|handoff\|incident]` | Finalize and write a report (default `pr`) |
+| `cancel [--yes]` | Discard the active session, no report |
 | `status` | Show the active session |
 | `doctor [--fix]` | Health-check the project and state |
 | `last` / `open` | Find or open the most recent report |
@@ -83,6 +92,9 @@ debugbrief end --stdout | gh pr comment --body-file -
 - Unix-like only; no Windows/PowerShell.
 - Capture is explicit via `debugbrief run`. There is no terminal transcript or
   PTY capture, and output is stored as bounded previews, not full logs.
+- Interactive and TUI commands (a pdb session, watch modes) will behave oddly
+  under `run`, because output is piped for capture rather than attached to a
+  terminal. Run those directly and record the outcome with `note`.
 - Redaction is conservative and best effort; it does not catch every secret.
 - Git sections need native `git`; outside a repo they are omitted honestly.
 

@@ -1,18 +1,23 @@
 """Execute commands via subprocess and capture honest, bounded results.
 
 The runner never fakes an exit code and never claims success it did not observe.
-Output is stored as bounded previews (not full logs) and is explicitly flagged
-when truncated.
+While the command runs, its stdout and stderr stream live to the user's own
+terminal, line by line and unmodified, so a test run or build behaves exactly as
+it would outside DebugBrief. The full output is accumulated in parallel and
+stored as bounded previews (not full logs), explicitly flagged when truncated.
 """
 
 from __future__ import annotations
 
+import contextlib
 import shlex
 import subprocess
+import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import IO, List, Optional
 
 from . import filters
 from .models import CommandData
@@ -49,10 +54,28 @@ class RunResult:
         return code
 
 
-def _coerce_output(value: Optional[str]) -> str:
-    if value is None:
-        return ""
-    return value
+def _pump_stream(
+    stream: IO[str], echo_to: Optional[IO[str]], chunks: List[str]
+) -> None:
+    """Drain ``stream`` line by line, echoing live and accumulating.
+
+    Runs on a daemon reader thread, one per pipe. Lines are passed through to
+    ``echo_to`` unmodified (it is the user's own terminal) and appended to
+    ``chunks`` for the stored preview. A broken or closed echo target stops the
+    echo but never the capture.
+    """
+    try:
+        for line in iter(stream.readline, ""):
+            chunks.append(line)
+            if echo_to is not None:
+                try:
+                    echo_to.write(line)
+                    echo_to.flush()
+                except (OSError, ValueError):
+                    echo_to = None
+    finally:
+        with contextlib.suppress(OSError):
+            stream.close()
 
 
 def run_command(
@@ -63,12 +86,17 @@ def run_command(
     stdout_limit: int = DEFAULT_STDOUT_PREVIEW_LIMIT,
     stderr_limit: int = DEFAULT_STDERR_PREVIEW_LIMIT,
     redact: bool = True,
+    echo: bool = True,
 ) -> RunResult:
     """Run ``command`` from ``cwd`` and capture a :class:`CommandData`.
 
     When ``use_shell`` is False (default), the command is parsed with
     ``shlex.split`` and executed without a shell. When ``use_shell`` is True,
     the command runs through the system shell (shell features allowed).
+
+    While the command runs its stdout and stderr are echoed live to the
+    corresponding ``sys`` streams (disable with ``echo=False``). The echo is the
+    raw output; only the stored previews are redacted.
 
     By default captured output and the command string are passed through
     best-effort secret redaction before they are returned, so raw secrets never
@@ -99,34 +127,19 @@ def run_command(
             error_message = "Empty command."
         popen_args = parsed
 
+    process: Optional["subprocess.Popen[str]"] = None
     if not errored:
         try:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 popen_args,
                 cwd=str(cwd),
                 shell=use_shell,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout_seconds,
+                errors="replace",
+                bufsize=1,
             )
-            exit_code = completed.returncode
-            stdout_text = _coerce_output(completed.stdout)
-            stderr_text = _coerce_output(completed.stderr)
-        except subprocess.TimeoutExpired as exc:
-            timed_out = True
-            exit_code = None
-            stdout_text = _coerce_output(
-                exc.stdout.decode("utf-8", "replace")
-                if isinstance(exc.stdout, bytes)
-                else exc.stdout
-            )
-            stderr_text = _coerce_output(
-                exc.stderr.decode("utf-8", "replace")
-                if isinstance(exc.stderr, bytes)
-                else exc.stderr
-            )
-            error_message = f"Command timed out after {timeout_seconds}s."
         except FileNotFoundError as exc:
             errored = True
             exit_code = None
@@ -139,6 +152,40 @@ def run_command(
             errored = True
             exit_code = None
             error_message = f"Failed to execute command: {exc}"
+
+    if process is not None:
+        stdout_chunks: List[str] = []
+        stderr_chunks: List[str] = []
+        readers = [
+            threading.Thread(
+                target=_pump_stream,
+                args=(process.stdout, sys.stdout if echo else None, stdout_chunks),
+                daemon=True,
+            ),
+            threading.Thread(
+                target=_pump_stream,
+                args=(process.stderr, sys.stderr if echo else None, stderr_chunks),
+                daemon=True,
+            ),
+        ]
+        for reader in readers:
+            reader.start()
+        try:
+            exit_code = process.wait(timeout=timeout_seconds)
+            # Normal exit: drain whatever is left in the pipes before moving on.
+            for reader in readers:
+                reader.join()
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            exit_code = None
+            process.kill()
+            process.wait()
+            # Join briefly and keep whatever partial output was accumulated.
+            for reader in readers:
+                reader.join(timeout=2.0)
+            error_message = f"Command timed out after {timeout_seconds}s."
+        stdout_text = "".join(stdout_chunks)
+        stderr_text = "".join(stderr_chunks)
 
     ended_at = now_iso8601()
     duration = round(time.monotonic() - start_monotonic, 3)

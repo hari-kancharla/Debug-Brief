@@ -101,3 +101,51 @@ def test_command_string_preserved_verbatim(tmp_path):
 
 def test_default_timeout_constant():
     assert command_runner.DEFAULT_TIMEOUT_SECONDS == 300
+
+
+# Live streaming -------------------------------------------------------------
+def test_output_is_echoed_live_and_still_captured(tmp_path, capsys):
+    result = run_command(
+        f"{PY} -c \"import sys; print('live out'); sys.stderr.write('live err\\n')\"",
+        cwd=tmp_path,
+    )
+    captured = capsys.readouterr()
+    # The command's stdout reached the user's stdout, its stderr the user's
+    # stderr, unmodified.
+    assert "live out" in captured.out
+    assert "live err" in captured.err
+    assert "live out" not in captured.err
+    # The same output is still captured into the stored previews.
+    assert "live out" in result.command_data.stdout_preview
+    assert "live err" in result.command_data.stderr_preview
+
+
+def test_echo_can_be_disabled(tmp_path, capsys):
+    result = run_command(f"{PY} -c \"print('quiet')\"", cwd=tmp_path, echo=False)
+    captured = capsys.readouterr()
+    assert "quiet" not in captured.out
+    assert "quiet" in result.command_data.stdout_preview
+
+
+def test_echo_is_raw_but_stored_preview_is_redacted(tmp_path, capsys):
+    result = run_command(
+        f"{PY} -c \"print('api_key=sk-abcdefghijklmnop1234')\"",
+        cwd=tmp_path,
+    )
+    captured = capsys.readouterr()
+    # The live echo is the user's own terminal: raw output.
+    assert "sk-abcdefghijklmnop1234" in captured.out
+    # The stored preview is scrubbed.
+    assert "sk-abcdefghijklmnop1234" not in result.command_data.stdout_preview
+    assert "[redacted]" in result.command_data.stdout_preview
+
+
+def test_timeout_keeps_partial_output(tmp_path):
+    result = run_command(
+        f"{PY} -u -c \"import time; print('before sleep', flush=True); time.sleep(5)\"",
+        cwd=tmp_path,
+        timeout_seconds=1,
+    )
+    assert result.timed_out is True
+    assert result.command_data.exit_code is None
+    assert "before sleep" in result.command_data.stdout_preview

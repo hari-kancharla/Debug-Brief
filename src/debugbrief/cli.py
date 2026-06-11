@@ -2,10 +2,11 @@
 
 Commands:
     debugbrief start "<title>"
-    debugbrief note  "<text>"
+    debugbrief note  <text ...>
     debugbrief run   [--shell] [--timeout N] [--no-redact] -- <command ...>
     debugbrief run   "<command>"
-    debugbrief end   --mode pr|handoff|incident [--format md|json|both]
+    debugbrief redo  [--timeout N] [--no-redact]
+    debugbrief end   [--mode pr|handoff|incident] [--format md|json|both] [--stdout]
     debugbrief status
     debugbrief doctor [--fix]
     debugbrief last
@@ -29,11 +30,12 @@ from pathlib import Path
 from typing import List, Optional
 
 from . import __version__
-from .command_runner import DEFAULT_TIMEOUT_SECONDS, run_command
+from .command_runner import DEFAULT_TIMEOUT_SECONDS, RunResult, run_command
 from .doctor import run_doctor
-from .models import COMMAND_STATUS_PASSED
+from .models import COMMAND_STATUS_PASSED, CommandData
 from .paths import ensure_local_ignore, resolve_project_paths
-from .reporters import VALID_MODES, build_context
+from .redaction import PLACEHOLDER
+from .reporters import VALID_MODES, build_context, render_report
 from .reports_index import first_title, infer_mode, latest_report
 from .session_manager import SessionError, SessionManager
 from .sessions_index import (
@@ -75,7 +77,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     # note ---------------------------------------------------------------
     p_note = subparsers.add_parser("note", help="Append a note to the active session.")
-    p_note.add_argument("text", help="The note text.")
+    p_note.add_argument(
+        "text",
+        nargs="+",
+        help=(
+            "The note text. Quoting is optional: "
+            "debugbrief note remember to check the lock ordering"
+        ),
+    )
     p_note.set_defaults(func=cmd_note)
 
     # run ----------------------------------------------------------------
@@ -119,15 +128,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_run.set_defaults(func=cmd_run)
 
+    # redo ---------------------------------------------------------------
+    p_redo = subparsers.add_parser(
+        "redo",
+        help="Re-run the most recently captured command in the active session.",
+    )
+    p_redo.add_argument(
+        "--timeout",
+        type=int,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        metavar="SECONDS",
+        help=f"Kill the command after this many seconds (default {DEFAULT_TIMEOUT_SECONDS}).",
+    )
+    p_redo.add_argument(
+        "--no-redact",
+        dest="no_redact",
+        action="store_true",
+        help="Store captured output verbatim, without secret redaction.",
+    )
+    p_redo.set_defaults(func=cmd_redo)
+
     # end ----------------------------------------------------------------
     p_end = subparsers.add_parser(
         "end", help="Finalize the session and write a markdown report."
     )
     p_end.add_argument(
         "--mode",
-        required=True,
+        default="pr",
         choices=VALID_MODES,
-        help="Report style to generate.",
+        help="Report style to generate (default pr).",
     )
     p_end.add_argument(
         "--format",
@@ -135,6 +164,16 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["md", "json", "both"],
         default="md",
         help="Report output format (default md). 'both' writes markdown and JSON.",
+    )
+    p_end.add_argument(
+        "--stdout",
+        dest="to_stdout",
+        action="store_true",
+        help=(
+            "Print the rendered markdown report to stdout (the file is still "
+            "written). Informational lines move to stderr, so the output pipes "
+            "cleanly: debugbrief end --stdout | gh pr comment --body-file -"
+        ),
     )
     p_end.set_defaults(func=cmd_end)
 
@@ -273,15 +312,19 @@ def cmd_start(args: argparse.Namespace) -> int:
     print("Next:")
     print('  debugbrief note "<observation>"')
     print("  debugbrief run  -- <command>")
-    print("  debugbrief end  --mode pr|handoff|incident")
+    print("  debugbrief redo")
+    print("  debugbrief end  [--mode pr|handoff|incident]")
     return 0
 
 
 def cmd_note(args: argparse.Namespace) -> int:
+    # Unquoted notes arrive as multiple tokens; a lossy single-space join is
+    # fine for prose. The quoted single-argument form passes through verbatim.
+    text = args.text if isinstance(args.text, str) else " ".join(args.text)
     paths = resolve_project_paths()
     manager = SessionManager(paths)
-    _ensure_session(manager, paths, args.text)
-    session = manager.add_note(args.text)
+    _ensure_session(manager, paths, text)
+    session = manager.add_note(text)
     print(f"Noted ({session.summary.notes_count} total).")
     return 0
 
@@ -317,12 +360,17 @@ def cmd_run(args: argparse.Namespace) -> int:
         redact=not args.no_redact,
     )
     manager.record_command(result)
+    _print_command_outcome(result, args.timeout)
+    return result.propagated_exit_code
 
+
+def _print_command_outcome(result: RunResult, timeout_seconds: int) -> None:
+    """Report a captured command's outcome on stderr (shared by run and redo)."""
     data = result.command_data
     if result.errored:
         eprint(f"  error:     {result.error_message}")
     elif result.timed_out:
-        eprint(f"  status:    timed out after {args.timeout}s (recorded)")
+        eprint(f"  status:    timed out after {timeout_seconds}s (recorded)")
     else:
         verdict = "passed" if data.classification.status == COMMAND_STATUS_PASSED else "failed"
         eprint(f"  status:    {verdict} (exit {data.exit_code})")
@@ -335,24 +383,74 @@ def cmd_run(args: argparse.Namespace) -> int:
         eprint("  note:      stderr preview was truncated")
     if data.redacted:
         eprint("  note:      secret-like values were redacted")
+
+
+def cmd_redo(args: argparse.Namespace) -> int:
+    paths = resolve_project_paths()
+    manager = SessionManager(paths)
+
+    if args.timeout <= 0:
+        eprint("--timeout must be a positive number of seconds.")
+        return 2
+
+    session = manager.load_active()
+    if session is None:
+        eprint(
+            "No active DebugBrief session, so there is nothing to redo. "
+            "Run a command first: debugbrief run -- <command>"
+        )
+        return 1
+
+    command_events = session.command_events()
+    if not command_events:
+        eprint(
+            "No commands have been captured in this session yet. "
+            "Run one first: debugbrief run -- <command>"
+        )
+        return 1
+
+    last = CommandData.from_dict(command_events[-1].data)
+    if PLACEHOLDER in last.command:
+        eprint(
+            f"The last stored command contains {PLACEHOLDER}, a redaction "
+            "placeholder, not the real text, so it cannot be re-run. "
+            "Run the command again yourself: debugbrief run -- <command>"
+        )
+        return 1
+
+    eprint(f"$ {last.command}  (redo)")
+    result = run_command(
+        command=last.command,
+        cwd=manager.paths.project_root,
+        use_shell=last.used_shell,
+        timeout_seconds=args.timeout,
+        redact=not args.no_redact,
+    )
+    manager.record_command(result)
+    _print_command_outcome(result, args.timeout)
     return result.propagated_exit_code
 
 
 def cmd_end(args: argparse.Namespace) -> int:
     manager = _manager()
     session = manager.end(args.mode, args.report_format)
-    print(f"Session completed: {session.title}")
-    print(f"  mode:      {args.mode}")
+    # With --stdout the report itself owns stdout; everything informational
+    # moves to stderr so the output pipes cleanly.
+    info = eprint if args.to_stdout else print
+    info(f"Session completed: {session.title}")
+    info(f"  mode:      {args.mode}")
     if args.report_format in ("md", "both"):
-        print(
+        info(
             f"  report:    {manager.paths.report_file(session.session_id, args.mode)}"
         )
     if args.report_format in ("json", "both"):
-        print(
+        info(
             f"  json:      "
             f"{manager.paths.report_json_file(session.session_id, args.mode)}"
         )
-    print(f"  session:   {manager.paths.session_file(session.session_id)}")
+    info(f"  session:   {manager.paths.session_file(session.session_id)}")
+    if args.to_stdout:
+        sys.stdout.write(render_report(session, args.mode))
     return 0
 
 

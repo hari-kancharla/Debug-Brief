@@ -5,9 +5,10 @@ detail.
 
 ```text
 debugbrief start "<session title>"            Start a session
-debugbrief note  "<note text>"                Record a note
+debugbrief note  <text ...>                   Record a note (quoting optional)
 debugbrief run   -- <command ...>             Execute and capture a command
-debugbrief end   --mode pr|handoff|incident   Finalize and write a report
+debugbrief redo                               Re-run the last captured command
+debugbrief end   [--mode pr|handoff|incident] Finalize and write a report
 debugbrief status                             Show the active session
 debugbrief doctor [--fix]                     Health-check the project and state
 debugbrief last                               Show the most recent report
@@ -36,9 +37,12 @@ implemented; see [Experimental shell mode](#experimental-shell-mode).
 
 ## note
 
-Records a note on the active session.
+Records a note on the active session. Quoting is optional: multiple tokens are
+joined with single spaces, so plain prose just works. Quote the note when it
+contains characters your shell would interpret (quotes, parentheses, `;`, `|`).
 
 ```bash
+debugbrief note remember to check the lock ordering
 debugbrief note "Token refresh fails when two requests retry at once."
 ```
 
@@ -111,12 +115,34 @@ debugbrief run --no-redact -- printenv MY_PUBLIC_VALUE
 
 When a report includes output that had something masked, it says so.
 
+## redo
+
+Re-runs the most recently captured command in the active session, recording the
+result as a new command event. This is the core debugging loop: run the test,
+edit, run the same test again.
+
+```bash
+debugbrief run -- python -m pytest -q tests/test_auth.py   # fails
+# ... edit ...
+debugbrief redo                                            # same test again
+```
+
+`redo` re-executes the exact stored command with the same shell mode it was
+originally run with, streams its output live, and returns the command's own
+exit code, just like `run`. It accepts `--timeout` and `--no-redact`.
+
+If there is no active session, or the session has no captured commands yet,
+`redo` says so and exits 1. If the stored command itself had a secret masked
+(it contains the `[redacted]` placeholder), `redo` refuses to re-run it, since
+the placeholder is not the real command.
+
 ## end
 
 Finalizes the session, captures final Git state, and writes a report.
+`--mode` defaults to `pr`.
 
 ```bash
-debugbrief end --mode pr
+debugbrief end                  # pr-style report
 debugbrief end --mode handoff
 debugbrief end --mode incident
 ```
@@ -124,12 +150,20 @@ debugbrief end --mode incident
 Choose the output format with `--format` (default `md`):
 
 ```bash
-debugbrief end --mode pr --format both   # writes both markdown and JSON
-debugbrief end --mode pr --format json   # JSON only
+debugbrief end --format both   # writes both markdown and JSON
+debugbrief end --format json   # JSON only
 ```
 
 The JSON report carries the same derived fields as the markdown and is written
 next to it under `.debugbrief/reports/<id>-<mode>.json`.
+
+`--stdout` prints the rendered markdown report to stdout while the files are
+still written as usual; every informational line moves to stderr so the output
+pipes cleanly. Posting a brief straight to a pull request becomes one line:
+
+```bash
+debugbrief end --stdout | gh pr comment --body-file -
+```
 
 ### Report modes
 

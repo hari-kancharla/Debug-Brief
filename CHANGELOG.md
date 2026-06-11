@@ -39,6 +39,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as DebugBrief options. Multi-token commands are reconstructed with
   `shlex.join`, so arguments containing spaces or quotes survive intact into
   storage and reports. The single quoted-argument form keeps working unchanged.
+- `debugbrief redo` re-runs the most recently captured command in the active
+  session with the same shell mode it was originally run with, records the
+  result as a new event, and returns the command's own exit code, completing
+  the run/edit/redo loop. It accepts `--timeout` and `--no-redact`, reports
+  clearly when there is no session or no captured command yet, and refuses to
+  re-run a stored command that contains the `[redacted]` placeholder, since
+  that is not the real command.
+- `debugbrief end` no longer requires `--mode`; it defaults to `pr`. A new
+  `--stdout` flag prints the rendered markdown report to stdout while still
+  writing the files, with every informational line moved to stderr, so posting
+  a brief is one pipe: `debugbrief end --stdout | gh pr comment --body-file -`.
+- `debugbrief note` accepts unquoted prose: multiple tokens are joined with
+  single spaces, so `debugbrief note remember to check the lock ordering` just
+  works. The quoted single-argument form is unchanged, and notes still go
+  through redaction before they are stored.
 
 ### Fixed
 

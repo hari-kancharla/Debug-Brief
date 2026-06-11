@@ -28,14 +28,15 @@ debugbrief start "Fix add() returning wrong result"
 debugbrief note "add() subtracts instead of adds; the test expects 5."
 debugbrief run -- python -m pytest -q test_calc.py   # fails
 # ... make your fix ...
-debugbrief run -- python -m pytest -q test_calc.py   # passes
-debugbrief end --mode pr
+debugbrief redo                                      # same test again: passes
+debugbrief end                                       # writes the pr-style brief
 ```
 
 Everything after `--` runs exactly as you typed it, with its output streaming
 live to your terminal; DebugBrief flags (`--timeout`, `--shell`, `--no-redact`)
 go before the `--`. Quoting the whole command also works: `debugbrief run
-"pytest -q"`.
+"pytest -q"`. `redo` re-runs the last captured command, and `end` defaults to
+the `pr` report mode.
 
 `run` and `note` auto-start a session if you forget to, so a capture is never
 lost. The resulting report leads with a derived one-liner like:
@@ -60,9 +61,10 @@ lost. The resulting report leads with a derived one-liner like:
 | Command | What it does |
 | --- | --- |
 | `start "<title>"` | Start a session |
-| `note "<text>"` | Record a note |
+| `note <text ...>` | Record a note (quoting optional) |
 | `run -- <command ...>` | Execute and capture a command |
-| `end --mode pr\|handoff\|incident` | Finalize and write a report |
+| `redo` | Re-run the last captured command |
+| `end [--mode pr\|handoff\|incident]` | Finalize and write a report (default `pr`) |
 | `status` | Show the active session |
 | `doctor [--fix]` | Health-check the project and state |
 | `last` / `open` | Find or open the most recent report |
@@ -73,7 +75,7 @@ Full detail, flags, and the report modes: [docs/COMMANDS.md](docs/COMMANDS.md).
 Post a brief straight to a PR (GitHub CLI optional):
 
 ```bash
-gh pr comment --body-file "$(ls -t .debugbrief/reports/*-pr.md | head -1)"
+debugbrief end --stdout | gh pr comment --body-file -
 ```
 
 ## Limitations

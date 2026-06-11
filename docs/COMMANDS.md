@@ -6,7 +6,7 @@ detail.
 ```text
 debugbrief start "<session title>"            Start a session
 debugbrief note  "<note text>"                Record a note
-debugbrief run   "<command>"                  Execute and capture a command
+debugbrief run   -- <command ...>             Execute and capture a command
 debugbrief end   --mode pr|handoff|incident   Finalize and write a report
 debugbrief status                             Show the active session
 debugbrief doctor [--fix]                     Health-check the project and state
@@ -46,9 +46,23 @@ If no session is active, `note` auto-starts one first.
 
 ## run
 
-The primary, reliable capture mechanism. It:
+The primary, reliable capture mechanism. Put DebugBrief's own flags first, then
+`--`, then the command exactly as you would normally type it (no quoting
+needed):
+
+```bash
+debugbrief run -- python -m pytest -q tests/
+debugbrief run --timeout 600 -- make build
+```
+
+The old single-argument form still works: `debugbrief run "python -m pytest"`.
+
+`run`:
 
 - executes the command from the project root,
+- streams the command's stdout and stderr live to your terminal, unmodified,
+  while accumulating them for the stored previews (DebugBrief's own status
+  lines go to stderr, so the command's stdout stays clean for piping),
 - captures the command text, start/end timestamps, duration, exit code, and
   bounded stdout/stderr previews,
 - records a lightweight per-command Git snapshot (HEAD and changed files) so the
@@ -60,7 +74,8 @@ The primary, reliable capture mechanism. It:
 - returns the same exit code as the executed command.
 
 By default the command is parsed with `shlex.split` and run without a shell. For
-pipes, redirection, or `&&`, pass `--shell`:
+pipes, redirection, or `&&`, pass `--shell` with the command as one quoted
+string:
 
 ```bash
 debugbrief run --shell "pytest -q | tee out.txt"
@@ -73,7 +88,7 @@ If no session is active, `run` auto-starts one first.
 The default timeout is 300 seconds. Override with `--timeout`:
 
 ```bash
-debugbrief run --timeout 600 "pytest tests/"
+debugbrief run --timeout 600 -- pytest tests/
 ```
 
 On timeout the command is terminated, the event is recorded with status
@@ -91,7 +106,7 @@ default. It is best effort and does not catch everything.
 To store raw output verbatim (only when you know it is safe):
 
 ```bash
-debugbrief run --no-redact "echo $MY_PUBLIC_VALUE"
+debugbrief run --no-redact -- printenv MY_PUBLIC_VALUE
 ```
 
 When a report includes output that had something masked, it says so.

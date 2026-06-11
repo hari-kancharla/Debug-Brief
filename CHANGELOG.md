@@ -32,8 +32,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clear notice) when none is active, so a capture is never dropped.
 - A documented one-line recipe for posting a brief to a pull request with the
   GitHub CLI.
+- `debugbrief run -- <command ...>` passthrough form. DebugBrief flags
+  (`--shell`, `--timeout`, `--no-redact`) go first, then `--`, then the command
+  exactly as you would normally type it, with no quoting needed; tokens after
+  the `--` (including ones that look like flags, such as `-q`) are never parsed
+  as DebugBrief options. Multi-token commands are reconstructed with
+  `shlex.join`, so arguments containing spaces or quotes survive intact into
+  storage and reports. The single quoted-argument form keeps working unchanged.
 
 ### Fixed
+
+- `debugbrief run` now streams the command's stdout and stderr live to the
+  terminal, line by line and unmodified, while the command runs. Previously the
+  output was captured but never shown, so a failing test run displayed no
+  traceback at all. The full output is still accumulated for the bounded,
+  redacted previews, a timeout keeps whatever partial output had arrived, and
+  DebugBrief's own status lines moved to stderr so the wrapped command's stdout
+  stays clean for piping.
 
 - Redaction no longer masks values whose key merely contains a sensitive
   substring. The sensitive token must now be a whole, separator-delimited

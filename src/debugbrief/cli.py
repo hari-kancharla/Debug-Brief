@@ -3,7 +3,8 @@
 Commands:
     debugbrief start "<title>"
     debugbrief note  "<text>"
-    debugbrief run   "<command>" [--shell] [--timeout N] [--no-redact]
+    debugbrief run   [--shell] [--timeout N] [--no-redact] -- <command ...>
+    debugbrief run   "<command>"
     debugbrief end   --mode pr|handoff|incident [--format md|json|both]
     debugbrief status
     debugbrief doctor [--fix]
@@ -108,8 +109,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_run.add_argument(
         "command",
-        nargs="+",
-        help='The command to run, e.g. "python -m pytest". Quote it.',
+        nargs=argparse.REMAINDER,
+        help=(
+            "The command to run. Put DebugBrief flags first, then -- and the "
+            "command as you would normally type it: "
+            "debugbrief run -- python -m pytest -q tests/. "
+            'A single quoted argument also works: debugbrief run "pytest -q".'
+        ),
     )
     p_run.set_defaults(func=cmd_run)
 
@@ -219,10 +225,11 @@ def _ensure_session(manager, paths, seed_text):
         return manager.load_active()
     session = manager.auto_start(seed_text)
     changed, warnings = _apply_local_ignore(manager, paths, session)
-    print(f"Auto-started a DebugBrief session (none was active): {session.title}")
-    print(f"  id: {session.session_id}")
+    # Status lines go to stderr so a wrapped command's stdout stays clean.
+    eprint(f"Auto-started a DebugBrief session (none was active): {session.title}")
+    eprint(f"  id: {session.session_id}")
     if changed:
-        print("  ignore: added .debugbrief/ to .git/info/exclude")
+        eprint("  ignore: added .debugbrief/ to .git/info/exclude")
     for warning in warnings:
         eprint(f"  warning: {warning}")
     return session
@@ -265,7 +272,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     print("")
     print("Next:")
     print('  debugbrief note "<observation>"')
-    print('  debugbrief run  "<command>"')
+    print("  debugbrief run  -- <command>")
     print("  debugbrief end  --mode pr|handoff|incident")
     return 0
 
@@ -281,6 +288,13 @@ def cmd_note(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     command_str = _reconstruct_command(args.command)
+    if not command_str.strip():
+        eprint(
+            "No command given. Usage: debugbrief run [flags] -- <command ...> "
+            'or debugbrief run "<command>"'
+        )
+        return 2
+
     paths = resolve_project_paths()
     manager = SessionManager(paths)
 
@@ -291,6 +305,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     # Auto-start a session if none is active so the run is never dropped.
     _ensure_session(manager, paths, command_str)
 
+    # The command's own stdout/stderr stream through live while it runs.
+    # DebugBrief's status lines all go to stderr so the wrapped command's
+    # stdout stays clean for piping.
+    eprint(f"$ {command_str}")
     result = run_command(
         command=command_str,
         cwd=manager.paths.project_root,
@@ -301,23 +319,22 @@ def cmd_run(args: argparse.Namespace) -> int:
     manager.record_command(result)
 
     data = result.command_data
-    print(f"$ {data.command}")
     if result.errored:
         eprint(f"  error:     {result.error_message}")
     elif result.timed_out:
         eprint(f"  status:    timed out after {args.timeout}s (recorded)")
     else:
         verdict = "passed" if data.classification.status == COMMAND_STATUS_PASSED else "failed"
-        print(f"  status:    {verdict} (exit {data.exit_code})")
-    print(f"  duration:  {data.duration_seconds}s")
+        eprint(f"  status:    {verdict} (exit {data.exit_code})")
+    eprint(f"  duration:  {data.duration_seconds}s")
     if data.classification.is_test:
-        print(f"  test:      {data.classification.tool or 'unknown'}")
+        eprint(f"  test:      {data.classification.tool or 'unknown'}")
     if data.stdout_truncated:
-        print("  note:      stdout preview was truncated")
+        eprint("  note:      stdout preview was truncated")
     if data.stderr_truncated:
-        print("  note:      stderr preview was truncated")
+        eprint("  note:      stderr preview was truncated")
     if data.redacted:
-        print("  note:      secret-like values were redacted")
+        eprint("  note:      secret-like values were redacted")
     return result.propagated_exit_code
 
 
@@ -623,14 +640,21 @@ def cmd_show(args: argparse.Namespace) -> int:
 
 
 def _reconstruct_command(parts: List[str]) -> str:
-    """Reconstruct the command string from parsed positional tokens.
+    """Reconstruct the command string from the raw ``run`` tokens.
 
-    A single quoted argument (the documented usage) is preserved verbatim.
-    Multiple tokens are joined with single spaces as a best-effort fallback.
+    A leading ``--`` separator is dropped. A single remaining token (the quoted
+    form) is preserved verbatim. Multiple tokens (the ``--`` passthrough form)
+    are joined with ``shlex.join`` so arguments containing spaces or quotes
+    survive intact into storage, reports, and re-runs.
     """
-    if len(parts) == 1:
-        return parts[0]
-    return " ".join(parts)
+    tokens = list(parts)
+    if tokens and tokens[0] == "--":
+        tokens = tokens[1:]
+    if not tokens:
+        return ""
+    if len(tokens) == 1:
+        return tokens[0]
+    return shlex.join(tokens)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -644,7 +668,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if not getattr(args, "command", None):
+    # The run subparser reuses the "command" attribute for its token list, so
+    # the presence of a handler is what marks a subcommand as selected.
+    if not hasattr(args, "func"):
         parser.print_help()
         return 2
 

@@ -29,8 +29,9 @@ def test_note_autostarts_session(paths, capsys):
     assert not paths.active_session_file.exists()
     rc = cli.cmd_note(argparse.Namespace(text="first observation"))
     assert rc == 0
-    out = capsys.readouterr().out
-    assert "Auto-started" in out
+    # The notice is a status line, kept on stderr.
+    err = capsys.readouterr().err
+    assert "Auto-started" in err
 
     manager = SessionManager(paths)
     session = manager.load_active()
@@ -50,8 +51,8 @@ def test_run_autostarts_session(paths, capsys):
         )
     )
     assert rc == 0
-    out = capsys.readouterr().out
-    assert "Auto-started" in out
+    err = capsys.readouterr().err
+    assert "Auto-started" in err
 
     manager = SessionManager(paths)
     session = manager.load_active()
@@ -65,8 +66,8 @@ def test_existing_session_is_not_replaced(paths, capsys):
     capsys.readouterr()  # clear
 
     cli.cmd_note(argparse.Namespace(text="note into existing"))
-    out = capsys.readouterr().out
-    assert "Auto-started" not in out
+    captured = capsys.readouterr()
+    assert "Auto-started" not in captured.out + captured.err
 
     reloaded = manager.load_active()
     assert reloaded.session_id == started.session_id

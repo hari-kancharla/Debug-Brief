@@ -26,11 +26,16 @@ pip install -e .
 ```bash
 debugbrief start "Fix add() returning wrong result"
 debugbrief note "add() subtracts instead of adds; the test expects 5."
-debugbrief run "python -m pytest -q test_calc.py"   # fails
+debugbrief run -- python -m pytest -q test_calc.py   # fails
 # ... make your fix ...
-debugbrief run "python -m pytest -q test_calc.py"   # passes
+debugbrief run -- python -m pytest -q test_calc.py   # passes
 debugbrief end --mode pr
 ```
+
+Everything after `--` runs exactly as you typed it, with its output streaming
+live to your terminal; DebugBrief flags (`--timeout`, `--shell`, `--no-redact`)
+go before the `--`. Quoting the whole command also works: `debugbrief run
+"pytest -q"`.
 
 `run` and `note` auto-start a session if you forget to, so a capture is never
 lost. The resulting report leads with a derived one-liner like:
@@ -56,7 +61,7 @@ lost. The resulting report leads with a derived one-liner like:
 | --- | --- |
 | `start "<title>"` | Start a session |
 | `note "<text>"` | Record a note |
-| `run "<command>"` | Execute and capture a command |
+| `run -- <command ...>` | Execute and capture a command |
 | `end --mode pr\|handoff\|incident` | Finalize and write a report |
 | `status` | Show the active session |
 | `doctor [--fix]` | Health-check the project and state |

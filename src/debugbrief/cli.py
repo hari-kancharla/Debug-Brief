@@ -812,6 +812,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     except SessionError as exc:
         eprint(f"error: {exc}")
         return 1
+    except BrokenPipeError:
+        # The consumer of our stdout closed the pipe early, e.g.
+        # `debugbrief list | head -1`. Point stdout at devnull so the
+        # interpreter does not raise a second error while flushing on exit,
+        # and return the Unix convention for SIGPIPE (128 + 13).
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 141
     except KeyboardInterrupt:  # pragma: no cover
         eprint("Interrupted.")
         return 130

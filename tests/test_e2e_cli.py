@@ -104,3 +104,34 @@ def test_cli_help_and_version(repo):
     version = _cli(["--version"], repo)
     assert version.returncode == 0
     assert version.stdout.strip()
+
+
+def test_broken_pipe_exits_cleanly(tmp_path):
+    # A consumer that closes our stdout early (debugbrief show ... | head -1)
+    # must not produce a traceback; the CLI exits with 141 (128 + SIGPIPE).
+    from debugbrief.paths import ProjectPaths
+    from debugbrief.session_manager import SessionManager
+
+    paths = ProjectPaths(project_root=tmp_path, is_git_repo=False, repo_root=None)
+    manager = SessionManager(paths)
+    session = manager.start("big output session")
+    # Enough note bytes that the JSON dump overflows the OS pipe buffer, so the
+    # write actually fails once the read end is closed.
+    for _ in range(5):
+        manager.add_note("x" * 20000)
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "debugbrief", "show", session.session_id, "--json"],
+        cwd=str(tmp_path),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert proc.stdout is not None and proc.stderr is not None
+    proc.stdout.close()  # simulate `| head -1` exiting immediately
+    stderr = proc.stderr.read()
+    rc = proc.wait()
+
+    assert "Traceback" not in stderr, stderr
+    assert "BrokenPipeError" not in stderr, stderr
+    assert rc == 141

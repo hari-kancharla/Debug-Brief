@@ -60,6 +60,19 @@ def test_run_autostarts_session(paths, capsys):
     assert len(session.command_events()) == 1
 
 
+def test_autostart_title_uses_plain_tokens(paths):
+    # The auto title is seeded from the tokens as typed, not the shlex-quoted
+    # reconstruction, so it reads naturally instead of as nested quote noise.
+    # "two words" needs quoting in the stored command but not in the title.
+    rc = cli.main(["run", "--", "echo", "two words"])
+    assert rc == 0
+    session = SessionManager(paths).load_active()
+    assert "echo two words" in session.title
+    assert "'" not in session.title
+    # The stored/executed command keeps the shlex-joined form.
+    assert session.command_events()[0].data["command"] == "echo 'two words'"
+
+
 def test_existing_session_is_not_replaced(paths, capsys):
     manager = SessionManager(paths)
     started = manager.start("explicit title")

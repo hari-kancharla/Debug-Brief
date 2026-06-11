@@ -358,8 +358,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         eprint("--timeout must be a positive number of seconds.")
         return 2
 
-    # Auto-start a session if none is active so the run is never dropped.
-    _ensure_session(manager, paths, command_str)
+    # Auto-start a session if none is active so the run is never dropped. The
+    # title seed uses the plain tokens as typed, not the shlex-quoted
+    # reconstruction, so auto titles read naturally in list and reports.
+    _ensure_session(manager, paths, _plain_command_text(args.command))
 
     # The command's own stdout/stderr stream through live while it runs.
     # DebugBrief's status lines all go to stderr so the wrapped command's
@@ -788,6 +790,19 @@ def _reconstruct_command(parts: List[str]) -> str:
     if len(tokens) == 1:
         return tokens[0]
     return shlex.join(tokens)
+
+
+def _plain_command_text(parts: List[str]) -> str:
+    """Space-join the raw ``run`` tokens (minus a leading ``--``) for display.
+
+    Used only as the auto-start title seed, where the shlex-quoted
+    reconstruction would read as nested quote noise. The executed and stored
+    command always comes from :func:`_reconstruct_command`.
+    """
+    tokens = list(parts)
+    if tokens and tokens[0] == "--":
+        tokens = tokens[1:]
+    return " ".join(tokens)
 
 
 def main(argv: Optional[List[str]] = None) -> int:

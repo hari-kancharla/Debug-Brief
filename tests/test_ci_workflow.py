@@ -16,8 +16,8 @@ def test_ci_workflow_basic_structure():
     # Triggers
     assert "pull_request" in text
     assert "branches: [main]" in text
-    # Python matrix versions
-    for version in ["3.10", "3.11", "3.12"]:
+    # Python matrix versions: the floor (3.9) and the full advertised range.
+    for version in ["3.9", "3.10", "3.11", "3.12", "3.13"]:
         assert version in text
     # Core steps
     assert "actions/checkout@" in text

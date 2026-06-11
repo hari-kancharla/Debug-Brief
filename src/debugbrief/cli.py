@@ -7,6 +7,7 @@ Commands:
     debugbrief run   "<command>"
     debugbrief redo  [--timeout N] [--no-redact]
     debugbrief end   [--mode pr|handoff|incident] [--format md|json|both] [--stdout]
+    debugbrief cancel [--yes]
     debugbrief status
     debugbrief doctor [--fix]
     debugbrief last
@@ -176,6 +177,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_end.set_defaults(func=cmd_end)
+
+    # cancel -------------------------------------------------------------
+    p_cancel = subparsers.add_parser(
+        "cancel",
+        help="Discard the active session without writing a report.",
+    )
+    p_cancel.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the confirmation prompt.",
+    )
+    p_cancel.set_defaults(func=cmd_cancel)
 
     # status -------------------------------------------------------------
     p_status = subparsers.add_parser("status", help="Show the active session status.")
@@ -451,6 +464,28 @@ def cmd_end(args: argparse.Namespace) -> int:
     info(f"  session:   {manager.paths.session_file(session.session_id)}")
     if args.to_stdout:
         sys.stdout.write(render_report(session, args.mode))
+    return 0
+
+
+def cmd_cancel(args: argparse.Namespace) -> int:
+    manager = _manager()
+    session = manager.load_active()
+    if session is None:
+        eprint("No active DebugBrief session to cancel.")
+        return 1
+
+    if not args.yes:
+        try:
+            answer = input(f"Discard active session '{session.title}'? [y/N] ")
+        except EOFError:
+            # No stdin to answer with (e.g. a pipe): treat as a decline.
+            answer = ""
+        if answer.strip().lower() != "y":
+            eprint("Aborted; the session is still active.")
+            return 1
+
+    manager.cancel()
+    eprint(f"Discarded session '{session.title}' (no report written).")
     return 0
 
 

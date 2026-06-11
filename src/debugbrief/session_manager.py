@@ -263,6 +263,19 @@ class SessionManager:
         self._clear_active_pointer()
         return session
 
+    def cancel(self) -> Session:
+        """Discard the active session without writing a report.
+
+        The session file is kept on disk with status ABANDONED, so nothing is
+        silently deleted; it simply never becomes a brief.
+        """
+        session = self.require_active("cancel the session")
+        session.status = SessionStatus.ABANDONED.value
+        session.timestamps.end = now_iso8601()
+        self.save_session(session)
+        self._clear_active_pointer()
+        return session
+
     # Status ------------------------------------------------------------------
     def build_status(self) -> Dict[str, Any]:
         """Return a structured status payload for the CLI to render."""

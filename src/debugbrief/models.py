@@ -17,6 +17,7 @@ class SessionStatus(str, Enum):
     ACTIVE = "ACTIVE"
     COMPLETED = "COMPLETED"
     INTERRUPTED = "INTERRUPTED"
+    ABANDONED = "ABANDONED"
 
 
 class EventType(str, Enum):

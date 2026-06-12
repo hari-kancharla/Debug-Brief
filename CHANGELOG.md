@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-06-11
+
+### Added
+
+- Recognition for today's test runners: vitest, bun test, deno test,
+  node --test, make test and make check, tox, unittest, dotnet test, ctest,
+  phpunit, mix test, and swift test join the existing table. Wrapped
+  invocations such as `npx vitest` or `python -m unittest` match the same way.
+- `run --verify` (also on `redo`) declares an unrecognized command, such as a
+  custom test script, as a check. It counts as verification only when it
+  really exits 0; a failing declared check stays a failure and feeds the
+  reproduce line and the red-to-green window. On a recognized runner the flag
+  is a no-op, and a redo of a declared check inherits it automatically.
+- `debugbrief preview [--mode pr|handoff|incident]` prints the report for the
+  active session to stdout without ending the session, writing a file, or
+  modifying anything; the output carries a one-line preview banner.
+- Sample handoff and incident reports under `examples/`, generated with the
+  tool itself from realistic sessions.
+
+### Changed
+
+- The README documents the recognized runner table, points custom scripts at
+  `--verify`, and summarizes what redaction does and does not catch.
+
 ## [1.1.0] - 2026-06-11
 
 ### Added

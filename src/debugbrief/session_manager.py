@@ -263,6 +263,20 @@ class SessionManager:
         self._clear_active_pointer()
         return session
 
+    def preview(self, mode: str) -> str:
+        """Render a report for the active session without mutating anything.
+
+        Works on a deep copy (via the dict round trip), so the live session
+        keeps its status, timestamps, and file exactly as they are; no report
+        file is written. The summary is finalized on the copy only.
+        """
+        from .reporters import render_report  # local import avoids a cycle
+
+        session = self.require_active("preview the report")
+        copy = Session.from_dict(session.to_dict())
+        self._finalize_summary(copy)
+        return render_report(copy, mode)
+
     def cancel(self) -> Session:
         """Discard the active session without writing a report.
 

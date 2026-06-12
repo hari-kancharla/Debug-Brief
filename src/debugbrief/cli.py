@@ -5,7 +5,8 @@ Commands:
     debugbrief note  <text ...>
     debugbrief run   [--shell] [--timeout N] [--no-redact] -- <command ...>
     debugbrief run   "<command>"
-    debugbrief redo  [--timeout N] [--no-redact]
+    debugbrief redo  [--timeout N] [--no-redact] [--verify]
+    debugbrief preview [--mode pr|handoff|incident]
     debugbrief end   [--mode pr|handoff|incident] [--format md|json|both] [--stdout]
     debugbrief cancel [--yes]
     debugbrief status
@@ -147,7 +148,28 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Store captured output verbatim, without secret redaction.",
     )
+    p_redo.add_argument(
+        "--verify",
+        action="store_true",
+        help=(
+            "Declare the re-run a check (see run --verify). Inherited "
+            "automatically when the original run was declared with --verify."
+        ),
+    )
     p_redo.set_defaults(func=cmd_redo)
+
+    # preview ------------------------------------------------------------
+    p_preview = subparsers.add_parser(
+        "preview",
+        help="Print the report for the active session without ending it.",
+    )
+    p_preview.add_argument(
+        "--mode",
+        default="pr",
+        choices=VALID_MODES,
+        help="Report style to preview (default pr).",
+    )
+    p_preview.set_defaults(func=cmd_preview)
 
     # end ----------------------------------------------------------------
     p_end = subparsers.add_parser(
@@ -466,6 +488,19 @@ def cmd_end(args: argparse.Namespace) -> int:
     info(f"  session:   {manager.paths.session_file(session.session_id)}")
     if args.to_stdout:
         sys.stdout.write(render_report(session, args.mode))
+    return 0
+
+
+def cmd_preview(args: argparse.Namespace) -> int:
+    manager = _manager()
+    markdown = manager.preview(args.mode)
+    banner = "_Preview of an active session. Run debugbrief end to finalize._"
+    lines = markdown.splitlines()
+    if lines and lines[0].startswith("# "):
+        rendered = lines[0] + "\n\n" + banner + "\n" + "\n".join(lines[1:]) + "\n"
+    else:  # pragma: no cover - reports always start with a title
+        rendered = banner + "\n\n" + markdown
+    sys.stdout.write(rendered)
     return 0
 
 

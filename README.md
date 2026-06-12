@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/harihkk/Debug-Brief/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/harihkk/Debug-Brief/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/debugbrief?cacheSeconds=3600)](https://pypi.org/project/debugbrief/)
 
+![A failing test streams live, the fix lands, redo passes, and the generated brief appears](https://raw.githubusercontent.com/harihkk/Debug-Brief/main/docs/demo.gif)
+
 Turn a debugging session into an honest markdown brief for a PR, a handoff, or an
 incident note.
 

@@ -8,6 +8,6 @@ It uses only the Python standard library and native ``git``. No AI, no
 telemetry, no cloud sync, no background daemon.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 __all__ = ["__version__"]

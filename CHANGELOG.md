@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-06-11
+
 ### Added
 
 - Derived reports. Reports now reconstruct the investigation from recorded
@@ -123,7 +125,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI now also runs Python 3.9 (the supported floor) and 3.13, so the advertised
   range is continuously verified on Linux and macOS.
 
-### Notes on decisions not fully specified
+### Design notes
 
 - The per-command snapshot uses two lightweight git calls (`rev-parse --short`
   and `status --porcelain`) rather than literally one, so it can record both the

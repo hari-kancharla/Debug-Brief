@@ -47,6 +47,19 @@ _TEST_PATTERNS: List[Tuple[List[str], str]] = [
     (["mvn", "test"], "maven"),
     (["gradle", "test"], "gradle"),
     (["./gradlew", "test"], "gradle"),
+    (["vitest"], "vitest"),
+    (["bun", "test"], "bun"),
+    (["deno", "test"], "deno"),
+    (["node", "--test"], "node"),
+    (["make", "test"], "make"),
+    (["make", "check"], "make"),
+    (["tox"], "tox"),
+    (["unittest"], "unittest"),
+    (["dotnet", "test"], "dotnet"),
+    (["ctest"], "ctest"),
+    (["phpunit"], "phpunit"),
+    (["mix", "test"], "mix"),
+    (["swift", "test"], "swift"),
 ]
 
 # (pattern_tokens, tool, category) for build/lint/typecheck detection.
@@ -120,12 +133,18 @@ def classify_command(
     exit_code: Optional[int],
     timed_out: bool = False,
     errored: bool = False,
+    force_verification: bool = False,
 ) -> CommandClassification:
     """Classify a command into test / verification categories.
 
     A command is verification-worthy only if it is a recognized test command
     that exited 0, or a recognized build/lint/typecheck command that exited 0.
     Pass/fail is derived strictly from the real exit code.
+
+    ``force_verification`` lets the user declare an unrecognized command (a
+    custom test script, ``make integration``) as a check. It applies only when
+    no pattern matched; a recognized runner always wins. The honesty rule is
+    unchanged: ``is_verification`` is True only on a real exit 0.
     """
     tokens = _tokenize(command)
     status = status_from_outcome(exit_code, timed_out, errored)
@@ -147,6 +166,14 @@ def classify_command(
             is_test=False,
             is_verification=passed,
             tool=tool,
+            status=status,
+        )
+
+    if force_verification:
+        return CommandClassification(
+            is_test=False,
+            is_verification=passed,
+            tool="custom",
             status=status,
         )
 

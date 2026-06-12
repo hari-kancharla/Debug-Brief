@@ -48,6 +48,7 @@ def test_run_autostarts_session(paths, capsys):
             shell=False,
             timeout=30,
             no_redact=False,
+            verify=False,
         )
     )
     assert rc == 0

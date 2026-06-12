@@ -119,6 +119,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_run.add_argument(
+        "--verify",
+        action="store_true",
+        help=(
+            "Declare this command a check (custom test script, make "
+            "integration). It counts as verification when it exits 0; a "
+            "recognized test runner is classified automatically and wins."
+        ),
+    )
+    p_run.add_argument(
         "command",
         nargs=argparse.REMAINDER,
         help=(
@@ -395,6 +404,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         use_shell=args.shell,
         timeout_seconds=args.timeout,
         redact=not args.no_redact,
+        force_verification=args.verify,
     )
     manager.record_command(result)
     _print_command_outcome(result, args.timeout)
@@ -455,6 +465,10 @@ def cmd_redo(args: argparse.Namespace) -> int:
         )
         return 1
 
+    # A redo of a command originally declared with --verify stays a declared
+    # check without retyping the flag; an explicit --verify also works.
+    inherit_verify = last.classification.tool == "custom"
+
     eprint(f"$ {last.command}  (redo)")
     result = run_command(
         command=last.command,
@@ -462,6 +476,7 @@ def cmd_redo(args: argparse.Namespace) -> int:
         use_shell=last.used_shell,
         timeout_seconds=args.timeout,
         redact=not args.no_redact,
+        force_verification=args.verify or inherit_verify,
     )
     manager.record_command(result)
     _print_command_outcome(result, args.timeout)

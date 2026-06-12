@@ -87,6 +87,7 @@ def run_command(
     stderr_limit: int = DEFAULT_STDERR_PREVIEW_LIMIT,
     redact: bool = True,
     echo: bool = True,
+    force_verification: bool = False,
 ) -> RunResult:
     """Run ``command`` from ``cwd`` and capture a :class:`CommandData`.
 
@@ -101,6 +102,9 @@ def run_command(
     By default captured output and the command string are passed through
     best-effort secret redaction before they are returned, so raw secrets never
     reach the session file. Pass ``redact=False`` to store the raw text.
+
+    ``force_verification`` marks an unrecognized command as a declared check
+    (tool ``custom``); pass/fail honesty is unaffected.
     """
     started_at = now_iso8601()
     start_monotonic = time.monotonic()
@@ -200,6 +204,7 @@ def run_command(
         exit_code=exit_code,
         timed_out=timed_out,
         errored=errored,
+        force_verification=force_verification,
     )
 
     stored_command = command

@@ -63,11 +63,19 @@ The resulting report leads with a derived one-liner like:
   and a per-command git snapshot, then returns the command's own exit code.
 - Pass/fail comes only from the exit code. A command counts as "verified" only if
   a recognized test/build/lint/typecheck command actually exited `0`.
+- Recognized runners include pytest, unittest, tox, vitest, jest, bun test,
+  deno test, node --test, npm/pnpm/yarn test, go test, cargo test, make
+  test/check, dotnet test, ctest, phpunit, mix test, swift test, rspec, and
+  mvn/gradle test. For custom scripts, declare the check yourself:
+  `debugbrief run --verify -- ./scripts/test.sh`.
 - `end` derives the report from those events: the red-to-green window, the
   reproduce/verify commands, a timeline, the observed error verbatim, and what
   was ruled out. Empty sections are omitted, never padded.
-- Secret-like values in captured output are replaced with `[redacted]` before
-  anything is written to disk (best effort; `--no-redact` opts out).
+- Redaction runs before anything reaches disk and catches common shapes:
+  sensitive `name=value` pairs, bearer and authorization headers, OpenAI/AWS/
+  GitHub style keys, connection-string passwords, and PEM private key blocks,
+  each replaced with `[redacted]`. Best effort by design; `--no-redact` opts
+  out per command.
 
 ## Commands
 
@@ -77,6 +85,7 @@ The resulting report leads with a derived one-liner like:
 | `note <text ...>` | Record a note (quoting optional) |
 | `run -- <command ...>` | Execute and capture a command |
 | `redo` | Re-run the last captured command |
+| `preview [--mode ...]` | Print the report without ending the session |
 | `end [--mode pr\|handoff\|incident]` | Finalize and write a report (default `pr`) |
 | `cancel [--yes]` | Discard the active session, no report |
 | `status` | Show the active session |

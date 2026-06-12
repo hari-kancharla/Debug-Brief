@@ -8,6 +8,7 @@ debugbrief start "<session title>"            Start a session
 debugbrief note  <text ...>                   Record a note (quoting optional)
 debugbrief run   -- <command ...>             Execute and capture a command
 debugbrief redo                               Re-run the last captured command
+debugbrief preview [--mode pr|handoff|incident] Print the report without ending
 debugbrief end   [--mode pr|handoff|incident] Finalize and write a report
 debugbrief cancel [--yes]                     Discard the active session
 debugbrief status                             Show the active session
@@ -88,6 +89,23 @@ debugbrief run --shell "pytest -q | tee out.txt"
 
 If no session is active, `run` auto-starts one first.
 
+### Declaring custom checks with --verify
+
+Recognized test runners (pytest, vitest, bun test, deno test, node --test, go
+test, cargo test, jest, npm/pnpm/yarn test, make test/check, tox, unittest,
+dotnet test, ctest, phpunit, mix test, swift test, rspec, mvn/gradle test) are
+classified automatically. For everything else, `--verify` declares the command
+a check:
+
+```bash
+debugbrief run --verify -- ./scripts/integration.sh
+```
+
+A declared check counts as verification only when it actually exits 0; a
+failing one is recorded as a failed check, which is exactly what feeds the
+reproduce line and the red-to-green window. On a recognized runner the flag is
+a no-op: the automatic classification wins.
+
 ### Timeouts
 
 The default timeout is 300 seconds. Override with `--timeout`:
@@ -130,12 +148,28 @@ debugbrief redo                                            # same test again
 
 `redo` re-executes the exact stored command with the same shell mode it was
 originally run with, streams its output live, and returns the command's own
-exit code, just like `run`. It accepts `--timeout` and `--no-redact`.
+exit code, just like `run`. It accepts `--timeout`, `--no-redact`, and
+`--verify`. A command originally declared with `run --verify` stays a declared
+check on redo automatically; no need to retype the flag.
 
 If there is no active session, or the session has no captured commands yet,
 `redo` says so and exits 1. If the stored command itself had a secret masked
 (it contains the `[redacted]` placeholder), `redo` refuses to re-run it, since
 the placeholder is not the real command.
+
+## preview
+
+Prints the report for the active session to stdout without ending the session
+or writing any file. Useful mid-session to check whether you have captured
+enough before finalizing. `--mode` works as on `end` (default `pr`).
+
+```bash
+debugbrief preview
+debugbrief preview --mode handoff
+```
+
+The output carries a banner line marking it as a preview of an active session.
+The session is untouched: same status, same file, no report written.
 
 ## end
 

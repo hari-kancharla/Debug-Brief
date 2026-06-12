@@ -1,6 +1,6 @@
 # DebugBrief
 
-[![CI](https://github.com/harihkk/Debug-Brief/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/harihkk/Debug-Brief/actions/workflows/ci.yml)
+[![CI](https://github.com/harihkk/Debug-Brief/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/harihkk/Debug-Brief/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/debugbrief)](https://pypi.org/project/debugbrief/)
 
 Turn a debugging session into an honest markdown brief for a PR, a handoff, or an
 incident note.
@@ -18,8 +18,11 @@ See a real generated report: [examples/sample-pr.md](examples/sample-pr.md).
 ## Install
 
 ```bash
-pip install -e .
+pip install debugbrief
 ```
+
+Or from a clone: `pip install -e .`. Needs Python 3.9+ and native `git` on a
+Unix-like system (Linux, macOS, BSD).
 
 ## Quickstart
 

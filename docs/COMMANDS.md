@@ -115,6 +115,12 @@ string:
 debugbrief run --shell "pytest -q | tee out.txt"
 ```
 
+A shell **pipeline** is a special case for honesty: its exit status reflects only
+the last stage, not the check. So a recognized check inside a pipeline (the
+example above) is recorded as a command but **not** treated as a verification,
+and a warning is attached. Run the check without a pipeline, or set the shell's
+`pipefail`, for a reliable pass/fail.
+
 If no session is active, `run` auto-starts one first.
 
 ### Live output
@@ -384,8 +390,9 @@ gh pr comment --body-file "$(ls -t .debugbrief/reports/*-pr.md | head -1)"
 ## Project configuration
 
 An optional `.debugbrief.toml` at the project root sets defaults so you do not
-retype the same flags. It is entirely optional, and a missing or malformed file
-is ignored. Only these keys are read:
+retype the same flags. It is entirely optional: a missing file is ignored, and
+lines that cannot be parsed are skipped rather than failing a command. Only
+these keys are read:
 
 ```toml
 default_mode    = "pr"        # default for end/preview (pr, handoff, incident)

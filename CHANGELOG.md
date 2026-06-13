@@ -21,8 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   brief: the summary, changed files, and verification stay visible while the
   metadata and timeline fold into a collapsible section. The default stays full.
 - An optional `.debugbrief.toml` at the project root sets defaults for the report
-  mode, the run timeout, and the report detail. An explicit flag always wins, and
-  a missing or malformed file is ignored. Standard library only, no dependencies.
+  mode, the run timeout, and the report detail. An explicit flag always wins;
+  recognized keys are read and lines that cannot be parsed are skipped, the same
+  way on every supported Python. Standard library only, no dependencies.
 
 ### Fixed
 
@@ -94,8 +95,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   name that only appears as an argument (`echo pytest`) is no longer treated as
   a check, a path like `.venv/bin/pytest` is recognized by its basename, and
   common wrappers (`python -m`, `uv`/`poetry`/`pdm`/`hatch`/`rye run`, `bundle
-  exec`, `npx`, `pnpm`/`yarn exec`) and their options are unwrapped to the inner
-  command.
+  exec`, `npx`, `pnpm`/`yarn exec`) are unwrapped to the inner command. A wrapper
+  option that takes a value (`uv run --with pytest pytest`,
+  `uv run --project pkg pytest`) is consumed with its value, and an option's
+  value is never mistaken for the command; a long boolean flag before the command
+  (`npx --yes jest`) is not auto-recognized, so declare it with `--verify`.
+- A recognized check run as a shell pipeline (`run --shell "pytest | tee out"`)
+  is no longer recorded as a passed verification: a pipeline's exit status
+  reflects only its last stage, not the check, so it is kept as a command with a
+  warning rather than treated as a pass/fail signal.
 - The session title and warning messages are redacted before reaching disk, the
   same as command output. Auto-start redacts the full command before truncating
   it, so a secret cannot survive truncation into the title.

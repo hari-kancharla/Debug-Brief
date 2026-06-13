@@ -28,7 +28,10 @@ def _ts(offset_seconds):
     return to_iso8601(NOW + timedelta(seconds=offset_seconds))
 
 
-def _cmd(command, status, ts, exit_code, changed_files=None, stderr="", stdout="", **cls):
+def _cmd(
+    command, status, ts, exit_code, changed_files=None, stderr="", stdout="",
+    invocation_cwd=None, **cls,
+):
     data = CommandData(
         command=command,
         started_at=ts,
@@ -39,6 +42,7 @@ def _cmd(command, status, ts, exit_code, changed_files=None, stderr="", stdout="
         stdout_preview=stdout,
         classification=CommandClassification(status=status, **cls),
         git_changed_files=list(changed_files or []),
+        invocation_cwd=invocation_cwd,
     )
     return Event.command(data, ts)
 
@@ -167,6 +171,21 @@ def test_currently_failing_reflects_latest_outcome_not_history():
     # The latest run passed, so nothing is currently failing, even though a
     # historical failure exists.
     assert ctx.currently_failing == []
+
+
+def test_red_to_green_requires_the_same_directory():
+    # The same command string run in two different directories (a monorepo) is
+    # not the same check; a pass in one package is not the other's fix.
+    s = _session()
+    s.events.append(
+        _cmd("pytest", COMMAND_STATUS_FAILED, _ts(0), 1, is_test=True, tool="pytest",
+             invocation_cwd="/repo/packages/a")
+    )
+    s.events.append(
+        _cmd("pytest", COMMAND_STATUS_PASSED, _ts(1), 0, is_test=True, is_verification=True,
+             tool="pytest", invocation_cwd="/repo/packages/b")
+    )
+    assert derive(s).red_to_green is None
 
 
 def test_red_to_green_requires_the_same_command():

@@ -117,6 +117,23 @@ def _is_python(name: str) -> bool:
     )
 
 
+def _skip_wrapper_options(toks: List[str]) -> List[str]:
+    """Drop a wrapper's own option flags so the wrapped command surfaces.
+
+    Wrappers accept options before the command (``uv run --with pytest pytest``,
+    ``npx --yes jest``). Leading ``-``-prefixed tokens are dropped; a ``--``
+    separator is dropped and ends option processing. A flag's value cannot be
+    told apart from the command in general, so each flag is dropped on its own,
+    which recognizes both of the above without guessing arities.
+    """
+    while toks and toks[0].startswith("-"):
+        end_of_options = toks[0] == "--"
+        toks = toks[1:]
+        if end_of_options:
+            break
+    return toks
+
+
 def _effective_tokens(tokens: List[str]) -> List[str]:
     """Resolve a command to its effective ``[executable, args...]`` form.
 
@@ -138,16 +155,16 @@ def _effective_tokens(tokens: List[str]) -> List[str]:
             toks = toks[2:]
             continue
         if head in _RUN_WRAPPERS and len(toks) >= 2 and toks[1] == "run":
-            toks = toks[2:]
+            toks = _skip_wrapper_options(toks[2:])
             continue
         if head == "bundle" and len(toks) >= 2 and toks[1] == "exec":
-            toks = toks[2:]
+            toks = _skip_wrapper_options(toks[2:])
             continue
         if head in ("npx", "bunx") and len(toks) >= 2:
-            toks = toks[1:]
+            toks = _skip_wrapper_options(toks[1:])
             continue
         if head in _EXEC_WRAPPERS and len(toks) >= 2 and toks[1] in ("exec", "dlx"):
-            toks = toks[2:]
+            toks = _skip_wrapper_options(toks[2:])
             continue
         break
     if toks:
@@ -282,6 +299,7 @@ class ReportCommand:
     stdout_truncated: bool = False
     stderr_truncated: bool = False
     stderr_preview: str = ""
+    invocation_cwd: Optional[str] = None
 
     @property
     def failed(self) -> bool:
@@ -324,7 +342,12 @@ def build_report_commands(
 
         merged = False
         for existing in results:
-            if existing.command != command_text:
+            # A command is the same check only when run from the same directory;
+            # the same string in two directories is two different checks.
+            if (
+                existing.command != command_text
+                or existing.invocation_cwd != data.invocation_cwd
+            ):
                 continue
             try:
                 gap = ts_seconds - parse_iso8601(existing.last_timestamp).timestamp()
@@ -361,6 +384,7 @@ def build_report_commands(
                 stdout_truncated=data.stdout_truncated,
                 stderr_truncated=data.stderr_truncated,
                 stderr_preview=data.stderr_preview,
+                invocation_cwd=data.invocation_cwd,
             )
         )
 

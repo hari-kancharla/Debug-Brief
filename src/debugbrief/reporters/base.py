@@ -87,12 +87,13 @@ def build_context(session: Session) -> ReportContext:
 
     # "Currently failing" is judged by each command's latest outcome, not by any
     # historical failure: a check that failed and was later fixed is not failing.
-    latest_by_command: Dict[str, ReportCommand] = {}
+    latest_by_check: Dict[Tuple[str, Optional[str]], ReportCommand] = {}
     for rc in report_commands:
-        prev = latest_by_command.get(rc.command)
+        key = (rc.command, rc.invocation_cwd)
+        prev = latest_by_check.get(key)
         if prev is None or rc.last_timestamp > prev.last_timestamp:
-            latest_by_command[rc.command] = rc
-    currently_failing = [rc for rc in latest_by_command.values() if rc.failed]
+            latest_by_check[key] = rc
+    currently_failing = [rc for rc in latest_by_check.values() if rc.failed]
 
     notes: List[Tuple[str, str]] = []
     for event in session.note_events():

@@ -106,6 +106,10 @@ def test_classify_anchors_to_executable_not_arguments():
     assert filters.classify_command("npx jest", exit_code=0).tool == "jest"
     # A leading environment assignment is skipped.
     assert filters.classify_command("CI=1 pytest", exit_code=0).tool == "pytest"
+    # A wrapper's own options are skipped before the inner command.
+    assert filters.classify_command("uv run --with pytest pytest", 0).tool == "pytest"
+    assert filters.classify_command("npx --yes jest", exit_code=0).tool == "jest"
+    assert filters.classify_command("poetry run -q pytest", exit_code=0).tool == "pytest"
 
 
 def test_classify_unknown_command():

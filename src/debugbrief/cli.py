@@ -398,18 +398,20 @@ def cmd_run(args: argparse.Namespace) -> int:
     # The command's own stdout/stderr stream through live while it runs.
     # DebugBrief's status lines all go to stderr so the wrapped command's
     # stdout stays clean for piping.
+    # Run from the directory the user is actually in, not the repo root, so
+    # commands behave the same as typing them directly (important in monorepos
+    # and subdirectories). State still lives at the repo root.
+    invocation_cwd = Path.cwd()
     eprint(f"$ {command_str}")
     result = run_command(
         command=command_str,
-        # Run from the directory the user is actually in, not the repo root, so
-        # commands behave the same as typing them directly (important in
-        # monorepos and subdirectories). State still lives at the repo root.
-        cwd=Path.cwd(),
+        cwd=invocation_cwd,
         use_shell=args.shell,
         timeout_seconds=args.timeout,
         redact=not args.no_redact,
         force_verification=args.verify,
     )
+    result.command_data.invocation_cwd = str(invocation_cwd)
     with _deferred_sigint():
         manager.record_command(result)
     _print_command_outcome(result, args.timeout)
@@ -480,15 +482,17 @@ def cmd_redo(args: argparse.Namespace) -> int:
     # check without retyping the flag; an explicit --verify also works.
     inherit_verify = last.classification.tool == "custom"
 
+    invocation_cwd = Path.cwd()
     eprint(f"$ {last.command}  (redo)")
     result = run_command(
         command=last.command,
-        cwd=Path.cwd(),
+        cwd=invocation_cwd,
         use_shell=last.used_shell,
         timeout_seconds=args.timeout,
         redact=not args.no_redact,
         force_verification=args.verify or inherit_verify,
     )
+    result.command_data.invocation_cwd = str(invocation_cwd)
     with _deferred_sigint():
         manager.record_command(result)
     _print_command_outcome(result, args.timeout)

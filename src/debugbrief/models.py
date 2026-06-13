@@ -137,6 +137,9 @@ class CommandData:
     # older session files simply omit these).
     git_head: Optional[str] = None
     git_changed_files: List[str] = field(default_factory=list)
+    # Directory the command actually ran in (the user's cwd). Used to tell apart
+    # same-named checks run in different directories. None for older sessions.
+    invocation_cwd: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -154,6 +157,7 @@ class CommandData:
             "redacted": self.redacted,
             "git_head": self.git_head,
             "git_changed_files": list(self.git_changed_files),
+            "invocation_cwd": self.invocation_cwd,
         }
 
     @classmethod
@@ -175,6 +179,7 @@ class CommandData:
             redacted=bool(data.get("redacted", False)),
             git_head=data.get("git_head"),
             git_changed_files=list(data.get("git_changed_files", [])),
+            invocation_cwd=data.get("invocation_cwd"),
         )
 
 

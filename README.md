@@ -15,7 +15,7 @@ invents a root cause and never claims a test result you did not get.
 It is local-first and dependency-free: standard library plus native `git`, no
 network, no AI, no telemetry. Unix-like systems only.
 
-See a real generated report: [examples/sample-pr.md](examples/sample-pr.md).
+See a real generated report: [examples/sample-pr.md](https://github.com/harihkk/Debug-Brief/blob/main/examples/sample-pr.md).
 
 ## Install
 
@@ -94,7 +94,7 @@ The resulting report leads with a derived one-liner like:
 | `last` / `open` | Find or open the most recent report |
 | `list` / `show <id>` | Browse recorded sessions |
 
-Full detail, flags, and the report modes: [docs/COMMANDS.md](docs/COMMANDS.md).
+Full detail, flags, and the report modes: [docs/COMMANDS.md](https://github.com/harihkk/Debug-Brief/blob/main/docs/COMMANDS.md).
 
 Post a brief straight to a PR (GitHub CLI optional):
 
@@ -129,4 +129,4 @@ pytest
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/harihkk/Debug-Brief/blob/main/LICENSE).

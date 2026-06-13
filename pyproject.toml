@@ -11,7 +11,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{ name = "DebugBrief" }]
+authors = [{ name = "Hari Krishna Kancharla" }]
 keywords = ["cli", "debugging", "pull-request", "handoff", "incident", "report"]
 classifiers = [
     "Development Status :: 4 - Beta",

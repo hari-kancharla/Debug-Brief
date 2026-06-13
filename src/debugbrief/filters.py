@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from .models import (
+    COMMAND_STATUS_BROKEN_PIPE,
     COMMAND_STATUS_ERROR,
     COMMAND_STATUS_FAILED,
     COMMAND_STATUS_INTERRUPTED,
@@ -122,10 +123,13 @@ def status_from_outcome(
     timed_out: bool,
     errored: bool,
     interrupted: bool = False,
+    broken_pipe: bool = False,
 ) -> str:
     """Map an execution outcome to a command status string."""
     if interrupted:
         return COMMAND_STATUS_INTERRUPTED
+    if broken_pipe:
+        return COMMAND_STATUS_BROKEN_PIPE
     if timed_out:
         return COMMAND_STATUS_TIMED_OUT
     if errored:
@@ -142,6 +146,7 @@ def classify_command(
     errored: bool = False,
     force_verification: bool = False,
     interrupted: bool = False,
+    broken_pipe: bool = False,
 ) -> CommandClassification:
     """Classify a command into test / verification categories.
 
@@ -155,7 +160,9 @@ def classify_command(
     unchanged: ``is_verification`` is True only on a real exit 0.
     """
     tokens = _tokenize(command)
-    status = status_from_outcome(exit_code, timed_out, errored, interrupted)
+    status = status_from_outcome(
+        exit_code, timed_out, errored, interrupted, broken_pipe
+    )
     passed = status == COMMAND_STATUS_PASSED
 
     test_tool = _match_test(tokens)

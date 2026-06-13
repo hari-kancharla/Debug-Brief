@@ -22,6 +22,7 @@ run and note auto-start a session if none is active.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shlex
@@ -406,7 +407,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         redact=not args.no_redact,
         force_verification=args.verify,
     )
-    manager.record_command(result)
+    with _deferred_sigint():
+        manager.record_command(result)
     _print_command_outcome(result, args.timeout)
     return result.propagated_exit_code
 
@@ -418,6 +420,8 @@ def _print_command_outcome(result: RunResult, timeout_seconds: int) -> None:
         eprint(f"  error:     {result.error_message}")
     elif result.interrupted:
         eprint("  status:    interrupted (recorded)")
+    elif result.broken_pipe:
+        eprint("  status:    stopped, downstream pipe closed (recorded)")
     elif result.timed_out:
         eprint(f"  status:    timed out after {timeout_seconds}s (recorded)")
     else:
@@ -482,7 +486,8 @@ def cmd_redo(args: argparse.Namespace) -> int:
         redact=not args.no_redact,
         force_verification=args.verify or inherit_verify,
     )
-    manager.record_command(result)
+    with _deferred_sigint():
+        manager.record_command(result)
     _print_command_outcome(result, args.timeout)
     return result.propagated_exit_code
 
@@ -859,6 +864,40 @@ def _plain_command_text(parts: List[str]) -> str:
     return " ".join(tokens)
 
 
+def _silence_stdout() -> None:
+    """Point stdout at devnull so a later flush on a broken pipe cannot raise.
+
+    Used when the consumer of our stdout has closed the pipe, so neither the
+    explicit flush below nor the interpreter's implicit flush at exit raises a
+    second error (which CPython would otherwise turn into exit code 120).
+    """
+    with contextlib.suppress(OSError, ValueError):
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+
+
+@contextlib.contextmanager
+def _deferred_sigint():
+    """Block SIGINT for the duration of a small atomic critical section.
+
+    Persisting a recorded command rewrites the session file via an atomic
+    replace. If a Ctrl-C lands in the middle of that write the event can be lost,
+    so SIGINT is blocked while the write happens and delivered (as the usual
+    KeyboardInterrupt) immediately afterward. Only effective on the main thread;
+    a no-op elsewhere.
+    """
+    import signal
+    import threading
+
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+    try:
+        yield
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     if not is_supported_platform():
         eprint(
@@ -877,20 +916,29 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     try:
-        return args.func(args)
+        code = args.func(args)
     except SessionError as exc:
         eprint(f"error: {exc}")
         return 1
     except BrokenPipeError:
         # The consumer of our stdout closed the pipe early, e.g.
-        # `debugbrief list | head -1`. Point stdout at devnull so the
-        # interpreter does not raise a second error while flushing on exit,
-        # and return the Unix convention for SIGPIPE (128 + 13).
-        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        # `debugbrief list | head -1`. Return the Unix convention for SIGPIPE
+        # (128 + 13) and silence stdout so exit does not raise again.
+        _silence_stdout()
         return 141
     except KeyboardInterrupt:  # pragma: no cover
         eprint("Interrupted.")
         return 130
+
+    # Flush now so a broken downstream pipe surfaces here, where it can be turned
+    # into a clean 141, rather than during the interpreter's shutdown flush
+    # (which CPython reports as 120 with an "Exception ignored" message).
+    try:
+        sys.stdout.flush()
+    except BrokenPipeError:
+        _silence_stdout()
+        return 141 if code == 0 else code
+    return code
 
 
 if __name__ == "__main__":  # pragma: no cover

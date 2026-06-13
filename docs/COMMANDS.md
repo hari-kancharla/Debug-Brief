@@ -48,6 +48,13 @@ debugbrief note remember to check the lock ordering
 debugbrief note "Token refresh fails when two requests retry at once."
 ```
 
+A note that begins with a dash would be read as a flag, so quote it or put
+`--` first:
+
+```bash
+debugbrief note -- --force was the wrong call here
+```
+
 If no session is active, `note` auto-starts one first.
 
 ## run

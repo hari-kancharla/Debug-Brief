@@ -212,6 +212,22 @@ def test_no_changes_omits_modified_files():
     assert "Just thinking out loud." in report
 
 
+def test_compact_pr_report_collapses_heavy_sections():
+    session = _rich_session()
+    full = render_report(session, "pr", detail="full")
+    compact = render_report(session, "pr", detail="compact")
+    # The default is unchanged: no collapsible section.
+    assert "<details>" not in full
+    # Compact keeps the scannable parts visible and folds the rest away.
+    assert "<details>" in compact
+    head = compact.split("<details>")[0]
+    assert "## Summary" in head  # the derived one-liner stays up top
+    assert "## Session metadata" not in head  # metadata is folded in
+    assert "## Session metadata" in compact  # but still present, just collapsed
+    # The visible (non-collapsed) part is much shorter than the full report.
+    assert len(head) < len(full)
+
+
 def test_failed_command_is_listed_as_a_failed_attempt():
     report = render_report(_rich_session(), "pr")
     # The failing pytest run is surfaced under "Failed attempts" (a failed

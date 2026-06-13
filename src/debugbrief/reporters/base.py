@@ -175,6 +175,7 @@ class BaseReporter:
     def __init__(self, context: ReportContext) -> None:
         self.ctx = context
         self.session = context.session
+        self.detail = "full"  # "full" (default) or "compact"; set by render_report
 
     # Subclasses must implement render().
     def render(self) -> str:  # pragma: no cover - abstract

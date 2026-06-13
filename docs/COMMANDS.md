@@ -244,7 +244,13 @@ Finalizes the session, captures final Git state, and writes a report.
 debugbrief end                  # pr-style report
 debugbrief end --mode handoff
 debugbrief end --mode incident
+debugbrief end --detail compact # shorter PR brief; metadata/timeline collapsed
 ```
+
+`--detail compact` (PR mode) keeps the summary, changed files, and verification
+visible and folds the metadata and timeline into a collapsible section, for a
+shorter brief. The default `--detail full` is unchanged. `preview` accepts the
+same flag.
 
 Choose the output format with `--format` (default `md`):
 

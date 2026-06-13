@@ -184,6 +184,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=VALID_MODES,
         help="Report style to preview (default pr).",
     )
+    p_preview.add_argument(
+        "--detail",
+        choices=["full", "compact"],
+        default="full",
+        help="Report verbosity: full (default), or compact for a shorter PR brief.",
+    )
     p_preview.set_defaults(func=cmd_preview)
 
     # end ----------------------------------------------------------------
@@ -212,6 +218,12 @@ def build_parser() -> argparse.ArgumentParser:
             "written). Informational lines move to stderr, so the output pipes "
             "cleanly: debugbrief end --stdout | gh pr comment --body-file -"
         ),
+    )
+    p_end.add_argument(
+        "--detail",
+        choices=["full", "compact"],
+        default="full",
+        help="Report verbosity: full (default), or compact for a shorter PR brief.",
     )
     p_end.set_defaults(func=cmd_end)
 
@@ -512,7 +524,7 @@ def cmd_redo(args: argparse.Namespace) -> int:
 
 def cmd_end(args: argparse.Namespace) -> int:
     manager = _manager()
-    session = manager.end(args.mode, args.report_format)
+    session = manager.end(args.mode, args.report_format, detail=args.detail)
     # With --stdout the report itself owns stdout; everything informational
     # moves to stderr so the output pipes cleanly.
     info = eprint if args.to_stdout else print
@@ -529,13 +541,13 @@ def cmd_end(args: argparse.Namespace) -> int:
         )
     info(f"  session:   {manager.paths.session_file(session.session_id)}")
     if args.to_stdout:
-        sys.stdout.write(render_report(session, args.mode))
+        sys.stdout.write(render_report(session, args.mode, args.detail))
     return 0
 
 
 def cmd_preview(args: argparse.Namespace) -> int:
     manager = _manager()
-    markdown = manager.preview(args.mode)
+    markdown = manager.preview(args.mode, detail=args.detail)
     banner = "_Preview of an active session. Run debugbrief end to finalize._"
     lines = markdown.splitlines()
     if lines and lines[0].startswith("# "):

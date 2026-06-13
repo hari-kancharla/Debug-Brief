@@ -26,11 +26,17 @@ def _check_mode(mode: str) -> None:
         )
 
 
-def render_report(session: Session, mode: str) -> str:
-    """Render a markdown report for ``session`` in the requested ``mode``."""
+def render_report(session: Session, mode: str, detail: str = "full") -> str:
+    """Render a markdown report for ``session`` in the requested ``mode``.
+
+    ``detail`` is ``"full"`` (default) or ``"compact"``. Compact only affects the
+    PR report, which keeps the scannable parts visible and folds the metadata and
+    timeline into a collapsible section; other modes ignore it.
+    """
     _check_mode(mode)
     context = build_context(session)
     reporter = _reporters()[mode](context)
+    reporter.detail = detail
     return reporter.render()
 
 

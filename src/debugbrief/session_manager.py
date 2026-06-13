@@ -264,7 +264,7 @@ class SessionManager:
             self._write_active_pointer(session)
             return session
 
-    def end(self, mode: str, report_format: str = "md") -> Session:
+    def end(self, mode: str, report_format: str = "md", detail: str = "full") -> Session:
         # Local imports avoid an import cycle with the reporters package.
         import json
 
@@ -305,7 +305,7 @@ class SessionManager:
                 artifacts.append(
                     (
                         self.paths.report_file(session.session_id, mode),
-                        render_report(session, mode),
+                        render_report(session, mode, detail),
                     )
                 )
             if report_format in ("json", "both"):
@@ -323,7 +323,7 @@ class SessionManager:
             self._clear_active_pointer()
             return session
 
-    def preview(self, mode: str) -> str:
+    def preview(self, mode: str, detail: str = "full") -> str:
         """Render a report for the active session without mutating anything.
 
         Works on a deep copy (via the dict round trip), so the live session
@@ -335,7 +335,7 @@ class SessionManager:
         session = self.require_active("preview the report")
         copy = Session.from_dict(session.to_dict())
         self._finalize_summary(copy)
-        return render_report(copy, mode)
+        return render_report(copy, mode, detail)
 
     def cancel(self) -> Session:
         """Discard the active session without writing a report.

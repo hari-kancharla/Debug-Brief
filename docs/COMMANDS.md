@@ -132,7 +132,10 @@ failing one is recorded as a failed check, which is exactly what feeds the
 reproduce line and the red-to-green window. On a recognized runner the flag is
 a no-op: the automatic classification wins.
 
-### Timeouts
+### Timeouts, interrupts, and background processes
+
+The command runs in its own process group, so termination reaches the whole
+tree, not just the immediate process.
 
 The default timeout is 300 seconds. Override with `--timeout`:
 
@@ -140,8 +143,20 @@ The default timeout is 300 seconds. Override with `--timeout`:
 debugbrief run --timeout 600 -- pytest tests/
 ```
 
-On timeout the command is terminated, the event is recorded with status
-`timed_out` and a `null` exit code, and a nonzero code is returned.
+On timeout the whole process group is terminated (SIGTERM then SIGKILL), the
+event is recorded with status `timed_out` and a `null` exit code, and a nonzero
+code is returned. A command that spawned background children does not leave them
+running.
+
+Ctrl-C terminates the group the same way and records the command with an
+`interrupted` status (exit code 130), so an aborted attempt still appears in the
+report. A command killed by a signal reports the conventional `128 + N` exit
+code (SIGINT is 130).
+
+If the command exits but a background process it started keeps the output stream
+open (for example `sh -c 'devserver &'`), `run` drains what is buffered and
+returns with a warning rather than blocking on the open stream. Captured output
+is bounded in memory regardless of how much the command prints.
 
 ### Redaction
 

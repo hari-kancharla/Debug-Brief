@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A timeout now terminates the command's whole process tree, not just the
+  immediate process. The command runs in its own process group
+  (`start_new_session`) and a timeout signals the group (SIGTERM then SIGKILL),
+  so a command that spawned background children no longer leaves them running.
+- `run` no longer hangs when the command exits but a background process it
+  started keeps the output stream open (for example `sh -c 'server &'`). The
+  runner detects the still-open stream, drains what is buffered, and returns
+  with a warning instead of blocking indefinitely.
+- Captured output is bounded in memory while the command runs. Output is
+  accumulated through a head-and-tail buffer capped at the preview budget, so a
+  command that prints gigabytes no longer grows the runner's memory; previously
+  the full output was held before truncation.
+- Ctrl-C during a command now terminates the whole process group and records
+  the command with an `interrupted` status (and exit code 130), instead of
+  killing the run without recording the attempt.
+- A command killed by a signal propagates the conventional `128 + N` exit code
+  (so SIGINT is 130, SIGSEGV is 139), instead of the raw negative code that a
+  shell would turn into the wrong status. The raw signal code is still stored.
+
 ### Changed
 
 - `run` now executes the command under a pseudo-terminal (one each for stdout

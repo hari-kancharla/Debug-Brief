@@ -144,7 +144,7 @@ class _TerminalCleaner:
     """
 
     _GROUND, _ESC, _ESC_INT, _CSI, _OSC, _STR = range(6)
-    _MAX_SEQ = 4096  # abort a runaway/unterminated sequence rather than buffer it
+    _MAX_SEQ = 4096  # give up on a runaway control sequence; strings run to their terminator
 
     def __init__(self) -> None:
         self._state = self._GROUND
@@ -199,9 +199,15 @@ class _TerminalCleaner:
                 self._ground_char(ch, out)
             return
 
-        # Inside an escape sequence: enforce the memory bound.
+        # Inside an escape sequence: enforce the length bound. A control
+        # sequence (CSI/ESC/ESC_INT) is short by spec, so an overrun is junk:
+        # give up and resume normal output. A string sequence
+        # (OSC/DCS/APC/PM/SOS) is bounded by its explicit terminator (BEL or
+        # ST), not by length, and may be legitimately long; keep waiting for
+        # the terminator rather than returning to ground, which would leak the
+        # remaining payload into the report as text.
         self._seq += 1
-        if self._seq > self._MAX_SEQ:
+        if self._seq > self._MAX_SEQ and self._state not in (self._OSC, self._STR):
             self._reset()
             return
 

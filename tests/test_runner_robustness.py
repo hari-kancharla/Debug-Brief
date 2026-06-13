@@ -315,6 +315,44 @@ def test_cleaner_preserves_unicode_adjacent_to_controls():
     assert _clean("\x1b[32mcafé 漢字\x1b[0m 😀") == "café 漢字 😀"
 
 
+def test_cleaner_oversized_osc_drops_entire_payload():
+    # An OSC title far longer than the internal length cap must be dropped in
+    # full; the tail past the cap must not leak into the report as text.
+    payload = "A" * 5000
+    out = _clean(f"before\x1b]0;{payload}\x07after")
+    assert out == "beforeafter"
+    assert "A" not in out and "\x1b" not in out
+
+
+def test_cleaner_oversized_osc_drops_payload_when_split():
+    # The same oversized OSC fed in tiny chunks (the realistic streaming case)
+    # must still be dropped whole, with nothing leaking across read boundaries.
+    payload = "Z" * 5000
+    osc = f"\x1b]0;{payload}\x07tail"
+    chunks = [osc[i : i + 7] for i in range(0, len(osc), 7)]
+    out = _clean(*chunks)
+    assert out == "tail"
+    assert "Z" not in out and "\x1b" not in out
+
+
+def test_cleaner_oversized_dcs_drops_payload_until_st():
+    # DCS/APC/PM/SOS terminate on ST (ESC backslash), not BEL; an oversized one
+    # must still be dropped in full, including a terminator past the cap.
+    payload = "B" * 5000
+    out = _clean(f"\x1bP{payload}\x1b\\done")
+    assert out == "done"
+    assert "B" not in out and "\x1b" not in out
+
+
+def test_cleaner_runaway_csi_gives_up_and_resumes_text():
+    # A control sequence (CSI) is short by spec, so one that overruns the cap is
+    # junk: the cleaner gives up (no raw ESC leaks) and resumes emitting normal
+    # text rather than discarding the rest of the stream forever.
+    out = _clean("\x1b[" + "1;" * 4000 + "Xdone")
+    assert "\x1b" not in out
+    assert out.endswith("done")
+
+
 def test_truncated_colored_output_has_no_escape_fragments(tmp_path):
     prog = (
         "import sys\n"

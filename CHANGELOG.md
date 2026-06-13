@@ -64,7 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backspace, and other C0/C1 controls), normalizes CR-LF and a bare CR to a
   newline even across read boundaries, and removes escape sequences (including
   long OSC and DCS) split across chunks, via a bounded state machine that never
-  leaves a fragment.
+  leaves a fragment. A string sequence (OSC/DCS/APC/PM/SOS) that runs past the
+  internal length cap is discarded up to its terminator instead of leaking its
+  tail into the report as text; a runaway control sequence (CSI/ESC), which is
+  short by spec, is abandoned at the cap so normal output resumes.
 
 ### Changed
 

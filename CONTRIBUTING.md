@@ -71,8 +71,7 @@ python -m debugbrief --help
 - Keep the runtime dependency-free. If a runtime dependency is truly
   unavoidable, justify it clearly in the pull request and README.
 - Add or update tests for any behavior you change. Core logic must stay tested.
-- Keep CLI output plain and human-readable. No emojis.
-- Do not use em dashes in user-facing docs, commit messages, or PR text.
+- Keep CLI output plain and human-readable. 
 - Be honest in code and docs. Do not fabricate report content, root causes,
   test results, or verification, and do not claim a command was run unless it
   was actually run. Do not include AI-generated fake summaries or fabricated

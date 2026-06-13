@@ -37,8 +37,8 @@ debugbrief redo                                      # same test again: passes
 debugbrief end                                       # writes the pr-style brief
 ```
 
-Everything after `--` runs exactly as you typed it, with its output forwarded to
-your terminal as it runs; DebugBrief flags (`--timeout`, `--shell`, `--no-redact`)
+Everything after `--` runs exactly as you typed it, with its output streaming
+live to your terminal; DebugBrief flags (`--timeout`, `--shell`, `--no-redact`)
 go before the `--`. Quoting the whole command also works: `debugbrief run
 "pytest -q"`. `redo` re-runs the last captured command, and `end` defaults to
 the `pr` report mode.
@@ -59,8 +59,9 @@ The resulting report leads with a derived one-liner like:
 
 ## How it works
 
-- `run` executes a command, records its real exit code, bounded output, duration,
-  and a per-command git snapshot, then returns the command's own exit code.
+- `run` executes a command under a pseudo-terminal so its output streams live,
+  records its real exit code, bounded output, duration, and a per-command git
+  snapshot, then returns the command's own exit code.
 - Pass/fail comes only from the exit code. A command counts as "verified" only if
   a recognized test/build/lint/typecheck command actually exited `0`.
 - Recognized runners include pytest, unittest, tox, vitest, jest, bun test,
@@ -106,14 +107,11 @@ debugbrief end --stdout | gh pr comment --body-file -
 - Unix-like only; no Windows/PowerShell.
 - Capture is explicit via `debugbrief run`. There is no terminal transcript or
   PTY capture, and output is stored as bounded previews, not full logs.
-- Interactive and TUI commands (a pdb session, watch modes) will behave oddly
-  under `run`, because output is piped for capture rather than attached to a
-  terminal. Run those directly and record the outcome with `note`.
-- Live output reflects the program's own buffering. A program that block-buffers
-  when it is not attached to a terminal (a plain Python script, say) appears at
-  the end rather than line by line; run it unbuffered (`PYTHONUNBUFFERED=1` or
-  `python -u`) for live output. The full output is captured for the report
-  either way.
+- Commands run under a pseudo-terminal so output streams live; full-screen TUIs
+  (a `vim` session, `htop`) still are not meaningfully captured, since their
+  cursor-control output is not linear text. Run those directly and record the
+  outcome with `note`. Where no pseudo-terminal is available (a locked-down
+  sandbox), capture falls back to plain pipes.
 - Redaction is conservative and best effort; it does not catch every secret.
 - Git sections need native `git`; outside a repo they are omitted honestly.
 

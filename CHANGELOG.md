@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `run` now executes the command under a pseudo-terminal (one each for stdout
+  and stderr) instead of plain pipes, so output streams live the way it would in
+  a real shell. Most programs block-buffer when they detect they are not on a
+  terminal, which previously meant a plain script's output only appeared once it
+  exited; under the pty it streams line by line. The full output is still
+  captured, stdout and stderr stay separate, terminal color codes are stripped
+  from the stored report (the live echo keeps them), and capture falls back to
+  plain pipes where no pty can be allocated. Standard library only; still no
+  runtime dependencies.
+
 ## [1.2.0] - 2026-06-11
 
 ### Added

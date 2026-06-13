@@ -73,10 +73,10 @@ The old single-argument form still works: `debugbrief run "python -m pytest"`.
 `run`:
 
 - executes the command from the project root,
-- forwards the command's stdout and stderr to your terminal as it reads them,
-  unmodified, while accumulating them for the stored previews (DebugBrief's own
-  status lines go to stderr, so the command's stdout stays clean for piping;
-  see "Live output and buffering" below),
+- streams the command's stdout and stderr to your terminal live (it runs under
+  a pseudo-terminal), while accumulating them for the stored previews
+  (DebugBrief's own status lines go to stderr, so the command's stdout stays
+  clean for piping; see "Live output" below),
 - captures the command text, start/end timestamps, duration, exit code, and
   bounded stdout/stderr previews,
 - records a lightweight per-command Git snapshot (HEAD and changed files) so the
@@ -97,22 +97,23 @@ debugbrief run --shell "pytest -q | tee out.txt"
 
 If no session is active, `run` auto-starts one first.
 
-### Live output and buffering
+### Live output
 
-DebugBrief forwards output as fast as the program writes it, and most tools
-(pytest, npm, cargo, go) stream progressively. A program that block-buffers its
-output when it is not attached to a terminal will instead appear in one burst
-when it finishes. That is the program's own buffering, not DebugBrief holding
-the output back, and the full output is captured for the report either way. To
-see a plain Python script live, run it unbuffered:
+The command runs under a pseudo-terminal, so it streams its output live, the
+same as it would in a real shell. This matters because most programs decide how
+to buffer by asking whether their output is a terminal: behind a plain pipe they
+block-buffer and nothing appears until they exit. The pty makes them see a
+terminal, so even a plain `python script.py` prints line by line as it runs. The
+full output is captured for the report either way.
 
-```bash
-PYTHONUNBUFFERED=1 debugbrief run -- python script.py
-debugbrief run -- python -u script.py
-```
+Two small consequences, both handled:
 
-For other programs, a line-buffering wrapper such as `stdbuf -oL -eL` (GNU
-coreutils) has the same effect.
+- A program that adds color on a terminal will do so here; the live output keeps
+  the color, while the stored report has the color codes stripped so it stays
+  readable.
+- In a locked-down sandbox where no pseudo-terminal can be allocated, DebugBrief
+  falls back to plain pipes. Capture still works; only the live buffering
+  behavior reverts.
 
 ### Declaring custom checks with --verify
 

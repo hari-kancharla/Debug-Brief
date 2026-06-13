@@ -152,6 +152,30 @@ def test_verify_none_when_nothing_passes():
 
 
 # observed error -----------------------------------------------------------
+def test_red_to_green_requires_the_same_command():
+    # A different check passing later is not the failing check turning green.
+    s = _session()
+    s.events.append(
+        _cmd("pytest test_a.py", COMMAND_STATUS_FAILED, _ts(0), 1, is_test=True, tool="pytest")
+    )
+    s.events.append(
+        _cmd("ruff check .", COMMAND_STATUS_PASSED, _ts(1), 0, tool="ruff", is_verification=True)
+    )
+    assert derive(s).red_to_green is None
+
+
+def test_red_to_green_pairs_the_same_command():
+    s = _session()
+    s.events.append(
+        _cmd("pytest", COMMAND_STATUS_FAILED, _ts(0), 1, is_test=True, tool="pytest")
+    )
+    s.events.append(
+        _cmd("pytest", COMMAND_STATUS_PASSED, _ts(1), 0, is_test=True, is_verification=True, tool="pytest")
+    )
+    r2g = derive(s).red_to_green
+    assert r2g is not None and r2g.command == "pytest"
+
+
 def test_observed_error_prefers_error_line():
     s = _session()
     s.events.append(

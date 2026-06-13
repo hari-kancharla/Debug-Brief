@@ -166,6 +166,9 @@ def _detect_red_to_green(
         if (
             rec.is_verification_candidate
             and rec.passed
+            # Only the same check turning green counts as red-to-green; a
+            # different command passing later is not the failure resolving.
+            and rec.command == first_fail.command
             and _seconds(rec.timestamp) > fail_seconds
         ):
             passed = rec

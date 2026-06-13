@@ -27,6 +27,59 @@ def test_outside_repo_is_safe(tmp_path):
     assert git_utils.shortstat(tmp_path) == (0, 0)
 
 
+def _init_repo(tmp_path):
+    _git(["init", "-q"], tmp_path)
+    _git(["config", "user.email", "a@b.c"], tmp_path)
+    _git(["config", "user.name", "t"], tmp_path)
+    _git(["checkout", "-q", "-b", "main"], tmp_path)
+
+
+def test_session_changes_reports_edits_after_a_clean_start(tmp_path):
+    _init_repo(tmp_path)
+    (tmp_path / "a.py").write_text("v1\n", encoding="utf-8")
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-qm", "base"], tmp_path)
+    initial = git_utils.current_sha(tmp_path)
+    baseline = git_utils.working_tree_fingerprints(tmp_path)  # clean start: empty
+    (tmp_path / "a.py").write_text("v2\n", encoding="utf-8")
+    pairs, added, _deleted = git_utils.session_changes(tmp_path, initial, baseline)
+    assert ("M", "a.py") in pairs
+    assert added >= 1
+
+
+def test_session_changes_excludes_files_dirty_before_the_session(tmp_path):
+    _init_repo(tmp_path)
+    (tmp_path / "a.py").write_text("a1\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("b1\n", encoding="utf-8")
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-qm", "base"], tmp_path)
+    initial = git_utils.current_sha(tmp_path)
+    # a.py is already dirty before the session starts.
+    (tmp_path / "a.py").write_text("dirty-before-the-session\n", encoding="utf-8")
+    baseline = git_utils.working_tree_fingerprints(tmp_path)
+    # During the session, only b.py is touched; a.py is left as it was.
+    (tmp_path / "b.py").write_text("changed-during-the-session\n", encoding="utf-8")
+    pairs, _a, _d = git_utils.session_changes(tmp_path, initial, baseline)
+    paths = [p for _label, p in pairs]
+    assert "b.py" in paths
+    assert "a.py" not in paths  # untouched since start, so not a session change
+
+
+def test_session_changes_includes_a_commit_made_during_the_session(tmp_path):
+    _init_repo(tmp_path)
+    (tmp_path / "a.py").write_text("v1\n", encoding="utf-8")
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-qm", "base"], tmp_path)
+    initial = git_utils.current_sha(tmp_path)
+    baseline = git_utils.working_tree_fingerprints(tmp_path)  # clean
+    # During the session: fix and commit, leaving a clean working tree at the end.
+    (tmp_path / "a.py").write_text("fixed\n", encoding="utf-8")
+    _git(["commit", "-aqm", "fix"], tmp_path)
+    pairs, _a, _d = git_utils.session_changes(tmp_path, initial, baseline)
+    paths = [p for _label, p in pairs]
+    assert "a.py" in paths  # a committed change is still reported
+
+
 def test_inside_repo_basic(git_repo):
     assert git_utils.is_inside_repo(git_repo) is True
     assert git_utils.find_repo_root(git_repo) is not None

@@ -54,6 +54,10 @@ class GitState:
     final_sha: Optional[str] = None
     branch: Optional[str] = None
     detached_head: bool = False
+    # Fingerprints (path -> content hash) of files already changed when the
+    # session started, so the final report can tell which files actually changed
+    # during the session. Empty for older sessions and outside a repo.
+    initial_dirty: Dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -63,6 +67,7 @@ class GitState:
             "final_sha": self.final_sha,
             "branch": self.branch,
             "detached_head": self.detached_head,
+            "initial_dirty": dict(self.initial_dirty),
         }
 
     @classmethod
@@ -74,6 +79,7 @@ class GitState:
             final_sha=data.get("final_sha"),
             branch=data.get("branch"),
             detached_head=bool(data.get("detached_head", False)),
+            initial_dirty=dict(data.get("initial_dirty") or {}),
         )
 
 

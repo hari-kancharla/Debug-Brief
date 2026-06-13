@@ -8,6 +8,7 @@ directory is not a repo, or a command errors, callers get conservative defaults
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -253,6 +254,100 @@ def _leading_int(text: str) -> int:
         else:
             break
     return int(digits) if digits else 0
+
+
+def _file_fingerprint(cwd: Path, path: str, deleted: bool) -> str:
+    """A content fingerprint for a working-tree file (sentinel if gone)."""
+    if deleted:
+        return "<deleted>"
+    try:
+        data = (Path(cwd) / path).read_bytes()
+    except OSError:
+        return "<unreadable>"
+    return hashlib.sha256(data).hexdigest()
+
+
+def working_tree_fingerprints(cwd: Path) -> Dict[str, str]:
+    """Fingerprint every currently-changed file (modified, deleted, untracked).
+
+    Captured at session start as a baseline so the final report can tell which
+    of those files were actually changed during the session.
+    """
+    return {
+        path: _file_fingerprint(cwd, path, deleted=(label == "D"))
+        for label, path in name_status(cwd)
+    }
+
+
+def _parse_diff_name_status(out: str) -> List[Tuple[str, str]]:
+    """Parse ``git diff --name-status -z`` into (label, path) pairs."""
+    tokens = out.split("\x00")
+    pairs: List[Tuple[str, str]] = []
+    i = 0
+    while i < len(tokens):
+        code = tokens[i]
+        if not code:
+            i += 1
+            continue
+        status = code[:1]
+        if status in ("R", "C") and i + 2 < len(tokens):
+            new_path = tokens[i + 2]  # STATUS \0 old \0 new
+            i += 3
+            if new_path and not _is_generated_artifact(new_path):
+                pairs.append(("R" if status == "R" else "A", new_path))
+            continue
+        if i + 1 < len(tokens):
+            path = tokens[i + 1]
+            i += 2
+            if path and not _is_generated_artifact(path):
+                pairs.append((_porcelain_label(status + " "), path))
+        else:
+            break
+    return pairs
+
+
+def _untracked_files(cwd: Path) -> List[str]:
+    ok, out, _ = _run_git(["ls-files", "--others", "--exclude-standard", "-z"], cwd)
+    if not ok:
+        return []
+    return [p for p in out.split("\x00") if p and not _is_generated_artifact(p)]
+
+
+def session_changes(
+    cwd: Path, initial_sha: Optional[str], baseline: Dict[str, str]
+) -> Tuple[List[Tuple[str, str]], int, int]:
+    """Files changed during the session, as ``(pairs, added, deleted)``.
+
+    A file counts when it differs from the starting commit (committed or
+    uncommitted) or is newly untracked, and its current content differs from its
+    state at session start, so a file left dirty from before the session and
+    untouched since is excluded. Lines are measured against the starting commit.
+    Falls back to the plain working-tree diff when there is no starting commit.
+    """
+    if not initial_sha:
+        return name_status(cwd), *shortstat(cwd)
+
+    candidates: Dict[str, str] = {}
+    ok, out, _ = _run_git(["diff", "--name-status", "-z", initial_sha], cwd)
+    if ok:
+        for label, path in _parse_diff_name_status(out):
+            candidates.setdefault(path, label)
+    for path in _untracked_files(cwd):
+        candidates.setdefault(path, "A")
+
+    pairs: List[Tuple[str, str]] = []
+    for path, label in candidates.items():
+        current = _file_fingerprint(cwd, path, deleted=(label == "D"))
+        if baseline.get(path) == current:
+            continue  # already in this exact state before the session started
+        pairs.append((label, path))
+    pairs.sort(key=lambda item: item[1])
+
+    added, deleted = 0, 0
+    ok, out, _ = _run_git(["diff", "--shortstat", initial_sha], cwd)
+    if ok and out.strip():
+        added, deleted = _parse_shortstat(out)
+    return pairs, added, deleted
 
 
 def capture_state(cwd: Path, initial: bool = True) -> GitState:

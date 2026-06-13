@@ -167,6 +167,12 @@ class SessionManager:
 
         self.paths.ensure_directories()
         git_state = git_utils.capture_state(self.paths.project_root, initial=True)
+        if git_state.is_repo:
+            # Baseline of files already changed before the session, so the final
+            # report counts only what the session actually changed.
+            git_state.initial_dirty = git_utils.working_tree_fingerprints(
+                self.paths.project_root
+            )
 
         session = Session(
             title=clean_title,
@@ -441,12 +447,15 @@ class SessionManager:
         session.summary.tests_run = tests_run
 
         if session.git.is_repo:
-            pairs = git_utils.name_status(self.paths.project_root)
+            pairs, added, deleted = git_utils.session_changes(
+                self.paths.project_root,
+                session.git.initial_sha,
+                session.git.initial_dirty,
+            )
             session.summary.file_changes = [
                 FileChange(status=label, path=path) for label, path in pairs
             ]
             session.summary.modified_files = [path for _label, path in pairs]
-            added, deleted = git_utils.shortstat(self.paths.project_root)
             session.summary.lines_added = added
             session.summary.lines_deleted = deleted
         else:

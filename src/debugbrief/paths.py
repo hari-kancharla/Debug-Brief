@@ -13,6 +13,8 @@ the current working directory.
 
 from __future__ import annotations
 
+import contextlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -59,10 +61,17 @@ class ProjectPaths:
         return self.reports_dir / f"{session_id}-{mode}.json"
 
     def ensure_directories(self) -> None:
-        """Create the .debugbrief directory tree if it does not exist."""
-        self.base_dir.mkdir(parents=True, exist_ok=True)
-        self.sessions_dir.mkdir(parents=True, exist_ok=True)
-        self.reports_dir.mkdir(parents=True, exist_ok=True)
+        """Create the .debugbrief directory tree, restricted to the owner.
+
+        Stored state can include captured command output and notes, so the tree
+        is forced to mode 0700 regardless of the user's umask, so other local
+        accounts cannot read a project's debugging history.
+        """
+        for directory in (self.base_dir, self.sessions_dir, self.reports_dir):
+            directory.mkdir(parents=True, exist_ok=True)
+            # Force 0700 regardless of umask; best effort on exotic filesystems.
+            with contextlib.suppress(OSError):
+                os.chmod(directory, 0o700)
 
 
 def resolve_project_paths(start: Optional[Path] = None) -> ProjectPaths:

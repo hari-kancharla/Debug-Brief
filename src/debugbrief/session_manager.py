@@ -137,6 +137,10 @@ class SessionManager:
         clean_title = title.strip()
         if not clean_title:
             raise SessionError("Session title must not be empty.")
+        # The title can come straight from a command line (auto-start seeds it
+        # from the raw command), so scrub secrets before it is persisted to the
+        # session file and the active pointer, the same as command output.
+        clean_title, _ = redact_text(clean_title)
 
         self.paths.ensure_directories()
         git_state = git_utils.capture_state(self.paths.project_root, initial=True)
@@ -209,12 +213,16 @@ class SessionManager:
         session.events.append(
             Event.command(result.command_data, result.command_data.started_at)
         )
+        # Warning text can echo the command or its error output, so it is
+        # scrubbed before being persisted, the same as command output.
         if result.error_message and (
             result.errored or result.timed_out or result.interrupted
         ):
-            session.add_warning(result.error_message, now_iso8601())
+            message, _ = redact_text(result.error_message)
+            session.add_warning(message, now_iso8601())
         if result.warning:
-            session.add_warning(result.warning, now_iso8601())
+            message, _ = redact_text(result.warning)
+            session.add_warning(message, now_iso8601())
         self.save_session(session)
         self._write_active_pointer(session)
         return session

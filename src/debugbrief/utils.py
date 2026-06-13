@@ -6,6 +6,7 @@ rest of the package can rely on consistent, testable behavior.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -130,11 +131,18 @@ def read_json(path: Path) -> Any:
 
 
 def write_text(path: Path, text: str) -> None:
-    """Write ``text`` to ``path``, creating parent directories as needed."""
+    """Write ``text`` to ``path`` (owner read/write only), creating parents.
+
+    Reports are restricted to mode 0600 so a generated brief, which can quote
+    command output, is not left world-readable by the user's umask.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(text)
+    # Best effort on exotic filesystems that do not support chmod.
+    with contextlib.suppress(OSError):
+        os.chmod(path, 0o600)
 
 
 def is_supported_platform() -> bool:

@@ -49,7 +49,10 @@ def report_modes_for(paths: ProjectPaths, session_id: str) -> List[str]:
     """Return the report modes that have been generated for ``session_id``."""
     modes = []
     for mode in VALID_MODES:
-        if paths.report_file(session_id, mode).exists():
+        if (
+            paths.report_file(session_id, mode).exists()
+            or paths.report_json_file(session_id, mode).exists()
+        ):
             modes.append(mode)
     return modes
 

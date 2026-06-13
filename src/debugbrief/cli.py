@@ -401,7 +401,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     eprint(f"$ {command_str}")
     result = run_command(
         command=command_str,
-        cwd=manager.paths.project_root,
+        # Run from the directory the user is actually in, not the repo root, so
+        # commands behave the same as typing them directly (important in
+        # monorepos and subdirectories). State still lives at the repo root.
+        cwd=Path.cwd(),
         use_shell=args.shell,
         timeout_seconds=args.timeout,
         redact=not args.no_redact,
@@ -480,7 +483,7 @@ def cmd_redo(args: argparse.Namespace) -> int:
     eprint(f"$ {last.command}  (redo)")
     result = run_command(
         command=last.command,
-        cwd=manager.paths.project_root,
+        cwd=Path.cwd(),
         use_shell=last.used_shell,
         timeout_seconds=args.timeout,
         redact=not args.no_redact,

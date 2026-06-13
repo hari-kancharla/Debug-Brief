@@ -21,6 +21,9 @@ def paths(tmp_path):
 @pytest.fixture(autouse=True)
 def _patch_resolve(monkeypatch, paths):
     monkeypatch.setattr(cli, "resolve_project_paths", lambda: paths)
+    # Commands run from the user's current directory, so place the test there
+    # (a real user is inside their project); relative scripts then resolve.
+    monkeypatch.chdir(paths.project_root)
     return paths
 
 
@@ -115,6 +118,53 @@ def test_redo_inherits_verify(paths):
     assert len(events) == 2
     assert events[1].data["classification"]["tool"] == "custom"
     assert events[1].data["classification"]["is_verification"] is True
+
+
+# product-integrity fixes ----------------------------------------------------
+def test_run_executes_from_current_directory(paths, monkeypatch):
+    # A command must run from the user's directory, not the repo root, so it
+    # behaves like typing it directly (important in monorepos/subdirectories).
+    sub = paths.project_root / "packages" / "api"
+    sub.mkdir(parents=True)
+    monkeypatch.chdir(sub)
+    assert cli.main(["run", "--", "sh", "-c", "echo hi > marker.txt"]) == 0
+    assert (sub / "marker.txt").exists()
+    assert not (paths.project_root / "marker.txt").exists()
+
+
+def test_auto_start_title_is_redacted_before_disk(paths):
+    secret = "ghp_abcdefghij1234567890ABCDEFGHIJ"
+    assert cli.main(["run", "--", "echo", f"token={secret}"]) == 0
+    leaked = [
+        p
+        for p in (paths.project_root / ".debugbrief").rglob("*")
+        if p.is_file() and secret in p.read_text(errors="ignore")
+    ]
+    assert leaked == [], f"raw secret leaked into {leaked}"
+
+
+def test_storage_permissions_are_owner_only(paths):
+    import stat
+
+    cli.main(["start", "perms"])
+    cli.main(["run", "--", "echo", "ok"])
+    cli.main(["end"])
+    base = paths.project_root / ".debugbrief"
+    assert stat.S_IMODE(base.stat().st_mode) == 0o700
+    report = next((paths.reports_dir).glob("*-pr.md"))
+    assert stat.S_IMODE(report.stat().st_mode) == 0o600
+
+
+def test_json_only_report_is_discoverable(paths):
+    from debugbrief.reports_index import infer_mode, latest_report
+
+    cli.main(["start", "json check"])
+    cli.main(["run", "--", "echo", "ok"])
+    cli.main(["end", "--format", "json"])
+    rep = latest_report(paths.reports_dir)
+    assert rep is not None and rep.suffix == ".json"
+    assert infer_mode(rep) == "pr"
+    assert cli.main(["last"]) == 0
 
 
 # preview ---------------------------------------------------------------------

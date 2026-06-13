@@ -7,6 +7,7 @@ pass/fail strictly from real exit codes.
 
 from __future__ import annotations
 
+import os.path
 import shlex
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
@@ -49,7 +50,7 @@ _TEST_PATTERNS: List[Tuple[List[str], str]] = [
     (["bundle", "exec", "rspec"], "rspec"),
     (["mvn", "test"], "maven"),
     (["gradle", "test"], "gradle"),
-    (["./gradlew", "test"], "gradle"),
+    (["gradlew", "test"], "gradle"),
     (["vitest"], "vitest"),
     (["bun", "test"], "bun"),
     (["deno", "test"], "deno"),
@@ -64,6 +65,11 @@ _TEST_PATTERNS: List[Tuple[List[str], str]] = [
     (["mix", "test"], "mix"),
     (["swift", "test"], "swift"),
 ]
+
+# Wrappers that delegate to an inner command. Recognition unwraps them so the
+# real tool underneath is what gets matched.
+_RUN_WRAPPERS = {"uv", "poetry", "pdm", "hatch", "rye"}  # "<tool> run <cmd ...>"
+_EXEC_WRAPPERS = {"pnpm", "yarn"}  # "<tool> exec|dlx <cmd ...>"
 
 # (pattern_tokens, tool, category) for build/lint/typecheck detection.
 _BUILD_PATTERNS: List[Tuple[List[str], str, str]] = [
@@ -94,26 +100,73 @@ def _tokenize(command: str) -> List[str]:
         return command.split()
 
 
-def _contains_subsequence(tokens: List[str], pattern: List[str]) -> bool:
-    """Return True if ``pattern`` appears as a contiguous run inside ``tokens``."""
-    if not pattern or len(pattern) > len(tokens):
+def _is_env_assignment(token: str) -> bool:
+    """True for a leading ``NAME=value`` shell environment assignment."""
+    eq = token.find("=")
+    if eq <= 0:
         return False
-    for start in range(len(tokens) - len(pattern) + 1):
-        if tokens[start : start + len(pattern)] == pattern:
-            return True
-    return False
+    name = token[:eq]
+    return (name[0].isalpha() or name[0] == "_") and all(
+        c.isalnum() or c == "_" for c in name
+    )
+
+
+def _is_python(name: str) -> bool:
+    return name in ("python", "python2", "python3") or name.startswith(
+        ("python2.", "python3.")
+    )
+
+
+def _effective_tokens(tokens: List[str]) -> List[str]:
+    """Resolve a command to its effective ``[executable, args...]`` form.
+
+    Strips leading ``NAME=value`` environment assignments and unwraps common
+    runner wrappers (``python -m``, ``uv``/``poetry``/``pdm``/``hatch``/``rye``
+    ``run``, ``bundle exec``, ``npx``/``bunx``, ``pnpm``/``yarn`` ``exec``), then
+    reduces the executable to its basename so ``.venv/bin/pytest`` resolves to
+    ``pytest``. Recognition is anchored to this executable, so a tool name that
+    only appears as an argument (``echo pytest``) is not mistaken for the tool.
+    """
+    toks = list(tokens)
+    while toks and _is_env_assignment(toks[0]):
+        toks = toks[1:]
+    for _ in range(8):  # bounded: unwrap nested wrappers like "uv run python -m pytest"
+        if not toks:
+            break
+        head = os.path.basename(toks[0])
+        if _is_python(head) and len(toks) >= 3 and toks[1] == "-m":
+            toks = toks[2:]
+            continue
+        if head in _RUN_WRAPPERS and len(toks) >= 2 and toks[1] == "run":
+            toks = toks[2:]
+            continue
+        if head == "bundle" and len(toks) >= 2 and toks[1] == "exec":
+            toks = toks[2:]
+            continue
+        if head in ("npx", "bunx") and len(toks) >= 2:
+            toks = toks[1:]
+            continue
+        if head in _EXEC_WRAPPERS and len(toks) >= 2 and toks[1] in ("exec", "dlx"):
+            toks = toks[2:]
+            continue
+        break
+    if toks:
+        toks = [os.path.basename(toks[0])] + toks[1:]
+    return toks
 
 
 def _match_test(tokens: List[str]) -> Optional[str]:
+    eff = _effective_tokens(tokens)
     for pattern, tool in _TEST_PATTERNS:
-        if _contains_subsequence(tokens, pattern):
+        if eff[: len(pattern)] == pattern:
             return tool
     return None
 
 
 def _match_build(tokens: List[str]) -> Optional[Tuple[str, str]]:
+    eff = _effective_tokens(tokens)
     for pattern, tool, category in _BUILD_PATTERNS:
-        if _contains_subsequence(tokens, pattern):
+        if eff[: len(pattern)] == pattern:
             return tool, category
     return None
 

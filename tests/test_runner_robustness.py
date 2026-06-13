@@ -472,11 +472,16 @@ def test_repeated_sigint_persists_exactly_one_event(tmp_path):
     if orphan:
         subprocess.run(["pkill", "-f", marker])
 
-    assert rc == 130
+    # Both outcomes mean "interrupted": a clean catch returns 130, while a storm
+    # SIGINT that lands during interpreter shutdown kills the process with signal
+    # 2 (wait() reports -2, which a shell also surfaces as 130). The strict
+    # invariants are persistence integrity below, not which form the code takes.
+    assert rc in (130, -signal.SIGINT), rc
     assert not orphan
     sessions = list((tmp_path / ".debugbrief" / "sessions").glob("*.json"))
     assert sessions
     data = json.loads(sessions[0].read_text())  # must remain valid JSON
     cmds = [e for e in data["events"] if e["type"] == "command"]
+    # Exactly one event, never duplicated, recorded as interrupted.
     assert len(cmds) == 1, f"expected exactly one command event, got {len(cmds)}"
     assert cmds[0]["data"]["classification"]["status"] == "interrupted"

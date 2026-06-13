@@ -132,6 +132,21 @@ def test_run_executes_from_current_directory(paths, monkeypatch):
     assert not (paths.project_root / "marker.txt").exists()
 
 
+def test_auto_start_redacts_secret_split_by_truncation(paths):
+    import json
+
+    # The connection string's "@host" (which the redaction pattern needs) falls
+    # past character 60, so truncate-then-redact would miss the password;
+    # redact-then-truncate catches it.
+    mgr = SessionManager(paths)
+    seed = "x" * 25 + "dsn=postgres://user:SUPERSECRETPASSWORD@host/db"
+    mgr.auto_start(seed)
+    session_file = next((paths.project_root / ".debugbrief" / "sessions").glob("*.json"))
+    title = json.loads(session_file.read_text())["title"]
+    assert "SUPERSECRETPASS" not in title
+    assert "[redacted]" in title
+
+
 def test_auto_start_title_is_redacted_before_disk(paths):
     secret = "ghp_abcdefghij1234567890ABCDEFGHIJ"
     assert cli.main(["run", "--", "echo", f"token={secret}"]) == 0

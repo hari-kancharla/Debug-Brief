@@ -203,6 +203,12 @@ class SessionManager:
             if line.strip():
                 first_line = line.strip()
                 break
+        # Redact the full line before truncating. Truncation can cut the syntax a
+        # redaction pattern needs (the "@host" of a connection string, say) while
+        # keeping the secret, so redacting only the 60-char snippet could miss it.
+        # start() redacts again, harmlessly, and also covers manual titles.
+        if first_line:
+            first_line, _ = redact_text(first_line)
         snippet = first_line[:60] if first_line else "debug session"
         stamp = utc_now().strftime("%Y-%m-%d %H:%M")
         return self.start(f"Auto session {stamp}: {snippet}")

@@ -131,18 +131,32 @@ def read_json(path: Path) -> Any:
 
 
 def write_text(path: Path, text: str) -> None:
-    """Write ``text`` to ``path`` (owner read/write only), creating parents.
+    """Write ``text`` to ``path`` atomically, owner read/write only.
 
-    Reports are restricted to mode 0600 so a generated brief, which can quote
+    The text is written to a temporary file, flushed and fsynced, then renamed
+    into place, so a crash or disk-full mid-write cannot leave a half-written
+    report. Mode is restricted to 0600 so a generated brief, which can quote
     command output, is not left world-readable by the user's umask.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(text)
-    # Best effort on exotic filesystems that do not support chmod.
-    with contextlib.suppress(OSError):
-        os.chmod(path, 0o600)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, str(path))
+        # Best effort on exotic filesystems that do not support chmod.
+        with contextlib.suppress(OSError):
+            os.chmod(path, 0o600)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+        raise
 
 
 def is_supported_platform() -> bool:

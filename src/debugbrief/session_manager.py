@@ -8,7 +8,10 @@ pointer to the currently-active session and is removed on a clean ``end``.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import contextlib
+import fcntl
+import os
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from . import git_utils
 from .command_runner import RunResult
@@ -32,6 +35,26 @@ class SessionError(Exception):
 class SessionManager:
     def __init__(self, paths: ProjectPaths) -> None:
         self.paths = paths
+
+    @contextlib.contextmanager
+    def _repo_lock(self) -> Iterator[None]:
+        """Serialize a session's read-modify-write across concurrent processes.
+
+        Two terminals finishing commands at nearly the same time would otherwise
+        both load the session, append an event, and save, and the second writer
+        would clobber the first writer's event. An exclusive advisory lock on a
+        per-repository lock file makes the load-append-save atomic. The lock is
+        held only around that quick persistence step, never while a command runs.
+        """
+        self.paths.base_dir.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(self.paths.base_dir / ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            with contextlib.suppress(OSError):
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
     # Active-pointer handling -------------------------------------------------
     def _read_active_pointer(self) -> Optional[Dict[str, Any]]:
@@ -185,7 +208,6 @@ class SessionManager:
         return self.start(f"Auto session {stamp}: {snippet}")
 
     def add_note(self, text: str) -> Session:
-        session = self.require_active("add a note")
         clean = text.strip()
         if not clean:
             raise SessionError("Note text must not be empty.")
@@ -193,85 +215,101 @@ class SessionManager:
         # secret pasted into a note (an env var, a log line) must be scrubbed
         # before it ever reaches disk, the same as captured command output.
         clean, n_redacted = redact_text(clean)
-        note_event = Event.note(clean, now_iso8601())
-        if n_redacted:
-            note_event.data["redacted"] = True
-        session.events.append(note_event)
-        self.save_session(session)
-        self._write_active_pointer(session)
-        return session
+        with self._repo_lock():
+            session = self.require_active("add a note")
+            note_event = Event.note(clean, now_iso8601())
+            if n_redacted:
+                note_event.data["redacted"] = True
+            session.events.append(note_event)
+            self.save_session(session)
+            self._write_active_pointer(session)
+            return session
 
     def record_command(self, result: RunResult) -> Session:
-        session = self.require_active("run a command")
-        # Best-effort, lightweight git snapshot at the moment of the command so
-        # later reports can correlate file changes with what happened. Safe and
-        # silent outside a repo.
-        if session.git.is_repo:
+        # Lightweight git snapshot at the moment of the command, taken outside
+        # the lock since it only reads the working tree, so reports can later
+        # correlate file changes. Safe and silent outside a repo.
+        if self.paths.is_git_repo:
             cwd = self.paths.project_root
             result.command_data.git_head = git_utils.current_short_sha(cwd)
             result.command_data.git_changed_files = git_utils.changed_files(cwd)
-        session.events.append(
-            Event.command(result.command_data, result.command_data.started_at)
-        )
-        # Warning text can echo the command or its error output, so it is
-        # scrubbed before being persisted, the same as command output.
-        if result.error_message and (
-            result.errored or result.timed_out or result.interrupted
-        ):
-            message, _ = redact_text(result.error_message)
-            session.add_warning(message, now_iso8601())
-        if result.warning:
-            message, _ = redact_text(result.warning)
-            session.add_warning(message, now_iso8601())
-        self.save_session(session)
-        self._write_active_pointer(session)
-        return session
+        with self._repo_lock():
+            session = self.require_active("run a command")
+            session.events.append(
+                Event.command(result.command_data, result.command_data.started_at)
+            )
+            # Warning text can echo the command or its error output, so it is
+            # scrubbed before being persisted, the same as command output.
+            if result.error_message and (
+                result.errored or result.timed_out or result.interrupted
+            ):
+                message, _ = redact_text(result.error_message)
+                session.add_warning(message, now_iso8601())
+            if result.warning:
+                message, _ = redact_text(result.warning)
+                session.add_warning(message, now_iso8601())
+            self.save_session(session)
+            self._write_active_pointer(session)
+            return session
 
     def end(self, mode: str, report_format: str = "md") -> Session:
         # Local imports avoid an import cycle with the reporters package.
+        import json
+
         from .reporters import render_report, render_report_json
-
-        session = self.require_active("end the session")
-
-        # Capture final Git state, preserving the initial SHA.
-        final_state = git_utils.capture_state(self.paths.project_root, initial=False)
-        session.git.final_sha = final_state.final_sha
-        session.git.branch = final_state.branch
-        session.git.detached_head = final_state.detached_head
-        session.git.is_repo = final_state.is_repo
-        if final_state.repo_root:
-            session.git.repo_root = final_state.repo_root
-
-        session.timestamps.end = now_iso8601()
-        session.status = SessionStatus.COMPLETED.value
-
-        session.events.append(
-            Event.snapshot(
-                {"phase": "end", "git": session.git.to_dict()},
-                session.timestamps.end,
-            )
-        )
-
-        self._finalize_summary(session)
-        self.save_session(session)
-
         from .utils import write_text
 
-        if report_format in ("md", "both"):
-            report_text = render_report(session, mode)
-            write_text(self.paths.report_file(session.session_id, mode), report_text)
-        if report_format in ("json", "both"):
-            import json
+        with self._repo_lock():
+            session = self.require_active("end the session")
 
-            payload = render_report_json(session, mode)
-            write_text(
-                self.paths.report_json_file(session.session_id, mode),
-                json.dumps(payload, indent=2) + "\n",
+            # Capture final Git state, preserving the initial SHA.
+            final_state = git_utils.capture_state(
+                self.paths.project_root, initial=False
             )
+            session.git.final_sha = final_state.final_sha
+            session.git.branch = final_state.branch
+            session.git.detached_head = final_state.detached_head
+            session.git.is_repo = final_state.is_repo
+            if final_state.repo_root:
+                session.git.repo_root = final_state.repo_root
 
-        # Only clear the active pointer after the report is safely written.
-        self._clear_active_pointer()
-        return session
+            session.timestamps.end = now_iso8601()
+            session.status = SessionStatus.COMPLETED.value
+            session.events.append(
+                Event.snapshot(
+                    {"phase": "end", "git": session.git.to_dict()},
+                    session.timestamps.end,
+                )
+            )
+            self._finalize_summary(session)
+
+            # Finalize transactionally: render every requested artifact first,
+            # write each atomically, then persist the completed session, and
+            # clear the active pointer last. A failure at any step leaves the
+            # session active and recoverable, never completed without its report
+            # or pointing at a half-written file.
+            artifacts: List[Tuple[Any, str]] = []
+            if report_format in ("md", "both"):
+                artifacts.append(
+                    (
+                        self.paths.report_file(session.session_id, mode),
+                        render_report(session, mode),
+                    )
+                )
+            if report_format in ("json", "both"):
+                payload = render_report_json(session, mode)
+                artifacts.append(
+                    (
+                        self.paths.report_json_file(session.session_id, mode),
+                        json.dumps(payload, indent=2) + "\n",
+                    )
+                )
+            for path, text in artifacts:
+                write_text(path, text)
+
+            self.save_session(session)
+            self._clear_active_pointer()
+            return session
 
     def preview(self, mode: str) -> str:
         """Render a report for the active session without mutating anything.

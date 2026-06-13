@@ -382,6 +382,48 @@ def test_truncated_colored_output_has_no_escape_fragments(tmp_path):
 
 
 # Real Ctrl-C at the process level --------------------------------------------
+def test_terminal_size_falls_back_to_default(monkeypatch):
+    import debugbrief.command_runner as cr
+
+    def _raise(*_a, **_k):
+        raise OSError("not a tty")
+
+    monkeypatch.setattr(cr.os, "get_terminal_size", _raise)
+    assert cr._terminal_size() == (24, 80)
+
+
+def test_terminal_size_is_positive():
+    from debugbrief.command_runner import _terminal_size
+
+    rows, cols = _terminal_size()
+    assert rows > 0 and cols > 0
+
+
+def test_concurrent_runs_all_persist(tmp_path):
+    # Two terminals recording commands at once must not lose an event; the
+    # per-repository lock serializes the read-modify-write.
+    import json
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        [PY, "-m", "debugbrief", "start", "concurrency"],
+        cwd=tmp_path, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
+    )
+    procs = [
+        subprocess.Popen(
+            [PY, "-m", "debugbrief", "run", "--", PY, "-c", f"print({i})"],
+            cwd=tmp_path, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        for i in range(6)
+    ]
+    for p in procs:
+        p.wait(timeout=30)
+    session_file = next((tmp_path / ".debugbrief" / "sessions").glob("*.json"))
+    events = json.loads(session_file.read_text())["events"]
+    commands = [e for e in events if e["type"] == "command"]
+    assert len(commands) == 6, f"a concurrent event was lost: {len(commands)}/6"
+
+
 def test_real_sigint_records_interrupted_and_kills_child(tmp_path):
     import json
     import signal

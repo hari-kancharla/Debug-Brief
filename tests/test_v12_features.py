@@ -167,6 +167,27 @@ def test_json_only_report_is_discoverable(paths):
     assert cli.main(["last"]) == 0
 
 
+def test_end_is_transactional_on_report_write_failure(paths, monkeypatch):
+    # If writing the report fails, the session must stay active and recoverable,
+    # never marked completed with no report and the pointer cleared.
+    from debugbrief import utils
+
+    mgr = SessionManager(paths)
+    mgr.start("recover me")
+    mgr.add_note("an observation")
+
+    def _boom(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(utils, "write_text", _boom)
+    with pytest.raises(OSError):
+        mgr.end("pr")
+
+    assert mgr.has_active()  # pointer intact, so the session can be resumed
+    assert mgr.load_active().status == "ACTIVE"
+    assert not paths.reports_dir.exists() or not list(paths.reports_dir.glob("*"))
+
+
 # preview ---------------------------------------------------------------------
 def test_preview_renders_without_mutating(paths, capsys):
     manager = SessionManager(paths)

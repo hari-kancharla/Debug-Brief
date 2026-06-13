@@ -7,14 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-06-13
+
 ### Fixed
 
 - A timeout now terminates the command's process group, not just the immediate
   process. The command runs in its own process group (`start_new_session`) and a
   timeout signals the group (SIGTERM then SIGKILL), so a command that spawned
   background children no longer leaves them running. A child that detaches into
-  its own session (`setsid`) can still escape; that is reported as a warning
-  rather than silently waited on.
+  its own session (`setsid`) but keeps a captured stream open is reported as a
+  warning; one that also closes its inherited output descriptors can outlive the
+  command undetectably.
 - `run` no longer hangs when the command exits but a background process it
   started keeps the output stream open (for example `sh -c 'server &'`). The
   runner notices the reader threads are still active, drains what is buffered,
@@ -41,6 +44,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   C-quoted form, and renames report the new name. Git output is decoded as
   UTF-8 regardless of the process locale, so a C/POSIX locale no longer mangles
   or fails on such paths.
+- `debugbrief run` piped into a consumer that closes early (`run -- yes | head`)
+  now stops the command promptly instead of running it to the timeout. The
+  closed downstream pipe is detected, the command's group is terminated, the
+  event is recorded with a `broken_pipe` status, and the CLI exits 141 without a
+  traceback.
+- The observed-error section now searches a failed command's stdout when its
+  stderr has no content. Many test tools (pytest among them) print assertion
+  failures and the summary to stdout, so the section was previously empty for a
+  failing pytest run.
+- Generated Markdown stays valid for arbitrary commands, output, and filenames.
+  Captured output containing a line of backticks can no longer close a code
+  fence early, and a command or filename containing backticks no longer breaks a
+  code span; delimiters are chosen longer than any run in the content.
+- The stored preview drops unsafe terminal controls (bare carriage returns, BEL,
+  backspace, and other C0/C1 controls), normalizes CR-LF and a bare CR to a
+  newline even across read boundaries, and removes escape sequences (including
+  long OSC and DCS) split across chunks, via a bounded state machine that never
+  leaves a fragment.
 
 ### Changed
 

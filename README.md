@@ -113,8 +113,10 @@ debugbrief end --stdout | gh pr comment --body-file -
   outcome with `note`. Where no pseudo-terminal is available (a locked-down
   sandbox), capture falls back to plain pipes.
 - Termination signals the command's process group, so ordinary background
-  children are cleaned up; a child that detaches itself with its own session
-  (`setsid`) can still outlive the command, which is reported as a warning.
+  children are cleaned up. A child that detaches into its own session (`setsid`)
+  but keeps one of the captured streams open is reported as a warning; one that
+  also closes its inherited output descriptors can outlive the command without
+  being detectable by a standard-library process-group runner.
 - Redaction is conservative and best effort; it does not catch every secret.
 - Git sections need native `git`; outside a repo they are omitted honestly.
 

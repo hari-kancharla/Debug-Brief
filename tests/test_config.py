@@ -29,6 +29,16 @@ def test_load_config_missing_file_is_empty(tmp_path):
     assert load_config(tmp_path) == {}
 
 
+def test_partly_malformed_config_reads_recognized_keys_consistently(tmp_path):
+    # A valid line plus an unparseable line: the recognized key is read and the
+    # bad line is skipped, the same way on every supported Python (on 3.11+ a
+    # TOML syntax error falls back to the same lenient parser used on 3.9/3.10).
+    (tmp_path / ".debugbrief.toml").write_text(
+        'default_mode = "incident"\nthis :: is not valid toml [[[\n', encoding="utf-8"
+    )
+    assert load_config(tmp_path) == {"default_mode": "incident"}
+
+
 def test_load_config_malformed_file_is_ignored(tmp_path):
     (tmp_path / ".debugbrief.toml").write_text("this is = not [valid toml", encoding="utf-8")
     # Never raises; a malformed config cannot break a command.

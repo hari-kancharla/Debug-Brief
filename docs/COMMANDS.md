@@ -4,6 +4,7 @@ Full reference for every command. The README has the short version; this is the
 detail.
 
 ```text
+debugbrief init                               Set up the project and show the workflow
 debugbrief start "<session title>"            Start a session
 debugbrief note  <text ...>                   Record a note (quoting optional)
 debugbrief run   -- <command ...>             Execute and capture a command
@@ -20,6 +21,24 @@ debugbrief show  <session_id> [--json]        Show one session summary
 ```
 
 `run` and `note` auto-start a session if none is active (see below).
+
+## init
+
+One-time onboarding for a project. It performs the same safe setup as
+`doctor --fix` (creates `.debugbrief/` and adds it to `.git/info/exclude`),
+reports health, and prints the recommended `db` alias and the daily workflow.
+
+```bash
+debugbrief init
+```
+
+It never starts a session or writes a report, so it is safe to run at any time.
+The suggested alias makes the capture prefix disappear:
+
+```bash
+alias db="debugbrief run --"
+db pytest -q
+```
 
 ## start
 

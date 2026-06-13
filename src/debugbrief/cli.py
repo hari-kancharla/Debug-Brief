@@ -34,7 +34,7 @@ from typing import List, Optional
 
 from . import __version__
 from .command_runner import DEFAULT_TIMEOUT_SECONDS, RunResult, run_command
-from .doctor import run_doctor
+from .doctor import FAIL, run_doctor
 from .models import COMMAND_STATUS_PASSED, CommandData
 from .paths import ensure_local_ignore, resolve_project_paths
 from .redaction import PLACEHOLDER
@@ -66,6 +66,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", metavar="<command>")
 
     # start --------------------------------------------------------------
+    p_init = subparsers.add_parser(
+        "init", help="Set up DebugBrief in this project and show how to use it."
+    )
+    p_init.set_defaults(func=cmd_init)
+
     p_start = subparsers.add_parser("start", help="Start a new debugging session.")
     p_start.add_argument("title", help="A short, descriptive session title.")
     p_start.add_argument(
@@ -602,6 +607,50 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"  warning:   {warning}")
     print("")
     print("End with: debugbrief end --mode pr|handoff|incident")
+    return 0
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    """Set up DebugBrief in this project and explain how to use it.
+
+    Onboarding only: it performs the same safe setup as ``doctor --fix`` (create
+    ``.debugbrief/`` and ignore it locally), reports health, and prints the alias
+    and workflow. It never starts a session or writes a report, so running it is
+    side-effect-free beyond the storage directory.
+    """
+    import os as _os
+
+    paths = resolve_project_paths()
+    report = run_doctor(paths, fix=True)
+
+    print("DebugBrief is set up for this project.")
+    print(f"  project root:  {paths.project_root}")
+    if paths.is_git_repo:
+        print("  git:           repository detected (.debugbrief/ is ignored locally)")
+    else:
+        print("  git:           not a Git repository (Git sections are omitted)")
+    print(f"  health:        {report.summary}")
+
+    blocking = [c for c in report.checks if c.level == FAIL]
+    if blocking:
+        print("")
+        print("  Needs attention (run 'debugbrief doctor' for the full report):")
+        for check in blocking:
+            print(f"    - {check.name}{': ' + check.detail if check.detail else ''}")
+
+    shell = _os.environ.get("SHELL", "")
+    rc_file = "~/.zshrc" if shell.endswith("zsh") else "~/.bashrc"
+    print("")
+    print("Make the capture prefix disappear with a one-line alias:")
+    print('  alias db="debugbrief run --"')
+    print(f"  Add that to {rc_file}, reload your shell, then run: db pytest -q")
+    print("")
+    print("Your loop from then on:")
+    print('  debugbrief start "<what you are fixing>"   (optional; run/note auto-start)')
+    print("  db <command>                               (run commands through DebugBrief)")
+    print('  debugbrief note "<observation>"            (record findings as you go)')
+    print("  debugbrief redo                            (re-run the last command)")
+    print("  debugbrief end                             (write the brief)")
     return 0
 
 

@@ -203,6 +203,16 @@ def test_end_is_transactional_on_report_write_failure(paths, monkeypatch):
     assert not paths.reports_dir.exists() or not list(paths.reports_dir.glob("*"))
 
 
+def test_init_sets_up_storage_and_prints_guidance(paths, capsys):
+    rc = cli.main(["init"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "DebugBrief is set up" in out
+    assert 'alias db="debugbrief run --"' in out
+    assert "debugbrief end" in out
+    assert paths.base_dir.exists()  # safe setup created the storage directory
+
+
 # preview ---------------------------------------------------------------------
 def test_preview_renders_without_mutating(paths, capsys):
     manager = SessionManager(paths)

@@ -11,7 +11,7 @@ Recorded 1 command attempt over 5s; verification `python -m pytest tests/test_mi
 - **Project root:** `<PROJECT_ROOT>`
 - **Started:** <DATETIME_UTC>
 - **Ended:** <DATETIME_UTC>
-- **Git branch:** fix/migration
+- **Git branch:** `fix/migration`
 - **Initial commit:** `<SHA>`  **Final commit:** `<SHA>`
 - **Notes:** 1  **Commands:** 1  **Failed commands:** 1
 

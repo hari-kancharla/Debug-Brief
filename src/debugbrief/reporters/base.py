@@ -12,7 +12,9 @@ from typing import List, Optional, Tuple
 
 from ..derive import Derivation, derive
 from ..filters import ReportCommand, build_report_commands
+from ..markdown import code_span, fenced_code
 from ..models import (
+    COMMAND_STATUS_BROKEN_PIPE,
     COMMAND_STATUS_ERROR,
     COMMAND_STATUS_INTERRUPTED,
     COMMAND_STATUS_PASSED,
@@ -70,6 +72,7 @@ def status_label(status: str) -> str:
         COMMAND_STATUS_TIMED_OUT: "timed out",
         COMMAND_STATUS_ERROR: "did not run",
         COMMAND_STATUS_INTERRUPTED: "interrupted",
+        COMMAND_STATUS_BROKEN_PIPE: "broken pipe",
     }.get(status, status)
 
 
@@ -117,7 +120,7 @@ def _build_timeline(session: Session) -> List[TimelineEntry]:
                 TimelineEntry(
                     event.timestamp,
                     "command",
-                    f"`{data.command}` -> {label} (exit {exit_repr}){duration}",
+                    f"{code_span(data.command)} -> {label} (exit {exit_repr}){duration}",
                 )
             )
         elif event.type == EventType.WARNING.value:
@@ -172,19 +175,19 @@ class BaseReporter:
     def metadata_lines(self) -> List[str]:
         s = self.session
         lines = ["## Session metadata", ""]
-        lines.append(f"- **Session ID:** `{s.session_id}`")
+        lines.append(f"- **Session ID:** {code_span(s.session_id)}")
         lines.append(f"- **Status:** {s.status}")
-        lines.append(f"- **Project root:** `{s.project_root}`")
+        lines.append(f"- **Project root:** {code_span(s.project_root)}")
         lines.append(f"- **Started:** {_short_time(s.timestamps.start)}")
         lines.append(f"- **Ended:** {_short_time(s.timestamps.end)}")
         if s.git.is_repo:
             branch = s.git.branch or (
                 "(detached HEAD)" if s.git.detached_head else "(unknown)"
             )
-            lines.append(f"- **Git branch:** {branch}")
+            lines.append(f"- **Git branch:** {code_span(branch)}")
             lines.append(
-                f"- **Initial commit:** `{_sha(s.git.initial_sha)}`  "
-                f"**Final commit:** `{_sha(s.git.final_sha)}`"
+                f"- **Initial commit:** {code_span(_sha(s.git.initial_sha))}  "
+                f"**Final commit:** {code_span(_sha(s.git.final_sha))}"
             )
         else:
             lines.append("- **Git:** not a Git repository")
@@ -245,10 +248,10 @@ class BaseReporter:
         if file_changes:
             for fc in file_changes:
                 word = self._STATUS_WORDS.get(fc.status, fc.status)
-                lines.append(f"- `{fc.status}` {word}: `{fc.path}`")
+                lines.append(f"- `{fc.status}` {word}: {code_span(fc.path)}")
         else:
             for path in files:
-                lines.append(f"- `{path}`")
+                lines.append(f"- {code_span(path)}")
         return lines
 
     def verification_section(self) -> List[str]:
@@ -270,7 +273,7 @@ class BaseReporter:
             kind = "test" if rc.is_test else "check"
             tool = f" ({rc.tool})" if rc.tool else ""
             repeat = f" x{rc.count}" if rc.count > 1 else ""
-            lines.append(f"- [passed] {kind}{tool}: `{rc.command}`{repeat}")
+            lines.append(f"- [passed] {kind}{tool}: {code_span(rc.command)}{repeat}")
         return lines
 
     def relevant_commands_section(
@@ -285,7 +288,7 @@ class BaseReporter:
             repeat = f" x{rc.count}" if rc.count > 1 else ""
             exit_repr = "n/a" if rc.exit_code is None else str(rc.exit_code)
             lines.append(
-                f"- `{rc.command}`{repeat} -> {status_label(rc.status)} "
+                f"- {code_span(rc.command)}{repeat} -> {status_label(rc.status)} "
                 f"(exit {exit_repr})"
             )
         return lines
@@ -303,9 +306,9 @@ class BaseReporter:
             return []
         lines = ["## Reproduce and verify", ""]
         if d.reproduce_command:
-            lines.append(f"- Reproduce (failed): `{d.reproduce_command}`")
+            lines.append(f"- Reproduce (failed): {code_span(d.reproduce_command)}")
         if d.verify_command:
-            lines.append(f"- Verify (passed): `{d.verify_command}`")
+            lines.append(f"- Verify (passed): {code_span(d.verify_command)}")
         return lines
 
     def red_to_green_section(self) -> List[str]:
@@ -315,7 +318,7 @@ class BaseReporter:
         lines = ["## Red to green", ""]
         window = human_duration(rtg.window_seconds)
         lines.append(
-            f"A check failed at `{_clock(rtg.failed_at)}` and `{rtg.command}` "
+            f"A check failed at `{_clock(rtg.failed_at)}` and {code_span(rtg.command)} "
             f"passed at `{_clock(rtg.passed_at)}` (window {window})."
         )
         if rtg.changed_files:
@@ -325,7 +328,7 @@ class BaseReporter:
                 "(correlation, not proven cause):"
             )
             for path in rtg.changed_files:
-                lines.append(f"- `{path}`")
+                lines.append(f"- {code_span(path)}")
         else:
             lines.append("")
             lines.append(
@@ -355,9 +358,7 @@ class BaseReporter:
             "",
             "Quoted verbatim from real command output:",
             "",
-            "```",
-            error,
-            "```",
+            fenced_code(error),
         ]
 
     def ruled_out_section(self) -> List[str]:
@@ -368,7 +369,7 @@ class BaseReporter:
         for rec in ruled:
             exit_repr = "n/a" if rec.exit_code is None else str(rec.exit_code)
             lines.append(
-                f"- `{rec.command}` -> {status_label(rec.status)} (exit {exit_repr})"
+                f"- {code_span(rec.command)} -> {status_label(rec.status)} (exit {exit_repr})"
             )
         return lines
 

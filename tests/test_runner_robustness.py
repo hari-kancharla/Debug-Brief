@@ -266,22 +266,91 @@ def test_setsid_descendant_triggers_warning(tmp_path):
         subprocess.run(["pkill", "-f", marker])
 
 
-# ANSI cleaning across chunk and truncation boundaries ------------------------
-def test_ansi_cleaner_handles_sequences_split_across_chunks():
-    from debugbrief.command_runner import _AnsiCleaner
+# Terminal-control sanitizer (the bounded state machine) ----------------------
+def _clean(*chunks):
+    from debugbrief.command_runner import _TerminalCleaner
 
-    cleaner = _AnsiCleaner()
-    out = (
-        cleaner.feed("abc\x1b[3")
-        + cleaner.feed("1mRED\x1b[0")
-        + cleaner.feed("m done")
-        + cleaner.flush()
-    )
-    assert out == "abcRED done"
+    cleaner = _TerminalCleaner()
+    return "".join(cleaner.feed(c) for c in chunks) + cleaner.flush()
 
-    one_shot = _AnsiCleaner()
-    assert one_shot.feed("\x1b[32mok\x1b[0m\n") == "ok\n"
-    assert _AnsiCleaner().feed("line\r\n") == "line\n"
+
+def test_cleaner_csi_split_across_chunks():
+    assert _clean("abc\x1b[3", "1mRED\x1b[0", "m done") == "abcRED done"
+
+
+def test_cleaner_incomplete_csi_at_eof_is_dropped():
+    # An unterminated CSI at end of stream must not leak a raw ESC.
+    assert _clean("text\x1b[31") == "text"
+    assert "\x1b" not in _clean("x\x1b[")
+
+
+def test_cleaner_osc8_hyperlink_longer_than_64_chars_split():
+    url = "https://example.com/" + "a" * 200
+    osc8 = f"\x1b]8;;{url}\x07link text\x1b]8;;\x07"
+    # feed it in awkward 7-char chunks
+    chunks = [osc8[i : i + 7] for i in range(0, len(osc8), 7)]
+    out = _clean(*chunks)
+    assert out == "link text"
+    assert "\x1b" not in out and "example.com" not in out
+
+
+def test_cleaner_dcs_split_across_chunks():
+    dcs = "\x1bPsome-dcs-payload\x1b\\after"
+    chunks = [dcs[i : i + 5] for i in range(0, len(dcs), 5)]
+    assert _clean(*chunks) == "after"
+
+
+def test_cleaner_crlf_and_bare_cr_split_across_chunks():
+    assert _clean("line\r", "\nnext") == "line\nnext"  # CRLF split -> one newline
+    assert _clean("progress\r", "done") == "progress\ndone"  # bare CR -> newline
+    assert _clean("end\r") == "end\n"  # trailing CR at EOF
+
+
+def test_cleaner_strips_bel_backspace_and_keeps_tab():
+    assert _clean("a\x07b\x08c") == "abc"  # BEL and backspace dropped
+    assert _clean("col1\tcol2\n") == "col1\tcol2\n"  # tab and newline kept
+
+
+def test_cleaner_preserves_unicode_adjacent_to_controls():
+    assert _clean("\x1b[32mcafé 漢字\x1b[0m 😀") == "café 漢字 😀"
+
+
+def test_cleaner_oversized_osc_drops_entire_payload():
+    # An OSC title far longer than the internal length cap must be dropped in
+    # full; the tail past the cap must not leak into the report as text.
+    payload = "A" * 5000
+    out = _clean(f"before\x1b]0;{payload}\x07after")
+    assert out == "beforeafter"
+    assert "A" not in out and "\x1b" not in out
+
+
+def test_cleaner_oversized_osc_drops_payload_when_split():
+    # The same oversized OSC fed in tiny chunks (the realistic streaming case)
+    # must still be dropped whole, with nothing leaking across read boundaries.
+    payload = "Z" * 5000
+    osc = f"\x1b]0;{payload}\x07tail"
+    chunks = [osc[i : i + 7] for i in range(0, len(osc), 7)]
+    out = _clean(*chunks)
+    assert out == "tail"
+    assert "Z" not in out and "\x1b" not in out
+
+
+def test_cleaner_oversized_dcs_drops_payload_until_st():
+    # DCS/APC/PM/SOS terminate on ST (ESC backslash), not BEL; an oversized one
+    # must still be dropped in full, including a terminator past the cap.
+    payload = "B" * 5000
+    out = _clean(f"\x1bP{payload}\x1b\\done")
+    assert out == "done"
+    assert "B" not in out and "\x1b" not in out
+
+
+def test_cleaner_runaway_csi_gives_up_and_resumes_text():
+    # A control sequence (CSI) is short by spec, so one that overruns the cap is
+    # junk: the cleaner gives up (no raw ESC leaks) and resumes emitting normal
+    # text rather than discarding the rest of the stream forever.
+    out = _clean("\x1b[" + "1;" * 4000 + "Xdone")
+    assert "\x1b" not in out
+    assert out.endswith("done")
 
 
 def test_truncated_colored_output_has_no_escape_fragments(tmp_path):
@@ -365,3 +434,92 @@ def test_repeated_interrupt_during_termination_still_records(tmp_path, monkeypat
     assert result.interrupted is True
     assert result.command_data.classification.status == COMMAND_STATUS_INTERRUPTED
     assert state["calls"] >= 2  # the retry actually happened
+
+
+# Broken downstream pipe (debugbrief run | head) ------------------------------
+def test_broken_downstream_pipe_stops_command_promptly(tmp_path):
+    import json
+    import os
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        [PY, "-m", "debugbrief", "start", "bp test"],
+        cwd=tmp_path, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
+    )
+    marker = f"db_bp_marker_{tmp_path.name}"
+    producer = (
+        "import sys, time\n"
+        "while True:\n"
+        "    sys.stdout.write('line\\n'); sys.stdout.flush()\n"
+        "    time.sleep(0.01)\n"
+        f"# {marker}\n"
+    )
+    proc = subprocess.Popen(
+        [PY, "-m", "debugbrief", "run", "--timeout", "30", "--", PY, "-c", producer],
+        cwd=tmp_path, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+    )
+    assert proc.stdout is not None
+    assert proc.stdout.readline()  # received initial output
+    start = time.monotonic()
+    proc.stdout.close()  # the consumer (like `head`) goes away
+    rc = proc.wait(timeout=15)
+    elapsed = time.monotonic() - start
+
+    assert rc == 141, f"expected 141 (SIGPIPE convention), got {rc}"
+    assert elapsed < 10, f"did not stop promptly: {elapsed:.1f}s (timeout was 30s)"
+    time.sleep(0.4)
+    orphan = subprocess.run(["pgrep", "-f", marker], stdout=subprocess.PIPE).stdout.strip()
+    if orphan:
+        subprocess.run(["pkill", "-f", marker])
+    assert not orphan, "the producer kept running after the pipe broke"
+
+    sessions = list((tmp_path / ".debugbrief" / "sessions").glob("*.json"))
+    assert sessions
+    data = json.loads(sessions[0].read_text())
+    cmds = [e for e in data["events"] if e["type"] == "command"]
+    assert len(cmds) == 1, f"expected exactly one command event, got {len(cmds)}"
+    assert cmds[0]["data"]["classification"]["status"] == "broken_pipe"
+    assert os  # silence unused-import linters across versions
+
+
+def test_repeated_sigint_persists_exactly_one_event(tmp_path):
+    import json
+    import signal
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        [PY, "-m", "debugbrief", "start", "stress"],
+        cwd=tmp_path, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
+    )
+    marker = f"db_stress_marker_{tmp_path.name}"
+    proc = subprocess.Popen(
+        [PY, "-m", "debugbrief", "run", "--", PY, "-c", f"import time; time.sleep(30)  # {marker}"],
+        cwd=tmp_path, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    time.sleep(1.5)
+    for _ in range(6):  # hammer Ctrl-C around exit and persistence
+        try:
+            proc.send_signal(signal.SIGINT)
+        except ProcessLookupError:
+            break
+        time.sleep(0.04)
+    rc = proc.wait(timeout=15)
+    time.sleep(0.4)
+    orphan = subprocess.run(["pgrep", "-f", marker], stdout=subprocess.PIPE).stdout.strip()
+    if orphan:
+        subprocess.run(["pkill", "-f", marker])
+
+    # Both outcomes mean "interrupted": a clean catch returns 130, while a storm
+    # SIGINT that lands during interpreter shutdown kills the process with signal
+    # 2 (wait() reports -2, which a shell also surfaces as 130). The strict
+    # invariants are persistence integrity below, not which form the code takes.
+    assert rc in (130, -signal.SIGINT), rc
+    assert not orphan
+    sessions = list((tmp_path / ".debugbrief" / "sessions").glob("*.json"))
+    assert sessions
+    data = json.loads(sessions[0].read_text())  # must remain valid JSON
+    cmds = [e for e in data["events"] if e["type"] == "command"]
+    # Exactly one event, never duplicated, recorded as interrupted.
+    assert len(cmds) == 1, f"expected exactly one command event, got {len(cmds)}"
+    assert cmds[0]["data"]["classification"]["status"] == "interrupted"

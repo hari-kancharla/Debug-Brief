@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from .markdown import code_span
 from .models import (
     COMMAND_STATUS_PASSED,
     NON_SUCCESS_STATUSES,
@@ -62,6 +63,7 @@ class CommandRecord:
     is_verification: bool
     tool: Optional[str]
     stderr_preview: str
+    stdout_preview: str
     changed_files: List[str]
     head_sha: Optional[str]
     redacted: bool
@@ -127,6 +129,7 @@ def _records(session: Session) -> List[CommandRecord]:
                 is_verification=data.classification.is_verification,
                 tool=data.classification.tool,
                 stderr_preview=data.stderr_preview,
+                stdout_preview=data.stdout_preview,
                 changed_files=list(data.git_changed_files),
                 head_sha=data.git_head,
                 redacted=data.redacted,
@@ -193,20 +196,31 @@ def _detect_red_to_green(
 
 
 def _extract_observed_error(records: List[CommandRecord]) -> Optional[str]:
-    """Quote a single, real error line from a failed command's stderr.
+    """Quote a single, real error line from a failed command's output.
 
-    Prefers the first failing verification command, then any failing command.
-    The text was already redacted at capture time.
+    Considers failing commands in priority order (the first failing verification
+    command, then any other failing command) and, for each, prefers its stderr
+    but falls back to its stdout. Many test tools (pytest among them) print the
+    assertion and summary to stdout, so a higher-priority command whose error is
+    only on stdout is still preferred over a lower-priority command's stderr.
+    Only failed commands are considered; the text was already redacted at capture.
     """
-    failing = [r for r in records if r.failed and r.stderr_preview.strip()]
+    failing = [r for r in records if r.failed]
     candidates = [r for r in failing if r.is_verification_candidate]
     candidates += [r for r in failing if not r.is_verification_candidate]
+    # Command priority dominates: take each candidate's stderr, then its stdout,
+    # before moving to the next, so a lower-priority command's stderr never wins
+    # over a higher-priority command's stdout.
     for rec in candidates:
-        line = _pick_error_line(rec.stderr_preview)
-        if line:
-            if len(line) > _OBSERVED_ERROR_LIMIT:
-                return line[:_OBSERVED_ERROR_LIMIT].rstrip() + " ..."
-            return line
+        for source in ("stderr_preview", "stdout_preview"):
+            text = getattr(rec, source)
+            if not text.strip():
+                continue
+            line = _pick_error_line(text)
+            if line:
+                if len(line) > _OBSERVED_ERROR_LIMIT:
+                    return line[:_OBSERVED_ERROR_LIMIT].rstrip() + " ..."
+                return line
     return None
 
 
@@ -257,7 +271,7 @@ def _build_one_liner(
     files = _files_clause(session)
 
     if red_to_green is not None:
-        parts = [f"Failing check `{red_to_green.command}` passed"]
+        parts = [f"Failing check {code_span(red_to_green.command)} passed"]
         parts.append(f"after {n} {_attempts_word(n)}")
         if duration:
             parts.append(f"over {duration}")
@@ -271,7 +285,7 @@ def _build_one_liner(
 
     if passed_verifications:
         cmd = passed_verifications[0].command
-        parts = [f"Verification `{cmd}` passed"]
+        parts = [f"Verification {code_span(cmd)} passed"]
         parts.append(f"after {n} {_attempts_word(n)}")
         if duration:
             parts.append(f"over {duration}")
@@ -285,7 +299,7 @@ def _build_one_liner(
         lead = f"Recorded {n} command {_attempts_word(n)}"
         if duration:
             lead += f" over {duration}"
-        return f"{lead}; verification `{cmd}` failed and none passed."
+        return f"{lead}; verification {code_span(cmd)} failed and none passed."
 
     if n > 0:
         lead = f"Recorded {n} command {_attempts_word(n)}"

@@ -6,6 +6,22 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Ruff
+        run: python -m ruff check src tests
+      - name: mypy
+        run: python -m mypy src/debugbrief
+
   test:
     # Unix-only by design. DebugBrief does not support Windows/PowerShell,
     # so CI runs on Linux and macOS only and never on a Windows runner.
@@ -14,35 +30,53 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install package with test dependencies
+      - name: Install with dev dependencies
         run: |
-          python -m pip install --upgrade pip build
+          python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
       - name: Run tests
         run: python -m pytest -q
 
-      - name: Build wheel
-        run: python -m build --wheel
+      - name: Build sdist and wheel
+        run: python -m build
 
-      - name: Install built wheel
-        run: python -m pip install --force-reinstall dist/*.whl
-
-      - name: CLI smoke checks
+      - name: Install the built wheel into a clean environment
         shell: bash
         run: |
           set -euo pipefail
+          python -m venv /tmp/wheelenv
+          /tmp/wheelenv/bin/python -m pip install --upgrade pip
+          /tmp/wheelenv/bin/python -m pip install dist/*.whl
+          /tmp/wheelenv/bin/python -m pip check
+
+      - name: Versions agree (package, metadata, pyproject)
+        shell: bash
+        run: |
+          set -euo pipefail
+          py=/tmp/wheelenv/bin/python
+          pkg=$("$py" -c "import debugbrief; print(debugbrief.__version__)")
+          meta=$("$py" -c "from importlib.metadata import version; print(version('debugbrief'))")
+          proj=$(grep -m1 -E '^version = ' pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "package=$pkg metadata=$meta pyproject=$proj"
+          test "$pkg" = "$meta"
+          test "$pkg" = "$proj"
+
+      - name: CLI smoke checks from the installed wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          db=/tmp/wheelenv/bin/debugbrief
           tmp="$(mktemp -d)"
           cd "$tmp"
           git init -q
@@ -53,20 +87,36 @@ jobs:
           git add seed.txt
           git commit -qm "init"
 
-          debugbrief --help
+          "$db" --version
+          "$db" --help
 
           # doctor: warnings (exit 1) are acceptable in a fresh repo;
           # only blocking issues (exit 2) should fail the smoke check.
           rc=0
-          debugbrief doctor || rc=$?
+          "$db" doctor || rc=$?
           if [ "$rc" -gt 1 ]; then
             echo "doctor reported blocking issues (exit $rc)"
             exit 1
           fi
 
-          debugbrief start "ci smoke"
-          debugbrief note "ci note"
-          debugbrief run "python -c 'print(1)'"
-          debugbrief end --mode pr
-          debugbrief last
-          debugbrief list
+          "$db" start "ci smoke"
+          "$db" note ci note without quotes
+          "$db" run -- python -c "print('ok')"
+          "$db" run -- python -c "import sys; sys.exit(1)" || true
+          "$db" redo || true
+          "$db" preview > /dev/null
+          "$db" end
+          "$db" last
+          "$db" list
+
+          # A broken downstream pipe must stop the command promptly, not hang to
+          # the timeout.
+          "$db" start "pipe smoke"
+          start=$(date +%s)
+          "$db" run --timeout 30 -- yes | head -n 1 > /dev/null || true
+          elapsed=$(( $(date +%s) - start ))
+          if [ "$elapsed" -gt 10 ]; then
+            echo "broken-pipe run did not stop promptly (${elapsed}s)"
+            exit 1
+          fi
+          "$db" cancel --yes

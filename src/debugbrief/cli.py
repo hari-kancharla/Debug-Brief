@@ -34,6 +34,7 @@ from typing import List, Optional
 
 from . import __version__
 from .command_runner import DEFAULT_TIMEOUT_SECONDS, RunResult, run_command
+from .config import load_config
 from .doctor import FAIL, run_doctor
 from .models import COMMAND_STATUS_PASSED, CommandData
 from .paths import ensure_local_ignore, resolve_project_paths
@@ -111,7 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--timeout",
         type=int,
-        default=DEFAULT_TIMEOUT_SECONDS,
+        default=None,
         metavar="SECONDS",
         help=f"Kill the command after this many seconds (default {DEFAULT_TIMEOUT_SECONDS}).",
     )
@@ -153,7 +154,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_redo.add_argument(
         "--timeout",
         type=int,
-        default=DEFAULT_TIMEOUT_SECONDS,
+        default=None,
         metavar="SECONDS",
         help=f"Kill the command after this many seconds (default {DEFAULT_TIMEOUT_SECONDS}).",
     )
@@ -180,14 +181,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_preview.add_argument(
         "--mode",
-        default="pr",
+        default=None,
         choices=VALID_MODES,
         help="Report style to preview (default pr).",
     )
     p_preview.add_argument(
         "--detail",
         choices=["full", "compact"],
-        default="full",
+        default=None,
         help="Report verbosity: full (default), or compact for a shorter PR brief.",
     )
     p_preview.set_defaults(func=cmd_preview)
@@ -198,7 +199,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_end.add_argument(
         "--mode",
-        default="pr",
+        default=None,
         choices=VALID_MODES,
         help="Report style to generate (default pr).",
     )
@@ -222,7 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_end.add_argument(
         "--detail",
         choices=["full", "compact"],
-        default="full",
+        default=None,
         help="Report verbosity: full (default), or compact for a shorter PR brief.",
     )
     p_end.set_defaults(func=cmd_end)
@@ -994,6 +995,25 @@ def _deferred_sigint():
         signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
+def _apply_config_defaults(args: argparse.Namespace) -> None:
+    """Fill flags the user did not pass from .debugbrief.toml, then built-ins.
+
+    Only timeout, mode, and detail have project-config defaults, and only when
+    argparse left them None (the user did not pass the flag). An explicit flag
+    therefore always beats config, and config always beats the built-in default.
+    """
+    resolvable = ("timeout", "mode", "detail")
+    if not any(getattr(args, name, "unset") is None for name in resolvable):
+        return
+    config = load_config(resolve_project_paths().project_root)
+    if getattr(args, "timeout", "unset") is None:
+        args.timeout = config.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
+    if getattr(args, "mode", "unset") is None:
+        args.mode = config.get("default_mode", "pr")
+    if getattr(args, "detail", "unset") is None:
+        args.detail = config.get("detail", "full")
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     if not is_supported_platform():
         eprint(
@@ -1010,6 +1030,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not hasattr(args, "func"):
         parser.print_help()
         return 2
+
+    _apply_config_defaults(args)
 
     try:
         code = args.func(args)

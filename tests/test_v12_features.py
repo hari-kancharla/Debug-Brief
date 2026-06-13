@@ -237,6 +237,27 @@ def test_recover_command_runs_with_nothing_to_do(paths, capsys):
     assert "nothing to recover" in capsys.readouterr().out
 
 
+def test_config_supplies_default_mode(paths):
+    (paths.project_root / ".debugbrief.toml").write_text(
+        'default_mode = "incident"\n', encoding="utf-8"
+    )
+    cli.main(["start", "cfg"])
+    cli.main(["run", "--", "echo", "ok"])
+    cli.main(["end"])  # no --mode, so config's default applies
+    assert list(paths.reports_dir.glob("*-incident.md"))
+
+
+def test_explicit_flag_overrides_config(paths):
+    (paths.project_root / ".debugbrief.toml").write_text(
+        'default_mode = "incident"\n', encoding="utf-8"
+    )
+    cli.main(["start", "cfg"])
+    cli.main(["run", "--", "echo", "ok"])
+    cli.main(["end", "--mode", "pr"])  # explicit flag wins over config
+    assert list(paths.reports_dir.glob("*-pr.md"))
+    assert not list(paths.reports_dir.glob("*-incident.md"))
+
+
 # preview ---------------------------------------------------------------------
 def test_preview_renders_without_mutating(paths, capsys):
     manager = SessionManager(paths)

@@ -381,6 +381,21 @@ debugbrief end --mode pr
 gh pr comment --body-file "$(ls -t .debugbrief/reports/*-pr.md | head -1)"
 ```
 
+## Project configuration
+
+An optional `.debugbrief.toml` at the project root sets defaults so you do not
+retype the same flags. It is entirely optional, and a missing or malformed file
+is ignored. Only these keys are read:
+
+```toml
+default_mode    = "pr"        # default for end/preview (pr, handoff, incident)
+timeout_seconds = 600         # default for run/redo
+detail          = "full"      # default report verbosity (full or compact)
+```
+
+An explicit flag always wins over the config, and the config always wins over
+the built-in default. Parsed with the standard library only (no dependencies).
+
 ## Local storage
 
 All state lives under the project root:

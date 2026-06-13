@@ -416,6 +416,8 @@ def _print_command_outcome(result: RunResult, timeout_seconds: int) -> None:
     data = result.command_data
     if result.errored:
         eprint(f"  error:     {result.error_message}")
+    elif result.interrupted:
+        eprint("  status:    interrupted (recorded)")
     elif result.timed_out:
         eprint(f"  status:    timed out after {timeout_seconds}s (recorded)")
     else:
@@ -430,6 +432,8 @@ def _print_command_outcome(result: RunResult, timeout_seconds: int) -> None:
         eprint("  note:      stderr preview was truncated")
     if data.redacted:
         eprint("  note:      secret-like values were redacted")
+    if result.warning:
+        eprint(f"  warning:   {result.warning}")
 
 
 def cmd_redo(args: argparse.Namespace) -> int:

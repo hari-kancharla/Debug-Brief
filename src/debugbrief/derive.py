@@ -16,20 +16,14 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from .models import (
-    COMMAND_STATUS_ERROR,
-    COMMAND_STATUS_FAILED,
     COMMAND_STATUS_PASSED,
-    COMMAND_STATUS_TIMED_OUT,
+    NON_SUCCESS_STATUSES,
     CommandData,
     Session,
 )
 from .utils import human_duration, parse_iso8601
 
-_FAIL_STATUSES = (
-    COMMAND_STATUS_FAILED,
-    COMMAND_STATUS_TIMED_OUT,
-    COMMAND_STATUS_ERROR,
-)
+_FAIL_STATUSES = NON_SUCCESS_STATUSES
 
 # Cap how much of an error line we quote verbatim.
 _OBSERVED_ERROR_LIMIT = 300

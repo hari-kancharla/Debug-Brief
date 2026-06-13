@@ -13,9 +13,7 @@ from typing import Any, Dict, List, Optional
 from . import git_utils
 from .command_runner import RunResult
 from .models import (
-    COMMAND_STATUS_ERROR,
-    COMMAND_STATUS_FAILED,
-    COMMAND_STATUS_TIMED_OUT,
+    NON_SUCCESS_STATUSES,
     CommandData,
     Event,
     FileChange,
@@ -211,8 +209,12 @@ class SessionManager:
         session.events.append(
             Event.command(result.command_data, result.command_data.started_at)
         )
-        if result.error_message and (result.errored or result.timed_out):
+        if result.error_message and (
+            result.errored or result.timed_out or result.interrupted
+        ):
             session.add_warning(result.error_message, now_iso8601())
+        if result.warning:
+            session.add_warning(result.warning, now_iso8601())
         self.save_session(session)
         self._write_active_pointer(session)
         return session
@@ -335,11 +337,7 @@ class SessionManager:
         failed = 0
         for event in commands:
             status = (event.data.get("classification") or {}).get("status")
-            if status in (
-                COMMAND_STATUS_FAILED,
-                COMMAND_STATUS_TIMED_OUT,
-                COMMAND_STATUS_ERROR,
-            ):
+            if status in NON_SUCCESS_STATUSES:
                 failed += 1
         session.summary.notes_count = len(notes)
         session.summary.commands_count = len(commands)

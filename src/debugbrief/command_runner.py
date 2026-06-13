@@ -5,20 +5,34 @@ While the command runs, its stdout and stderr are forwarded to the user's own
 terminal as the program writes them, and accumulated in parallel for the stored
 previews.
 
-To make that output genuinely live, the command is run under a pseudo-terminal
-(one for stdout, one for stderr) rather than a plain pipe. A program decides
-whether to line-buffer or block-buffer by asking whether its output is a
-terminal; behind a pipe most runtimes block-buffer and the output only appears
-when the program exits. A pty makes the program see a terminal, so it streams as
-it would in a real shell. Pseudo-terminals are a POSIX feature from the standard
-library only (``pty``/``termios``), so this keeps the zero-dependency, Unix-only
-design. If a pty cannot be allocated (a locked-down sandbox), the runner falls
-back to plain pipes and still captures everything, just without live buffering.
+Design notes for the parts that are easy to get wrong:
 
-Terminal control sequences (ANSI colors a program emits once it thinks it is on
-a terminal) are stripped from the stored previews so reports stay readable; the
-live echo keeps them. The previews are bounded (not full logs) and explicitly
-flagged when truncated.
+- Live output: the command runs under a pseudo-terminal (one for stdout, one for
+  stderr). A program decides whether to line-buffer or block-buffer by asking
+  whether its output is a terminal; behind a plain pipe most runtimes block-buffer
+  and nothing appears until they exit. A pty makes them stream as in a real shell.
+  Where no pty can be allocated (a locked-down sandbox), capture falls back to
+  plain pipes and still works, just without live buffering.
+
+- Process tree: the command runs in its own session/process group
+  (``start_new_session``), so a timeout or a Ctrl-C terminates the whole group
+  with ``killpg``, not just the immediate process. A command that spawns
+  background children no longer leaves them running.
+
+- No hang: after the immediate process exits, a background descendant can keep
+  the output streams open. The runner detects a still-living process group,
+  drains what is buffered, and returns with a warning instead of blocking
+  forever on the open stream.
+
+- Bounded memory: output is accumulated through a head-and-tail buffer that
+  retains at most the preview budget, so a command that prints gigabytes does
+  not grow the runner's memory. The preview limits bound the process, not only
+  the stored file.
+
+Terminal control sequences are stripped from the stored previews so reports stay
+readable; the live echo keeps them. Pseudo-terminals, process groups, and
+signals are POSIX standard library only, so this keeps the zero-dependency,
+Unix-only design.
 """
 
 from __future__ import annotations
@@ -27,14 +41,16 @@ import codecs
 import contextlib
 import os
 import re
+import select
 import shlex
+import signal
 import subprocess
 import sys
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Any, List, Optional, Union
+from typing import IO, Any, List, Optional, Tuple, Union
 
 from . import filters
 from .models import CommandData
@@ -43,14 +59,24 @@ from .utils import (
     DEFAULT_STDERR_PREVIEW_LIMIT,
     DEFAULT_STDOUT_PREVIEW_LIMIT,
     now_iso8601,
-    truncate_text,
 )
 
 DEFAULT_TIMEOUT_SECONDS = 300
 
+# How long to let readers drain buffered output once the command's immediate
+# process has exited but a background descendant still holds the stream open.
+_LINGER_DRAIN_SECONDS = 0.5
+# Upper bound on joining a reader once the writers are gone (EOF is near-instant;
+# this is only a safety cap).
+_READER_JOIN_SECONDS = 2.0
+# How long to wait for a signalled process group to die before escalating.
+_GROUP_TERM_WAIT = 2.0
+# Granularity at which readers poll for output and for the stop signal.
+_SELECT_INTERVAL = 0.2
+
 # Terminal escape sequences (CSI colors/cursor moves, OSC title sets, and the
-# simple two-character escapes) that a program emits when it believes it is
-# writing to a terminal. Stripped from stored previews only.
+# simple two-character escapes) a program emits when it believes it is on a
+# terminal. Stripped from stored previews only; the live echo keeps them.
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
 
 
@@ -62,42 +88,83 @@ class RunResult:
     timed_out: bool
     errored: bool
     error_message: Optional[str] = None
+    interrupted: bool = False
+    warning: Optional[str] = None
 
     @property
     def propagated_exit_code(self) -> int:
         """Exit code DebugBrief should return to its own caller.
 
-        Real exit codes pass through; timeouts/errors map to a nonzero code so
-        callers and scripts see failure.
+        Real exit codes pass through. A command killed by signal ``N`` is
+        reported by the OS as ``-N``; the shell convention is ``128 + N`` (so
+        SIGINT becomes 130), and that is what callers and scripts expect.
+        Interrupts map to 130, and timeouts/errors (no exit code) to 1.
         """
+        if self.interrupted:
+            return 130
         code = self.command_data.exit_code
         if code is None:
             return 1
+        if code < 0:
+            return 128 + (-code)
         return code
-
-
-@dataclass
-class _Captured:
-    """Internal: the raw outcome of executing a command, before previews."""
-
-    exit_code: Optional[int]
-    timed_out: bool
-    errored: bool
-    error_message: Optional[str]
-    stdout_text: str
-    stderr_text: str
 
 
 class _PtyUnavailable(Exception):
     """Raised when a pseudo-terminal cannot be allocated; triggers pipe fallback."""
 
 
+class _BoundedText:
+    """Accumulate streamed text while retaining at most a bounded amount.
+
+    Keeps the first ``limit`` characters (enough to reproduce the whole text
+    when it is short) and, separately, the last ``limit - limit // 3``
+    characters, so a head-and-tail preview can be produced without ever holding
+    the full output in memory. A ``limit`` of zero or less means "no limit" and
+    everything is kept (the caller opted out of bounding).
+    """
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.total = 0
+        self.unbounded = limit is None or limit <= 0
+        if self.unbounded:
+            self._parts: List[str] = []
+        else:
+            self.head_len = limit // 3
+            self.tail_len = limit - self.head_len
+            self._prefix = ""  # first `limit` characters
+            self._tail = ""  # last `tail_len` characters
+
+    def feed(self, text: str) -> None:
+        if not text:
+            return
+        self.total += len(text)
+        if self.unbounded:
+            self._parts.append(text)
+            return
+        if len(self._prefix) < self.limit:
+            self._prefix += text[: self.limit - len(self._prefix)]
+        if self.tail_len:
+            self._tail = (self._tail + text)[-self.tail_len :]
+
+    def result(self) -> Tuple[str, bool]:
+        """Return (preview, was_truncated)."""
+        if self.unbounded:
+            return "".join(self._parts), False
+        if self.total <= self.limit:
+            return self._prefix, False
+        head = self._prefix[: self.head_len]
+        omitted = self.total - self.limit
+        marker = f"\n... [{omitted} characters omitted] ...\n"
+        return head + marker + self._tail, True
+
+
 def _clean_for_storage(text: str) -> str:
     """Normalize captured text for the stored preview.
 
     Collapses the terminal's CR-LF to LF and strips ANSI escape sequences, so a
-    report shows plain readable text rather than color codes. The live echo to
-    the user keeps the original bytes.
+    report shows plain readable text rather than color codes.
     """
     if not text:
         return text
@@ -112,48 +179,84 @@ def _popen_error_message(exc: OSError, command: str) -> str:
     return f"Failed to execute command: {exc}"
 
 
-def _wait_with_readers(
-    process: "subprocess.Popen[Any]",
-    readers: List[threading.Thread],
-    timeout_seconds: int,
-) -> tuple:
-    """Wait for the process, draining reader threads. Returns (exit_code,
-    timed_out, error_message). On timeout the process is killed and whatever was
-    accumulated so far is kept."""
+def _group_alive(pgid: Optional[int]) -> bool:
+    """True if any process remains in the group ``pgid``."""
+    if pgid is None:
+        return False
     try:
-        exit_code = process.wait(timeout=timeout_seconds)
-        for reader in readers:
-            reader.join()
-        return exit_code, False, None
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
-        for reader in readers:
-            reader.join(timeout=2.0)
-        return None, True, f"Command timed out after {timeout_seconds}s."
+        os.killpg(pgid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # pragma: no cover - exists but not ours
+        return True
 
 
-def _pump_fd(fd: int, echo_to: Optional[IO[str]], chunks: List[str]) -> None:
-    """Drain a pty master ``fd``, echoing live and accumulating.
+def _terminate_group(
+    process: "subprocess.Popen[Any]", pgid: Optional[int], signals: Tuple[int, ...]
+) -> None:
+    """Signal the whole process group, escalating until it is gone.
 
-    Reads bytes (a pty has no text mode), decodes UTF-8 incrementally so a
-    multibyte character split across reads is not mangled, echoes the raw text
-    to ``echo_to``, and appends it to ``chunks``. On a closed/broken master the
-    read raises OSError (macOS reports EIO instead of EOF); both end the loop.
+    SIGKILL (the last signal callers pass) cannot be caught, so the group is
+    guaranteed dead by the end. Falls back to signalling just the immediate
+    process if no group id is known.
+    """
+    for sig in signals:
+        if not _group_alive(pgid):
+            break
+        try:
+            if pgid is not None:
+                os.killpg(pgid, sig)
+            else:
+                process.send_signal(sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            break
+        try:
+            process.wait(timeout=_GROUP_TERM_WAIT)
+        except subprocess.TimeoutExpired:
+            continue
+        else:
+            if not _group_alive(pgid):
+                return
+    with contextlib.suppress(Exception):
+        process.poll()
+
+
+def _join_deadline(readers: List[threading.Thread], seconds: float) -> None:
+    deadline = time.monotonic() + seconds
+    for reader in readers:
+        reader.join(timeout=max(0.0, deadline - time.monotonic()))
+
+
+def _pump_fd(
+    fd: int, echo_to: Optional[IO[str]], bounded: _BoundedText, stop: threading.Event
+) -> None:
+    """Drain an output ``fd`` until EOF or ``stop``, echoing live and accumulating.
+
+    Uses ``select`` so the loop can notice ``stop`` even when no data arrives
+    (a background process holding the stream open). Decodes UTF-8 incrementally
+    so a character split across reads is not mangled. Reads bytes (a pty master
+    has no text mode) and never closes the fd; the caller owns it.
     """
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
     try:
-        while True:
+        while not stop.is_set():
+            try:
+                ready, _, _ = select.select([fd], [], [], _SELECT_INTERVAL)
+            except (OSError, ValueError):
+                break
+            if not ready:
+                continue
             try:
                 data = os.read(fd, 65536)
-            except OSError:
+            except OSError:  # closed master / EIO on macOS == EOF
                 break
             if not data:
                 break
             text = decoder.decode(data)
             if not text:
                 continue
-            chunks.append(text)
+            bounded.feed(text)
             if echo_to is not None:
                 try:
                     echo_to.write(text)
@@ -162,28 +265,63 @@ def _pump_fd(fd: int, echo_to: Optional[IO[str]], chunks: List[str]) -> None:
                     echo_to = None
         tail = decoder.decode(b"", final=True)
         if tail:
-            chunks.append(tail)
-    finally:
-        with contextlib.suppress(OSError):
-            os.close(fd)
+            bounded.feed(tail)
+    except Exception:  # pragma: no cover - a reader thread must never crash the run
+        pass
 
 
-def _pump_stream(
-    stream: IO[str], echo_to: Optional[IO[str]], chunks: List[str]
-) -> None:
-    """Drain a text pipe ``stream`` line by line (pipe fallback path)."""
+def _drive(
+    process: "subprocess.Popen[Any]",
+    pgid: Optional[int],
+    specs: List[Tuple[int, Optional[IO[str]], _BoundedText]],
+    timeout_seconds: int,
+) -> Tuple[Optional[int], bool, bool, Optional[str], Optional[str]]:
+    """Run reader threads, wait for the process, and wind everything down.
+
+    Returns (exit_code, timed_out, interrupted, error_message, warning).
+    """
+    stop = threading.Event()
+    readers = [
+        threading.Thread(target=_pump_fd, args=(fd, echo, bounded, stop), daemon=True)
+        for (fd, echo, bounded) in specs
+    ]
+    for reader in readers:
+        reader.start()
+
+    timed_out = False
+    interrupted = False
+    error_message: Optional[str] = None
+    warning: Optional[str] = None
+    exit_code: Optional[int] = None
+
     try:
-        for line in iter(stream.readline, ""):
-            chunks.append(line)
-            if echo_to is not None:
-                try:
-                    echo_to.write(line)
-                    echo_to.flush()
-                except (OSError, ValueError):
-                    echo_to = None
-    finally:
-        with contextlib.suppress(OSError):
-            stream.close()
+        exit_code = process.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _terminate_group(process, pgid, (signal.SIGTERM, signal.SIGKILL))
+        error_message = f"Command timed out after {timeout_seconds}s."
+    except KeyboardInterrupt:
+        interrupted = True
+        _terminate_group(process, pgid, (signal.SIGINT, signal.SIGTERM, signal.SIGKILL))
+        error_message = "Command was interrupted before it finished."
+
+    if not timed_out and not interrupted and _group_alive(pgid):
+        # The immediate process is done but a background descendant still holds
+        # the streams open. Drain what is buffered, then stop instead of hanging.
+        _join_deadline(readers, _LINGER_DRAIN_SECONDS)
+        if any(reader.is_alive() for reader in readers):
+            warning = (
+                "Output stream stayed open after the command exited; a "
+                "background process it started may still be running, so the "
+                "captured output may be incomplete."
+            )
+    else:
+        _join_deadline(readers, _READER_JOIN_SECONDS)
+
+    stop.set()
+    for reader in readers:
+        reader.join(timeout=_READER_JOIN_SECONDS)
+    return exit_code, timed_out, interrupted, error_message, warning
 
 
 def _capture_via_pty(
@@ -193,12 +331,11 @@ def _capture_via_pty(
     use_shell: bool,
     timeout_seconds: int,
     echo: bool,
-) -> _Captured:
-    """Run the command under pseudo-terminals so output streams live.
-
-    Raises :class:`_PtyUnavailable` when a pty cannot be allocated, so the caller
-    can fall back to pipes.
-    """
+    out_bounded: _BoundedText,
+    err_bounded: _BoundedText,
+) -> Tuple[Optional[int], bool, bool, Optional[str], Optional[str]]:
+    """Run under pseudo-terminals so output streams live. Raises
+    :class:`_PtyUnavailable` when a pty cannot be allocated."""
     import fcntl
     import pty
     import struct
@@ -226,41 +363,30 @@ def _capture_via_pty(
             shell=use_shell,
             stdout=out_slave,
             stderr=err_slave,
+            start_new_session=True,
             close_fds=True,
         )
     except (FileNotFoundError, PermissionError, OSError) as exc:
         for fd in (out_master, out_slave, err_master, err_slave):
             with contextlib.suppress(OSError):
                 os.close(fd)
-        return _Captured(None, False, True, _popen_error_message(exc, command), "", "")
+        return None, False, False, _popen_error_message(exc, command), None
 
     # The child holds the slave ends now; the parent only reads the masters.
     for fd in (out_slave, err_slave):
         with contextlib.suppress(OSError):
             os.close(fd)
 
-    out_chunks: List[str] = []
-    err_chunks: List[str] = []
-    readers = [
-        threading.Thread(
-            target=_pump_fd,
-            args=(out_master, sys.stdout if echo else None, out_chunks),
-            daemon=True,
-        ),
-        threading.Thread(
-            target=_pump_fd,
-            args=(err_master, sys.stderr if echo else None, err_chunks),
-            daemon=True,
-        ),
-    ]
-    for reader in readers:
-        reader.start()
-    exit_code, timed_out, error_message = _wait_with_readers(
-        process, readers, timeout_seconds
-    )
-    return _Captured(
-        exit_code, timed_out, False, error_message, "".join(out_chunks), "".join(err_chunks)
-    )
+    try:
+        specs = [
+            (out_master, sys.stdout if echo else None, out_bounded),
+            (err_master, sys.stderr if echo else None, err_bounded),
+        ]
+        return _drive(process, process.pid, specs, timeout_seconds)
+    finally:
+        for fd in (out_master, err_master):
+            with contextlib.suppress(OSError):
+                os.close(fd)
 
 
 def _capture_via_pipes(
@@ -270,12 +396,12 @@ def _capture_via_pipes(
     use_shell: bool,
     timeout_seconds: int,
     echo: bool,
-) -> _Captured:
-    """Run the command with plain pipes (fallback when no pty is available).
-
-    Output is still captured and echoed, but a program that block-buffers when
-    it is not on a terminal will only appear once it exits.
-    """
+    out_bounded: _BoundedText,
+    err_bounded: _BoundedText,
+) -> Tuple[Optional[int], bool, bool, Optional[str], Optional[str]]:
+    """Run with plain pipes (fallback when no pty is available). Output is still
+    captured and echoed, but a program that block-buffers off a terminal only
+    appears once it exits."""
     try:
         process = subprocess.Popen(
             popen_args,
@@ -283,35 +409,24 @@ def _capture_via_pipes(
             shell=use_shell,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            errors="replace",
-            bufsize=1,
+            start_new_session=True,
+            bufsize=0,
+            close_fds=True,
         )
     except (FileNotFoundError, PermissionError, OSError) as exc:
-        return _Captured(None, False, True, _popen_error_message(exc, command), "", "")
+        return None, False, False, _popen_error_message(exc, command), None
 
-    out_chunks: List[str] = []
-    err_chunks: List[str] = []
-    readers = [
-        threading.Thread(
-            target=_pump_stream,
-            args=(process.stdout, sys.stdout if echo else None, out_chunks),
-            daemon=True,
-        ),
-        threading.Thread(
-            target=_pump_stream,
-            args=(process.stderr, sys.stderr if echo else None, err_chunks),
-            daemon=True,
-        ),
-    ]
-    for reader in readers:
-        reader.start()
-    exit_code, timed_out, error_message = _wait_with_readers(
-        process, readers, timeout_seconds
-    )
-    return _Captured(
-        exit_code, timed_out, False, error_message, "".join(out_chunks), "".join(err_chunks)
-    )
+    assert process.stdout is not None and process.stderr is not None
+    try:
+        specs = [
+            (process.stdout.fileno(), sys.stdout if echo else None, out_bounded),
+            (process.stderr.fileno(), sys.stderr if echo else None, err_bounded),
+        ]
+        return _drive(process, process.pid, specs, timeout_seconds)
+    finally:
+        for stream in (process.stdout, process.stderr):
+            with contextlib.suppress(OSError):
+                stream.close()
 
 
 def run_command(
@@ -329,25 +444,27 @@ def run_command(
 
     When ``use_shell`` is False (default), the command is parsed with
     ``shlex.split`` and executed without a shell. When ``use_shell`` is True,
-    the command runs through the system shell (shell features allowed).
+    the command runs through the system shell.
 
-    The command runs under a pseudo-terminal so its stdout and stderr stream
-    live to the corresponding ``sys`` streams (disable with ``echo=False``),
-    falling back to plain pipes where no pty is available. The echo is the raw
-    output; only the stored previews are cleaned and redacted.
-
-    By default captured output and the command string are passed through
-    best-effort secret redaction before they are returned, so raw secrets never
-    reach the session file. Pass ``redact=False`` to store the raw text.
-
-    ``force_verification`` marks an unrecognized command as a declared check
-    (tool ``custom``); pass/fail honesty is unaffected.
+    The command runs under a pseudo-terminal in its own process group, so its
+    output streams live (disable echo with ``echo=False``) and a timeout or a
+    Ctrl-C terminates the whole tree. Output is accumulated through a bounded
+    buffer, so the runner's memory stays bounded regardless of how much the
+    command prints. Pass ``redact=False`` to store output verbatim;
+    ``force_verification`` marks an unrecognized command as a declared check.
     """
     started_at = now_iso8601()
     start_monotonic = time.monotonic()
 
     errored = False
     error_message: Optional[str] = None
+    interrupted = False
+    timed_out = False
+    warning: Optional[str] = None
+    exit_code: Optional[int] = None
+
+    out_bounded = _BoundedText(stdout_limit)
+    err_bounded = _BoundedText(stderr_limit)
 
     popen_args: Union[str, List[str]]
     if use_shell:
@@ -364,34 +481,34 @@ def run_command(
             error_message = "Empty command."
         popen_args = parsed
 
-    if errored:
-        captured = _Captured(None, False, True, error_message, "", "")
-    else:
+    if not errored:
+        args = (
+            popen_args, command, cwd, use_shell, timeout_seconds, echo,
+            out_bounded, err_bounded,
+        )
         try:
-            captured = _capture_via_pty(
-                popen_args, command, cwd, use_shell, timeout_seconds, echo
-            )
+            exit_code, timed_out, interrupted, error_message, warning = _capture_via_pty(*args)
         except _PtyUnavailable:
-            captured = _capture_via_pipes(
-                popen_args, command, cwd, use_shell, timeout_seconds, echo
-            )
+            exit_code, timed_out, interrupted, error_message, warning = _capture_via_pipes(*args)
+        errored = error_message is not None and not timed_out and not interrupted
 
     ended_at = now_iso8601()
     duration = round(time.monotonic() - start_monotonic, 3)
 
-    stdout_clean = _clean_for_storage(captured.stdout_text)
-    stderr_clean = _clean_for_storage(captured.stderr_text)
-    stdout_preview, stdout_truncated = truncate_text(stdout_clean, stdout_limit)
-    stderr_preview, stderr_truncated = truncate_text(stderr_clean, stderr_limit)
+    stdout_raw, stdout_truncated = out_bounded.result()
+    stderr_raw, stderr_truncated = err_bounded.result()
+    stdout_preview = _clean_for_storage(stdout_raw)
+    stderr_preview = _clean_for_storage(stderr_raw)
 
-    # Classification is derived from the command tokens and the real exit code,
-    # so it is computed before redaction may alter the stored command string.
+    # Classification is derived from the command tokens and the real outcome, so
+    # it is computed before redaction may alter the stored command string.
     classification = filters.classify_command(
         command=command,
-        exit_code=captured.exit_code,
-        timed_out=captured.timed_out,
-        errored=captured.errored,
+        exit_code=exit_code,
+        timed_out=timed_out,
+        errored=errored,
         force_verification=force_verification,
+        interrupted=interrupted,
     )
 
     stored_command = command
@@ -407,7 +524,7 @@ def run_command(
         started_at=started_at,
         ended_at=ended_at,
         duration_seconds=duration,
-        exit_code=captured.exit_code,
+        exit_code=exit_code,
         stdout_preview=stdout_preview,
         stderr_preview=stderr_preview,
         stdout_truncated=stdout_truncated,
@@ -419,7 +536,9 @@ def run_command(
 
     return RunResult(
         command_data=command_data,
-        timed_out=captured.timed_out,
-        errored=captured.errored,
-        error_message=captured.error_message,
+        timed_out=timed_out,
+        errored=errored,
+        error_message=error_message,
+        interrupted=interrupted,
+        warning=warning,
     )

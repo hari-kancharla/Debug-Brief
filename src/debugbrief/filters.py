@@ -14,8 +14,10 @@ from typing import List, Optional, Tuple
 from .models import (
     COMMAND_STATUS_ERROR,
     COMMAND_STATUS_FAILED,
+    COMMAND_STATUS_INTERRUPTED,
     COMMAND_STATUS_PASSED,
     COMMAND_STATUS_TIMED_OUT,
+    NON_SUCCESS_STATUSES,
     CommandClassification,
     CommandData,
     Event,
@@ -116,9 +118,14 @@ def _match_build(tokens: List[str]) -> Optional[Tuple[str, str]]:
 
 
 def status_from_outcome(
-    exit_code: Optional[int], timed_out: bool, errored: bool
+    exit_code: Optional[int],
+    timed_out: bool,
+    errored: bool,
+    interrupted: bool = False,
 ) -> str:
     """Map an execution outcome to a command status string."""
+    if interrupted:
+        return COMMAND_STATUS_INTERRUPTED
     if timed_out:
         return COMMAND_STATUS_TIMED_OUT
     if errored:
@@ -134,6 +141,7 @@ def classify_command(
     timed_out: bool = False,
     errored: bool = False,
     force_verification: bool = False,
+    interrupted: bool = False,
 ) -> CommandClassification:
     """Classify a command into test / verification categories.
 
@@ -147,7 +155,7 @@ def classify_command(
     unchanged: ``is_verification`` is True only on a real exit 0.
     """
     tokens = _tokenize(command)
-    status = status_from_outcome(exit_code, timed_out, errored)
+    status = status_from_outcome(exit_code, timed_out, errored, interrupted)
     passed = status == COMMAND_STATUS_PASSED
 
     test_tool = _match_test(tokens)
@@ -217,11 +225,7 @@ class ReportCommand:
 
     @property
     def failed(self) -> bool:
-        return self.status in (
-            COMMAND_STATUS_FAILED,
-            COMMAND_STATUS_TIMED_OUT,
-            COMMAND_STATUS_ERROR,
-        )
+        return self.status in NON_SUCCESS_STATUSES
 
 
 def _event_seconds(event: Event) -> float:
@@ -250,11 +254,7 @@ def build_report_commands(
         command_text = data.command
         cls = data.classification
         status = cls.status
-        is_failure = status in (
-            COMMAND_STATUS_FAILED,
-            COMMAND_STATUS_TIMED_OUT,
-            COMMAND_STATUS_ERROR,
-        )
+        is_failure = status in NON_SUCCESS_STATUSES
 
         if drop_noise and is_noise_command(command_text) and not is_failure:
             continue

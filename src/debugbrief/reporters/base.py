@@ -14,6 +14,7 @@ from ..derive import Derivation, derive
 from ..filters import ReportCommand, build_report_commands
 from ..models import (
     COMMAND_STATUS_ERROR,
+    COMMAND_STATUS_INTERRUPTED,
     COMMAND_STATUS_PASSED,
     COMMAND_STATUS_TIMED_OUT,
     CommandData,
@@ -68,6 +69,7 @@ def status_label(status: str) -> str:
         "failed": "failed",
         COMMAND_STATUS_TIMED_OUT: "timed out",
         COMMAND_STATUS_ERROR: "did not run",
+        COMMAND_STATUS_INTERRUPTED: "interrupted",
     }.get(status, status)
 
 

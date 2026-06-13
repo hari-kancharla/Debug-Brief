@@ -32,6 +32,16 @@ COMMAND_STATUS_PASSED = "passed"
 COMMAND_STATUS_FAILED = "failed"
 COMMAND_STATUS_TIMED_OUT = "timed_out"
 COMMAND_STATUS_ERROR = "error"  # could not execute (e.g. command not found)
+COMMAND_STATUS_INTERRUPTED = "interrupted"  # stopped by the user (Ctrl-C)
+
+# Statuses that mean a command did not complete successfully. Used wherever the
+# code counts failures or decides what to surface as "tried but did not pass".
+NON_SUCCESS_STATUSES = (
+    COMMAND_STATUS_FAILED,
+    COMMAND_STATUS_TIMED_OUT,
+    COMMAND_STATUS_ERROR,
+    COMMAND_STATUS_INTERRUPTED,
+)
 
 
 @dataclass

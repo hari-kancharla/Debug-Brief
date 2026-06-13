@@ -67,6 +67,11 @@ def _run_git(args: List[str], cwd: Path) -> Tuple[bool, str, str]:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # Git speaks UTF-8 for paths and refs; decode as UTF-8 regardless of
+            # the process locale (a C/POSIX locale would otherwise mangle or fail
+            # on non-ASCII filenames), and never crash on an undecodable byte.
+            encoding="utf-8",
+            errors="replace",
             timeout=_GIT_TIMEOUT_SECONDS,
         )
     except FileNotFoundError:
@@ -165,30 +170,38 @@ def name_status(cwd: Path) -> List[Tuple[str, str]]:
     """Return sorted (label, path) pairs describing changed files.
 
     Labels are M (modified), A (added/new), D (deleted), or R (renamed).
-    Combines staged, unstaged, and untracked changes via ``git status
-    --porcelain`` so the result reflects the working tree at call time. Safe
-    outside a repo: returns an empty list.
+    Combines staged, unstaged, and untracked changes so the result reflects the
+    working tree at call time. Safe outside a repo: returns an empty list.
+
+    Uses the NUL-delimited ``-z`` form of ``git status --porcelain`` so paths are
+    emitted verbatim. The default form C-quotes and octal-escapes any path with
+    non-ASCII bytes (a filename like ``café.py`` would otherwise show up as
+    ``caf\\303\\251.py`` in a report).
     """
-    ok, out, _ = _run_git(["status", "--porcelain"], cwd)
+    ok, out, _ = _run_git(["status", "--porcelain", "-z"], cwd)
     if not ok:
         return []
     seen: Dict[str, str] = {}
-    for line in out.splitlines():
-        if not line.strip() or len(line) < 3:
+    # Entries are separated by NUL. A rename or copy is followed by its origin
+    # path as a separate NUL field, which we skip.
+    tokens = out.split("\x00")
+    i = 0
+    while i < len(tokens):
+        entry = tokens[i]
+        if len(entry) < 3:
+            i += 1
             continue
-        # Porcelain format: "XY <path>" or "XY <old> -> <new>" for renames.
-        code = line[:2]
-        path_part = line[3:]
-        if " -> " in path_part:
-            path_part = path_part.split(" -> ", 1)[1]
-        path_part = path_part.strip().strip('"')
-        if not path_part:
-            continue
-        if _is_generated_artifact(path_part):
+        code = entry[:2]  # "XY"; index 2 is a space, the path starts at 3
+        path = entry[3:]
+        if code[:1] in ("R", "C"):
+            i += 2  # consume this entry and its origin-path field
+        else:
+            i += 1
+        if not path or _is_generated_artifact(path):
             continue
         label = _porcelain_label(code)
         # If a path appears twice, keep the first (most significant) label.
-        seen.setdefault(path_part, label)
+        seen.setdefault(path, label)
     return sorted(
         ((label, path) for path, label in seen.items()), key=lambda item: item[1]
     )

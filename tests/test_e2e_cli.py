@@ -120,17 +120,17 @@ def test_broken_pipe_exits_cleanly(tmp_path):
     for _ in range(5):
         manager.add_note("x" * 20000)
 
-    proc = subprocess.Popen(
+    with subprocess.Popen(
         [sys.executable, "-m", "debugbrief", "show", session.session_id, "--json"],
         cwd=str(tmp_path),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-    )
-    assert proc.stdout is not None and proc.stderr is not None
-    proc.stdout.close()  # simulate `| head -1` exiting immediately
-    stderr = proc.stderr.read()
-    rc = proc.wait()
+    ) as proc:
+        assert proc.stdout is not None and proc.stderr is not None
+        proc.stdout.close()  # simulate `| head -1` exiting immediately
+        stderr = proc.stderr.read()
+        rc = proc.wait()
 
     assert "Traceback" not in stderr, stderr
     assert "BrokenPipeError" not in stderr, stderr

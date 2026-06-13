@@ -95,6 +95,22 @@ def test_name_status_outside_repo_is_empty(tmp_path):
     assert git_utils.name_status(tmp_path) == []
 
 
+def test_name_status_handles_unicode_spaces_and_renames(git_repo):
+    # Non-ASCII and spaced filenames must come through verbatim, not C-quoted
+    # and octal-escaped (caf\303\251.txt), and a rename must report the new name.
+    (git_repo / "café_漢字.txt").write_text("x\n", encoding="utf-8")
+    (git_repo / "file with spaces.txt").write_text("y\n", encoding="utf-8")
+    _git(["mv", "seed.txt", "renamed_café.txt"], git_repo)
+
+    pairs = {path: label for label, path in git_utils.name_status(git_repo)}
+    assert "café_漢字.txt" in pairs
+    assert pairs["café_漢字.txt"] == "A"
+    assert "file with spaces.txt" in pairs
+    assert pairs["renamed_café.txt"] == "R"
+    # No octal-escaped or quote-wrapped artifacts leaked in.
+    assert all("\\3" not in path and '"' not in path for path in pairs)
+
+
 def test_name_status_excludes_generated_artifacts(git_repo):
     # A real source change that must survive the filtering.
     (git_repo / "real.py").write_text("print('hi')\n", encoding="utf-8")

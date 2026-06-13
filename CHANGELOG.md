@@ -33,6 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shell would turn into the wrong status. The raw signal code is still stored.
 - A failed second pseudo-terminal allocation no longer leaks the first pair of
   descriptors before falling back to pipes.
+- Repeated Ctrl-C no longer escapes the runner unrecorded. A second interrupt
+  arriving while the first is terminating the group is absorbed so cleanup
+  completes and the command is still recorded as interrupted.
+- Changed-file lists show non-ASCII and spaced filenames verbatim
+  (`café_漢字.txt`, `file with spaces.txt`) instead of git's octal-escaped,
+  C-quoted form, and renames report the new name. Git output is decoded as
+  UTF-8 regardless of the process locale, so a C/POSIX locale no longer mangles
+  or fails on such paths.
 
 ### Changed
 

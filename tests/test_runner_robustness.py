@@ -330,3 +330,38 @@ def test_real_sigint_records_interrupted_and_kills_child(tmp_path):
         if e["type"] == "command"
     ]
     assert "interrupted" in statuses
+
+
+def test_repeated_interrupt_during_termination_still_records(tmp_path, monkeypatch):
+    # A second Ctrl-C arriving while the first interrupt is terminating the
+    # group must not abandon cleanup and escape unrecorded.
+    import debugbrief.command_runner as cr
+
+    real_terminate = cr._terminate_group
+    state = {"calls": 0}
+
+    def flaky_terminate(process, pgid, signals):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise KeyboardInterrupt  # the second Ctrl-C, during termination
+        return real_terminate(process, pgid, signals)
+
+    monkeypatch.setattr(cr, "_terminate_group", flaky_terminate)
+
+    real_wait = subprocess.Popen.wait
+    first = {"done": False}
+
+    def fake_wait(self, timeout=None):
+        if not first["done"]:
+            first["done"] = True
+            raise KeyboardInterrupt  # the first Ctrl-C, during wait
+        return real_wait(self, timeout=timeout)
+
+    monkeypatch.setattr(subprocess.Popen, "wait", fake_wait)
+
+    result = run_command(
+        f"{PY} -c 'import time; time.sleep(30)'", cwd=tmp_path, echo=False
+    )
+    assert result.interrupted is True
+    assert result.command_data.classification.status == COMMAND_STATUS_INTERRUPTED
+    assert state["calls"] >= 2  # the retry actually happened

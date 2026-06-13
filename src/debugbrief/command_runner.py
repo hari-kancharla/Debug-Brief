@@ -261,6 +261,21 @@ def _join_deadline(readers: List[threading.Thread], seconds: float) -> None:
         reader.join(timeout=max(0.0, deadline - time.monotonic()))
 
 
+def _ignore_interrupt(func: Any, *args: Any) -> Any:
+    """Call ``func(*args)``, retrying if a KeyboardInterrupt arrives.
+
+    Teardown (terminating the group, joining readers) must complete even if the
+    user keeps pressing Ctrl-C, so a second interrupt does not abandon cleanup
+    and leave the command unrecorded. Each retried operation is bounded, so this
+    cannot spin forever.
+    """
+    while True:
+        try:
+            return func(*args)
+        except KeyboardInterrupt:
+            continue
+
+
 def _pump_fd(
     fd: int, echo_to: Optional[IO[str]], bounded: _BoundedText, stop: threading.Event
 ) -> None:
@@ -363,19 +378,24 @@ def _drive(
             interrupted = True
             timed_out = False
             warning = None
-            _terminate_group(
-                process, pgid, (signal.SIGINT, signal.SIGTERM, signal.SIGKILL)
+            error_message = "Command was interrupted before it finished."
+            # Terminate even if the user keeps pressing Ctrl-C, so a second
+            # interrupt cannot abandon cleanup and leave the command unrecorded.
+            _ignore_interrupt(
+                _terminate_group,
+                process,
+                pgid,
+                (signal.SIGINT, signal.SIGTERM, signal.SIGKILL),
             )
             # Store the raw reaped signal code (e.g. -2); the propagated CLI exit
             # code stays 130 because the user interrupted the run.
             exit_code = process.returncode
-            error_message = "Command was interrupted before it finished."
         # If the command had already completed, keep its real result and just
         # fall through to stop the readers.
     finally:
         stop.set()
         for reader in readers:
-            reader.join(timeout=_READER_JOIN_SECONDS)
+            _ignore_interrupt(reader.join, _READER_JOIN_SECONDS)
 
     return exit_code, timed_out, interrupted, error_message, warning
 

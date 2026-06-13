@@ -105,13 +105,16 @@ debugbrief end --stdout | gh pr comment --body-file -
 ## Limitations
 
 - Unix-like only; no Windows/PowerShell.
-- Capture is explicit via `debugbrief run`. There is no terminal transcript or
-  PTY capture, and output is stored as bounded previews, not full logs.
+- Capture is explicit via `debugbrief run`. Output streams live while a bounded
+  preview is stored for the report; DebugBrief does not keep a full transcript.
 - Commands run under a pseudo-terminal so output streams live; full-screen TUIs
   (a `vim` session, `htop`) still are not meaningfully captured, since their
   cursor-control output is not linear text. Run those directly and record the
   outcome with `note`. Where no pseudo-terminal is available (a locked-down
   sandbox), capture falls back to plain pipes.
+- Termination signals the command's process group, so ordinary background
+  children are cleaned up; a child that detaches itself with its own session
+  (`setsid`) can still outlive the command, which is reported as a warning.
 - Redaction is conservative and best effort; it does not catch every secret.
 - Git sections need native `git`; outside a repo they are omitted honestly.
 

@@ -99,12 +99,13 @@ If no session is active, `run` auto-starts one first.
 
 ### Live output
 
-The command runs under a pseudo-terminal, so it streams its output live, the
-same as it would in a real shell. This matters because most programs decide how
-to buffer by asking whether their output is a terminal: behind a plain pipe they
-block-buffer and nothing appears until they exit. The pty makes them see a
-terminal, so even a plain `python script.py` prints line by line as it runs. The
-full output is captured for the report either way.
+The command runs under a pseudo-terminal, which gives it terminal-like
+buffering, so it streams its output live. This matters because most programs
+decide how to buffer by asking whether their output is a terminal: behind a
+plain pipe they block-buffer and nothing appears until they exit. The pty makes
+them see a terminal, so even a plain `python script.py` prints line by line as
+it runs. The output streams live while a bounded preview is stored for the
+report.
 
 Two small consequences, both handled:
 
@@ -134,8 +135,8 @@ a no-op: the automatic classification wins.
 
 ### Timeouts, interrupts, and background processes
 
-The command runs in its own process group, so termination reaches the whole
-tree, not just the immediate process.
+The command runs in its own process group, so termination reaches the group,
+not just the immediate process.
 
 The default timeout is 300 seconds. Override with `--timeout`:
 
@@ -143,20 +144,22 @@ The default timeout is 300 seconds. Override with `--timeout`:
 debugbrief run --timeout 600 -- pytest tests/
 ```
 
-On timeout the whole process group is terminated (SIGTERM then SIGKILL), the
-event is recorded with status `timed_out` and a `null` exit code, and a nonzero
-code is returned. A command that spawned background children does not leave them
-running.
+On timeout the process group is terminated (SIGTERM then SIGKILL), the event is
+recorded with status `timed_out` and a `null` exit code, and a nonzero code is
+returned. Ordinary background children are cleaned up; a child that detaches
+into its own session (`setsid`) can still outlive the command, which is reported
+as a warning.
 
 Ctrl-C terminates the group the same way and records the command with an
-`interrupted` status (exit code 130), so an aborted attempt still appears in the
-report. A command killed by a signal reports the conventional `128 + N` exit
-code (SIGINT is 130).
+`interrupted` status, so an aborted attempt still appears in the report. The
+event stores the raw code the child died with (a negative signal number), while
+the CLI exits 130 because you interrupted the run. A command killed by a signal
+otherwise reports the conventional `128 + N` exit code (SIGINT is 130).
 
 If the command exits but a background process it started keeps the output stream
 open (for example `sh -c 'devserver &'`), `run` drains what is buffered and
-returns with a warning rather than blocking on the open stream. Captured output
-is bounded in memory regardless of how much the command prints.
+returns with a warning rather than blocking on the open stream. The retained
+preview is bounded in memory regardless of how much the command prints.
 
 ### Redaction
 

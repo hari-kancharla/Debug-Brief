@@ -9,36 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A timeout now terminates the command's whole process tree, not just the
-  immediate process. The command runs in its own process group
-  (`start_new_session`) and a timeout signals the group (SIGTERM then SIGKILL),
-  so a command that spawned background children no longer leaves them running.
+- A timeout now terminates the command's process group, not just the immediate
+  process. The command runs in its own process group (`start_new_session`) and a
+  timeout signals the group (SIGTERM then SIGKILL), so a command that spawned
+  background children no longer leaves them running. A child that detaches into
+  its own session (`setsid`) can still escape; that is reported as a warning
+  rather than silently waited on.
 - `run` no longer hangs when the command exits but a background process it
   started keeps the output stream open (for example `sh -c 'server &'`). The
-  runner detects the still-open stream, drains what is buffered, and returns
-  with a warning instead of blocking indefinitely.
-- Captured output is bounded in memory while the command runs. Output is
-  accumulated through a head-and-tail buffer capped at the preview budget, so a
-  command that prints gigabytes no longer grows the runner's memory; previously
-  the full output was held before truncation.
-- Ctrl-C during a command now terminates the whole process group and records
-  the command with an `interrupted` status (and exit code 130), instead of
-  killing the run without recording the attempt.
+  runner notices the reader threads are still active, drains what is buffered,
+  and returns with a warning instead of blocking indefinitely.
+- The retained preview is bounded in memory while the command runs. Output flows
+  through a head-and-tail buffer capped at the preview budget, so a command that
+  prints gigabytes no longer grows the runner's memory; previously the full
+  output was held before truncation.
+- Ctrl-C during a command now terminates the process group and records the
+  command with an `interrupted` status, instead of killing the run without
+  recording the attempt. The stored event keeps the raw code the child died with
+  while the CLI exits 130. The interrupt is handled across the whole wait and
+  drain lifecycle, so it cannot escape unrecorded.
 - A command killed by a signal propagates the conventional `128 + N` exit code
   (so SIGINT is 130, SIGSEGV is 139), instead of the raw negative code that a
   shell would turn into the wrong status. The raw signal code is still stored.
+- A failed second pseudo-terminal allocation no longer leaks the first pair of
+  descriptors before falling back to pipes.
 
 ### Changed
 
 - `run` now executes the command under a pseudo-terminal (one each for stdout
-  and stderr) instead of plain pipes, so output streams live the way it would in
-  a real shell. Most programs block-buffer when they detect they are not on a
+  and stderr) instead of plain pipes, so output streams live with terminal-like
+  buffering. Most programs block-buffer when they detect they are not on a
   terminal, which previously meant a plain script's output only appeared once it
-  exited; under the pty it streams line by line. The full output is still
-  captured, stdout and stderr stay separate, terminal color codes are stripped
-  from the stored report (the live echo keeps them), and capture falls back to
-  plain pipes where no pty can be allocated. Standard library only; still no
-  runtime dependencies.
+  exited; under the pty it streams line by line. stdout and stderr stay separate,
+  terminal escape sequences are stripped from the stored preview as output is
+  read (so a sequence split across reads or the truncation boundary leaves no
+  fragment; the live echo keeps color), the preview is bounded, and capture
+  falls back to plain pipes where no pty can be allocated. Standard library
+  only; still no runtime dependencies.
 
 ## [1.2.0] - 2026-06-11
 

@@ -92,6 +92,26 @@ def test_classify_build_lint_typecheck():
         assert fail_cls.is_verification is False, command
 
 
+def test_classify_anchors_to_executable_not_arguments():
+    # A tool name that only appears as an argument is not the tool.
+    assert filters.classify_command("echo pytest", exit_code=0).tool is None
+    assert filters.classify_command("python tool.py --label pytest", 0).tool is None
+    # The executable is recognized by its basename, even via a path.
+    assert filters.classify_command(".venv/bin/pytest -q", exit_code=0).tool == "pytest"
+    assert filters.classify_command("/usr/local/bin/jest", exit_code=0).tool == "jest"
+    # Common wrappers are unwrapped to the real tool underneath.
+    assert filters.classify_command("python -m pytest", exit_code=0).tool == "pytest"
+    assert filters.classify_command("uv run pytest", exit_code=0).tool == "pytest"
+    assert filters.classify_command("poetry run pytest tests/", 0).tool == "pytest"
+    assert filters.classify_command("npx jest", exit_code=0).tool == "jest"
+    # A leading environment assignment is skipped.
+    assert filters.classify_command("CI=1 pytest", exit_code=0).tool == "pytest"
+    # A wrapper's own options are skipped before the inner command.
+    assert filters.classify_command("uv run --with pytest pytest", 0).tool == "pytest"
+    assert filters.classify_command("npx --yes jest", exit_code=0).tool == "jest"
+    assert filters.classify_command("poetry run -q pytest", exit_code=0).tool == "pytest"
+
+
 def test_classify_unknown_command():
     cls = filters.classify_command("echo hello", exit_code=0)
     assert cls.is_test is False

@@ -34,7 +34,7 @@ _1 file(s) changed, +3 / -0 lines._
 
 _Test/verification commands were run but none passed. This work is **not** verified._
 
-## What was ruled out
+## Failed attempts
 
 - `python -m pytest tests/test_migrations.py` -> failed (exit 1)
 

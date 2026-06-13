@@ -21,6 +21,9 @@ def paths(tmp_path):
 @pytest.fixture(autouse=True)
 def _patch_resolve(monkeypatch, paths):
     monkeypatch.setattr(cli, "resolve_project_paths", lambda: paths)
+    # Commands run from the user's current directory, so place the test there
+    # (a real user is inside their project); relative scripts then resolve.
+    monkeypatch.chdir(paths.project_root)
     return paths
 
 
@@ -115,6 +118,144 @@ def test_redo_inherits_verify(paths):
     assert len(events) == 2
     assert events[1].data["classification"]["tool"] == "custom"
     assert events[1].data["classification"]["is_verification"] is True
+
+
+# product-integrity fixes ----------------------------------------------------
+def test_run_executes_from_current_directory(paths, monkeypatch):
+    # A command must run from the user's directory, not the repo root, so it
+    # behaves like typing it directly (important in monorepos/subdirectories).
+    sub = paths.project_root / "packages" / "api"
+    sub.mkdir(parents=True)
+    monkeypatch.chdir(sub)
+    assert cli.main(["run", "--", "sh", "-c", "echo hi > marker.txt"]) == 0
+    assert (sub / "marker.txt").exists()
+    assert not (paths.project_root / "marker.txt").exists()
+
+
+def test_auto_start_redacts_secret_split_by_truncation(paths):
+    import json
+
+    # The connection string's "@host" (which the redaction pattern needs) falls
+    # past character 60, so truncate-then-redact would miss the password;
+    # redact-then-truncate catches it.
+    mgr = SessionManager(paths)
+    seed = "x" * 25 + "dsn=postgres://user:SUPERSECRETPASSWORD@host/db"
+    mgr.auto_start(seed)
+    session_file = next((paths.project_root / ".debugbrief" / "sessions").glob("*.json"))
+    title = json.loads(session_file.read_text())["title"]
+    assert "SUPERSECRETPASS" not in title
+    assert "[redacted]" in title
+
+
+def test_auto_start_title_is_redacted_before_disk(paths):
+    secret = "ghp_abcdefghij1234567890ABCDEFGHIJ"
+    assert cli.main(["run", "--", "echo", f"token={secret}"]) == 0
+    leaked = [
+        p
+        for p in (paths.project_root / ".debugbrief").rglob("*")
+        if p.is_file() and secret in p.read_text(errors="ignore")
+    ]
+    assert leaked == [], f"raw secret leaked into {leaked}"
+
+
+def test_storage_permissions_are_owner_only(paths):
+    import stat
+
+    cli.main(["start", "perms"])
+    cli.main(["run", "--", "echo", "ok"])
+    cli.main(["end"])
+    base = paths.project_root / ".debugbrief"
+    assert stat.S_IMODE(base.stat().st_mode) == 0o700
+    report = next((paths.reports_dir).glob("*-pr.md"))
+    assert stat.S_IMODE(report.stat().st_mode) == 0o600
+
+
+def test_json_only_report_is_discoverable(paths):
+    from debugbrief.reports_index import infer_mode, latest_report
+
+    cli.main(["start", "json check"])
+    cli.main(["run", "--", "echo", "ok"])
+    cli.main(["end", "--format", "json"])
+    rep = latest_report(paths.reports_dir)
+    assert rep is not None and rep.suffix == ".json"
+    assert infer_mode(rep) == "pr"
+    assert cli.main(["last"]) == 0
+
+
+def test_end_is_transactional_on_report_write_failure(paths, monkeypatch):
+    # If writing the report fails, the session must stay active and recoverable,
+    # never marked completed with no report and the pointer cleared.
+    from debugbrief import utils
+
+    mgr = SessionManager(paths)
+    mgr.start("recover me")
+    mgr.add_note("an observation")
+
+    def _boom(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(utils, "write_text", _boom)
+    with pytest.raises(OSError):
+        mgr.end("pr")
+
+    assert mgr.has_active()  # pointer intact, so the session can be resumed
+    assert mgr.load_active().status == "ACTIVE"
+    assert not paths.reports_dir.exists() or not list(paths.reports_dir.glob("*"))
+
+
+def test_init_sets_up_storage_and_prints_guidance(paths, capsys):
+    rc = cli.main(["init"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "DebugBrief is set up" in out
+    assert 'alias db="debugbrief run --"' in out
+    assert "debugbrief end" in out
+    assert paths.base_dir.exists()  # safe setup created the storage directory
+
+
+def test_recover_leaves_a_healthy_active_session_untouched(paths):
+    mgr = SessionManager(paths)
+    mgr.start("healthy")
+    result = mgr.recover()
+    assert result["action"] == "healthy"
+    assert mgr.has_active()  # a healthy session must never be cleared
+    assert mgr.load_active().status == "ACTIVE"
+
+
+def test_recover_clears_a_broken_pointer(paths):
+    mgr = SessionManager(paths)
+    mgr.start("will break")
+    # Simulate a crash that left the pointer but lost the session file.
+    next(paths.sessions_dir.glob("*.json")).unlink()
+    result = mgr.recover()
+    assert result["action"] == "cleared_broken_pointer"
+    assert not mgr.has_active()  # pointer cleared so a new session can start
+
+
+def test_recover_command_runs_with_nothing_to_do(paths, capsys):
+    assert cli.main(["recover"]) == 0
+    assert "nothing to recover" in capsys.readouterr().out
+
+
+def test_config_supplies_default_mode(paths):
+    (paths.project_root / ".debugbrief.toml").write_text(
+        'default_mode = "incident"\n', encoding="utf-8"
+    )
+    cli.main(["start", "cfg"])
+    cli.main(["run", "--", "echo", "ok"])
+    cli.main(["end"])  # no --mode, so config's default applies
+    assert list(paths.reports_dir.glob("*-incident.md"))
+
+
+def test_explicit_flag_overrides_config(paths):
+    (paths.project_root / ".debugbrief.toml").write_text(
+        'default_mode = "incident"\n', encoding="utf-8"
+    )
+    cli.main(["start", "cfg"])
+    cli.main(["run", "--", "echo", "ok"])
+    cli.main(["end", "--mode", "pr"])  # explicit flag wins over config
+    assert list(paths.reports_dir.glob("*-pr.md"))
+    assert not list(paths.reports_dir.glob("*-incident.md"))
 
 
 # preview ---------------------------------------------------------------------

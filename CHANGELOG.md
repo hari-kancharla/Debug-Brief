@@ -36,9 +36,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shell would turn into the wrong status. The raw signal code is still stored.
 - A failed second pseudo-terminal allocation no longer leaks the first pair of
   descriptors before falling back to pipes.
-- Repeated Ctrl-C no longer escapes the runner unrecorded. A second interrupt
-  arriving while the first is terminating the group is absorbed so cleanup
-  completes and the command is still recorded as interrupted.
+- Repeated Ctrl-C is handled deliberately instead of crashing the runner. A
+  single interrupt terminates the command's process group and records the
+  command as interrupted, and a second interrupt arriving while the first is
+  being handled is absorbed so teardown can finish. Under an extreme burst of
+  signals the process can still be killed before it records the event; in that
+  case the session stays valid and the event is simply not written, never
+  corrupted or half-written.
 - Changed-file lists show non-ASCII and spaced filenames verbatim
   (`café_漢字.txt`, `file with spaces.txt`) instead of git's octal-escaped,
   C-quoted form, and renames report the new name. Git output is decoded as

@@ -34,7 +34,8 @@ from typing import List, Optional
 
 from . import __version__
 from .command_runner import DEFAULT_TIMEOUT_SECONDS, RunResult, run_command
-from .doctor import run_doctor
+from .config import load_config
+from .doctor import FAIL, run_doctor
 from .models import COMMAND_STATUS_PASSED, CommandData
 from .paths import ensure_local_ignore, resolve_project_paths
 from .redaction import PLACEHOLDER
@@ -66,6 +67,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", metavar="<command>")
 
     # start --------------------------------------------------------------
+    p_init = subparsers.add_parser(
+        "init", help="Set up DebugBrief in this project and show how to use it."
+    )
+    p_init.set_defaults(func=cmd_init)
+
     p_start = subparsers.add_parser("start", help="Start a new debugging session.")
     p_start.add_argument("title", help="A short, descriptive session title.")
     p_start.add_argument(
@@ -106,7 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--timeout",
         type=int,
-        default=DEFAULT_TIMEOUT_SECONDS,
+        default=None,
         metavar="SECONDS",
         help=f"Kill the command after this many seconds (default {DEFAULT_TIMEOUT_SECONDS}).",
     )
@@ -148,7 +154,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_redo.add_argument(
         "--timeout",
         type=int,
-        default=DEFAULT_TIMEOUT_SECONDS,
+        default=None,
         metavar="SECONDS",
         help=f"Kill the command after this many seconds (default {DEFAULT_TIMEOUT_SECONDS}).",
     )
@@ -175,9 +181,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_preview.add_argument(
         "--mode",
-        default="pr",
+        default=None,
         choices=VALID_MODES,
         help="Report style to preview (default pr).",
+    )
+    p_preview.add_argument(
+        "--detail",
+        choices=["full", "compact"],
+        default=None,
+        help="Report verbosity: full (default), or compact for a shorter PR brief.",
     )
     p_preview.set_defaults(func=cmd_preview)
 
@@ -187,7 +199,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_end.add_argument(
         "--mode",
-        default="pr",
+        default=None,
         choices=VALID_MODES,
         help="Report style to generate (default pr).",
     )
@@ -207,6 +219,12 @@ def build_parser() -> argparse.ArgumentParser:
             "written). Informational lines move to stderr, so the output pipes "
             "cleanly: debugbrief end --stdout | gh pr comment --body-file -"
         ),
+    )
+    p_end.add_argument(
+        "--detail",
+        choices=["full", "compact"],
+        default=None,
+        help="Report verbosity: full (default), or compact for a shorter PR brief.",
     )
     p_end.set_defaults(func=cmd_end)
 
@@ -239,6 +257,12 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_doctor.set_defaults(func=cmd_doctor)
+
+    p_recover = subparsers.add_parser(
+        "recover",
+        help="Repair a broken or stale active-session pointer after a crash.",
+    )
+    p_recover.set_defaults(func=cmd_recover)
 
     # last ---------------------------------------------------------------
     p_last = subparsers.add_parser(
@@ -398,15 +422,20 @@ def cmd_run(args: argparse.Namespace) -> int:
     # The command's own stdout/stderr stream through live while it runs.
     # DebugBrief's status lines all go to stderr so the wrapped command's
     # stdout stays clean for piping.
+    # Run from the directory the user is actually in, not the repo root, so
+    # commands behave the same as typing them directly (important in monorepos
+    # and subdirectories). State still lives at the repo root.
+    invocation_cwd = Path.cwd()
     eprint(f"$ {command_str}")
     result = run_command(
         command=command_str,
-        cwd=manager.paths.project_root,
+        cwd=invocation_cwd,
         use_shell=args.shell,
         timeout_seconds=args.timeout,
         redact=not args.no_redact,
         force_verification=args.verify,
     )
+    result.command_data.invocation_cwd = str(invocation_cwd)
     with _deferred_sigint():
         manager.record_command(result)
     _print_command_outcome(result, args.timeout)
@@ -477,15 +506,17 @@ def cmd_redo(args: argparse.Namespace) -> int:
     # check without retyping the flag; an explicit --verify also works.
     inherit_verify = last.classification.tool == "custom"
 
+    invocation_cwd = Path.cwd()
     eprint(f"$ {last.command}  (redo)")
     result = run_command(
         command=last.command,
-        cwd=manager.paths.project_root,
+        cwd=invocation_cwd,
         use_shell=last.used_shell,
         timeout_seconds=args.timeout,
         redact=not args.no_redact,
         force_verification=args.verify or inherit_verify,
     )
+    result.command_data.invocation_cwd = str(invocation_cwd)
     with _deferred_sigint():
         manager.record_command(result)
     _print_command_outcome(result, args.timeout)
@@ -494,7 +525,7 @@ def cmd_redo(args: argparse.Namespace) -> int:
 
 def cmd_end(args: argparse.Namespace) -> int:
     manager = _manager()
-    session = manager.end(args.mode, args.report_format)
+    session = manager.end(args.mode, args.report_format, detail=args.detail)
     # With --stdout the report itself owns stdout; everything informational
     # moves to stderr so the output pipes cleanly.
     info = eprint if args.to_stdout else print
@@ -511,13 +542,13 @@ def cmd_end(args: argparse.Namespace) -> int:
         )
     info(f"  session:   {manager.paths.session_file(session.session_id)}")
     if args.to_stdout:
-        sys.stdout.write(render_report(session, args.mode))
+        sys.stdout.write(render_report(session, args.mode, args.detail))
     return 0
 
 
 def cmd_preview(args: argparse.Namespace) -> int:
     manager = _manager()
-    markdown = manager.preview(args.mode)
+    markdown = manager.preview(args.mode, detail=args.detail)
     banner = "_Preview of an active session. Run debugbrief end to finalize._"
     lines = markdown.splitlines()
     if lines and lines[0].startswith("# "):
@@ -595,6 +626,72 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"  warning:   {warning}")
     print("")
     print("End with: debugbrief end --mode pr|handoff|incident")
+    return 0
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    """Set up DebugBrief in this project and explain how to use it.
+
+    Onboarding only: it performs the same safe setup as ``doctor --fix`` (create
+    ``.debugbrief/`` and ignore it locally), reports health, and prints the alias
+    and workflow. It never starts a session or writes a report, so running it is
+    side-effect-free beyond the storage directory.
+    """
+    import os as _os
+
+    paths = resolve_project_paths()
+    report = run_doctor(paths, fix=True)
+
+    print("DebugBrief is set up for this project.")
+    print(f"  project root:  {paths.project_root}")
+    if paths.is_git_repo:
+        print("  git:           repository detected (.debugbrief/ is ignored locally)")
+    else:
+        print("  git:           not a Git repository (Git sections are omitted)")
+    print(f"  health:        {report.summary}")
+
+    blocking = [c for c in report.checks if c.level == FAIL]
+    if blocking:
+        print("")
+        print("  Needs attention (run 'debugbrief doctor' for the full report):")
+        for check in blocking:
+            print(f"    - {check.name}{': ' + check.detail if check.detail else ''}")
+
+    shell = _os.environ.get("SHELL", "")
+    rc_file = "~/.zshrc" if shell.endswith("zsh") else "~/.bashrc"
+    print("")
+    print("Make the capture prefix disappear with a one-line alias:")
+    print('  alias db="debugbrief run --"')
+    print(f"  Add that to {rc_file}, reload your shell, then run: db pytest -q")
+    print("")
+    print("Your loop from then on:")
+    print('  debugbrief start "<what you are fixing>"   (optional; run/note auto-start)')
+    print("  db <command>                               (run commands through DebugBrief)")
+    print('  debugbrief note "<observation>"            (record findings as you go)')
+    print("  debugbrief redo                            (re-run the last command)")
+    print("  debugbrief end                             (write the brief)")
+    return 0
+
+
+def cmd_recover(args: argparse.Namespace) -> int:
+    manager = _manager()
+    result = manager.recover()
+    action = result["action"]
+    if action == "healthy":
+        print(f"Active session is healthy, nothing to recover: {result['detail']}")
+    elif action == "cleared_broken_pointer":
+        print("Cleared a broken active-session pointer so a new session can start.")
+        print(f"  reason: {result['detail']}")
+    elif action == "cleared_stale_pointer":
+        print(f"Cleared a stale pointer to a {result['detail']} session.")
+    else:
+        print("No active-session pointer; nothing to recover.")
+    corrupt = result["corrupt"]
+    if corrupt:
+        print("")
+        print(f"Found {len(corrupt)} unreadable session file(s), left in place:")
+        for name in corrupt:
+            print(f"  - {name}")
     return 0
 
 
@@ -898,6 +995,25 @@ def _deferred_sigint():
         signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
+def _apply_config_defaults(args: argparse.Namespace) -> None:
+    """Fill flags the user did not pass from .debugbrief.toml, then built-ins.
+
+    Only timeout, mode, and detail have project-config defaults, and only when
+    argparse left them None (the user did not pass the flag). An explicit flag
+    therefore always beats config, and config always beats the built-in default.
+    """
+    resolvable = ("timeout", "mode", "detail")
+    if not any(getattr(args, name, "unset") is None for name in resolvable):
+        return
+    config = load_config(resolve_project_paths().project_root)
+    if getattr(args, "timeout", "unset") is None:
+        args.timeout = config.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
+    if getattr(args, "mode", "unset") is None:
+        args.mode = config.get("default_mode", "pr")
+    if getattr(args, "detail", "unset") is None:
+        args.detail = config.get("detail", "full")
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     if not is_supported_platform():
         eprint(
@@ -914,6 +1030,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not hasattr(args, "func"):
         parser.print_help()
         return 2
+
+    _apply_config_defaults(args)
 
     try:
         code = args.func(args)

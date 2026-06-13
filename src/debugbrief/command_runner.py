@@ -517,6 +517,24 @@ def _drive(
     return out
 
 
+def _terminal_size() -> "tuple[int, int]":
+    """Return ``(rows, cols)`` of the user's terminal, falling back to 24x80.
+
+    Programs size their output to the terminal they detect, so the captured
+    command should see the same dimensions the user does rather than a fixed
+    80 columns; otherwise wrapping in the stored preview differs from what the
+    user saw live. Falls back when DebugBrief's own streams are not a terminal.
+    """
+    for stream in (sys.stdout, sys.stderr, sys.stdin):
+        try:
+            size = os.get_terminal_size(stream.fileno())
+        except (OSError, ValueError, AttributeError):
+            continue
+        if size.columns > 0 and size.lines > 0:
+            return size.lines, size.columns
+    return 24, 80
+
+
 def _capture_via_pty(
     popen_args: Union[str, List[str]],
     command: str,
@@ -546,12 +564,13 @@ def _capture_via_pty(
                 os.close(fd)
         raise _PtyUnavailable(str(exc)) from exc
 
+    rows, cols = _terminal_size()
     for slave in (out_slave, err_slave):
         try:
             attrs = termios.tcgetattr(slave)
             attrs[1] &= ~termios.ONLCR  # do not translate NL to CR-NL
             termios.tcsetattr(slave, termios.TCSANOW, attrs)
-            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
         except OSError:  # pragma: no cover - termios edge on exotic platforms
             pass
 

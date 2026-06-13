@@ -54,6 +54,10 @@ class GitState:
     final_sha: Optional[str] = None
     branch: Optional[str] = None
     detached_head: bool = False
+    # Fingerprints (path -> content hash) of files already changed when the
+    # session started, so the final report can tell which files actually changed
+    # during the session. Empty for older sessions and outside a repo.
+    initial_dirty: Dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -63,6 +67,7 @@ class GitState:
             "final_sha": self.final_sha,
             "branch": self.branch,
             "detached_head": self.detached_head,
+            "initial_dirty": dict(self.initial_dirty),
         }
 
     @classmethod
@@ -74,6 +79,7 @@ class GitState:
             final_sha=data.get("final_sha"),
             branch=data.get("branch"),
             detached_head=bool(data.get("detached_head", False)),
+            initial_dirty=dict(data.get("initial_dirty") or {}),
         )
 
 
@@ -137,6 +143,9 @@ class CommandData:
     # older session files simply omit these).
     git_head: Optional[str] = None
     git_changed_files: List[str] = field(default_factory=list)
+    # Directory the command actually ran in (the user's cwd). Used to tell apart
+    # same-named checks run in different directories. None for older sessions.
+    invocation_cwd: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -154,6 +163,7 @@ class CommandData:
             "redacted": self.redacted,
             "git_head": self.git_head,
             "git_changed_files": list(self.git_changed_files),
+            "invocation_cwd": self.invocation_cwd,
         }
 
     @classmethod
@@ -175,6 +185,7 @@ class CommandData:
             redacted=bool(data.get("redacted", False)),
             git_head=data.get("git_head"),
             git_changed_files=list(data.get("git_changed_files", [])),
+            invocation_cwd=data.get("invocation_cwd"),
         )
 
 

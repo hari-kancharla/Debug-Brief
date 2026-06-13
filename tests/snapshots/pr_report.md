@@ -49,7 +49,7 @@ _3 file(s) changed, +42 / -7 lines._
 - [passed] test (pytest): `python -m pytest tests/test_auth.py` x2
 - [passed] check (npm): `npm run build`
 
-## What was ruled out
+## Failed attempts
 
 - `python -m pytest tests/test_auth.py` -> failed (exit 1)
 

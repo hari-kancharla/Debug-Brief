@@ -67,6 +67,7 @@ class CommandRecord:
     changed_files: List[str]
     head_sha: Optional[str]
     redacted: bool
+    invocation_cwd: Optional[str] = None
 
     @property
     def failed(self) -> bool:
@@ -133,6 +134,7 @@ def _records(session: Session) -> List[CommandRecord]:
                 changed_files=list(data.git_changed_files),
                 head_sha=data.git_head,
                 redacted=data.redacted,
+                invocation_cwd=data.invocation_cwd,
             )
         )
     records.sort(key=lambda r: _seconds(r.timestamp))
@@ -166,6 +168,11 @@ def _detect_red_to_green(
         if (
             rec.is_verification_candidate
             and rec.passed
+            # Only the same check turning green counts as red-to-green: the same
+            # command run in the same directory, not a different command or the
+            # same command in another package of a monorepo.
+            and rec.command == first_fail.command
+            and rec.invocation_cwd == first_fail.invocation_cwd
             and _seconds(rec.timestamp) > fail_seconds
         ):
             passed = rec

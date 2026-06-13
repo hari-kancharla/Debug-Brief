@@ -13,10 +13,14 @@ from .reporters import VALID_MODES
 
 
 def list_reports(reports_dir: Path) -> List[Path]:
-    """Return report markdown files, most-recently-modified first."""
+    """Return generated report files (Markdown and JSON), newest first."""
     if not reports_dir.is_dir():
         return []
-    reports = [p for p in reports_dir.glob("*.md") if p.is_file()]
+    reports = [
+        p
+        for p in reports_dir.iterdir()
+        if p.is_file() and p.suffix in (".md", ".json")
+    ]
     reports.sort(key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
     return reports
 
@@ -36,7 +40,17 @@ def infer_mode(report_path: Path) -> Optional[str]:
 
 
 def first_title(report_path: Path) -> Optional[str]:
-    """Return the first markdown H1 title line ('# ...') from the report."""
+    """Return the report title (a markdown H1, or a JSON report's ``title``)."""
+    if report_path.suffix == ".json":
+        import json
+
+        try:
+            with open(report_path, encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return None
+        title = data.get("title") if isinstance(data, dict) else None
+        return title if isinstance(title, str) else None
     try:
         with open(report_path, encoding="utf-8") as handle:
             for line in handle:

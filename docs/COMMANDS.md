@@ -4,6 +4,7 @@ Full reference for every command. The README has the short version; this is the
 detail.
 
 ```text
+debugbrief init                               Set up the project and show the workflow
 debugbrief start "<session title>"            Start a session
 debugbrief note  <text ...>                   Record a note (quoting optional)
 debugbrief run   -- <command ...>             Execute and capture a command
@@ -13,6 +14,7 @@ debugbrief end   [--mode pr|handoff|incident] Finalize and write a report
 debugbrief cancel [--yes]                     Discard the active session
 debugbrief status                             Show the active session
 debugbrief doctor [--fix]                     Health-check the project and state
+debugbrief recover                            Repair a broken/stale active pointer
 debugbrief last                               Show the most recent report
 debugbrief open  [--last | --path PATH]       Open a report in $EDITOR
 debugbrief list  [--json]                     List recorded sessions
@@ -20,6 +22,24 @@ debugbrief show  <session_id> [--json]        Show one session summary
 ```
 
 `run` and `note` auto-start a session if none is active (see below).
+
+## init
+
+One-time onboarding for a project. It performs the same safe setup as
+`doctor --fix` (creates `.debugbrief/` and adds it to `.git/info/exclude`),
+reports health, and prints the recommended `db` alias and the daily workflow.
+
+```bash
+debugbrief init
+```
+
+It never starts a session or writes a report, so it is safe to run at any time.
+The suggested alias makes the capture prefix disappear:
+
+```bash
+alias db="debugbrief run --"
+db pytest -q
+```
 
 ## start
 
@@ -224,7 +244,13 @@ Finalizes the session, captures final Git state, and writes a report.
 debugbrief end                  # pr-style report
 debugbrief end --mode handoff
 debugbrief end --mode incident
+debugbrief end --detail compact # shorter PR brief; metadata/timeline collapsed
 ```
+
+`--detail compact` (PR mode) keeps the summary, changed files, and verification
+visible and folds the metadata and timeline into a collapsible section, for a
+shorter brief. The default `--detail full` is unchanged. `preview` accepts the
+same flag.
 
 Choose the output format with `--format` (default `md`):
 
@@ -354,6 +380,21 @@ CLI is a one-liner (`gh` is optional and never required by DebugBrief):
 debugbrief end --mode pr
 gh pr comment --body-file "$(ls -t .debugbrief/reports/*-pr.md | head -1)"
 ```
+
+## Project configuration
+
+An optional `.debugbrief.toml` at the project root sets defaults so you do not
+retype the same flags. It is entirely optional, and a missing or malformed file
+is ignored. Only these keys are read:
+
+```toml
+default_mode    = "pr"        # default for end/preview (pr, handoff, incident)
+timeout_seconds = 600         # default for run/redo
+detail          = "full"      # default report verbosity (full or compact)
+```
+
+An explicit flag always wins over the config, and the config always wins over
+the built-in default. Parsed with the standard library only (no dependencies).
 
 ## Local storage
 

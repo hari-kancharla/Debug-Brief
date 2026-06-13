@@ -37,8 +37,8 @@ debugbrief redo                                      # same test again: passes
 debugbrief end                                       # writes the pr-style brief
 ```
 
-Everything after `--` runs exactly as you typed it, with its output streaming
-live to your terminal; DebugBrief flags (`--timeout`, `--shell`, `--no-redact`)
+Everything after `--` runs exactly as you typed it, with its output forwarded to
+your terminal as it runs; DebugBrief flags (`--timeout`, `--shell`, `--no-redact`)
 go before the `--`. Quoting the whole command also works: `debugbrief run
 "pytest -q"`. `redo` re-runs the last captured command, and `end` defaults to
 the `pr` report mode.
@@ -109,6 +109,11 @@ debugbrief end --stdout | gh pr comment --body-file -
 - Interactive and TUI commands (a pdb session, watch modes) will behave oddly
   under `run`, because output is piped for capture rather than attached to a
   terminal. Run those directly and record the outcome with `note`.
+- Live output reflects the program's own buffering. A program that block-buffers
+  when it is not attached to a terminal (a plain Python script, say) appears at
+  the end rather than line by line; run it unbuffered (`PYTHONUNBUFFERED=1` or
+  `python -u`) for live output. The full output is captured for the report
+  either way.
 - Redaction is conservative and best effort; it does not catch every secret.
 - Git sections need native `git`; outside a repo they are omitted honestly.
 

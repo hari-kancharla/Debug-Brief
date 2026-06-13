@@ -1,10 +1,13 @@
 """Execute commands via subprocess and capture honest, bounded results.
 
 The runner never fakes an exit code and never claims success it did not observe.
-While the command runs, its stdout and stderr stream live to the user's own
-terminal, line by line and unmodified, so a test run or build behaves exactly as
-it would outside DebugBrief. The full output is accumulated in parallel and
-stored as bounded previews (not full logs), explicitly flagged when truncated.
+While the command runs, its stdout and stderr are forwarded to the user's own
+terminal, line by line and unmodified, as fast as the program writes them. Note
+that a program which block-buffers its output when it is not attached to a
+terminal (a plain Python script, for example) will appear in one burst at the
+end; that is the program's own buffering, not the runner withholding output. The
+full output is accumulated in parallel and stored as bounded previews (not full
+logs), explicitly flagged when truncated.
 """
 
 from __future__ import annotations

@@ -66,9 +66,10 @@ The old single-argument form still works: `debugbrief run "python -m pytest"`.
 `run`:
 
 - executes the command from the project root,
-- streams the command's stdout and stderr live to your terminal, unmodified,
-  while accumulating them for the stored previews (DebugBrief's own status
-  lines go to stderr, so the command's stdout stays clean for piping),
+- forwards the command's stdout and stderr to your terminal as it reads them,
+  unmodified, while accumulating them for the stored previews (DebugBrief's own
+  status lines go to stderr, so the command's stdout stays clean for piping;
+  see "Live output and buffering" below),
 - captures the command text, start/end timestamps, duration, exit code, and
   bounded stdout/stderr previews,
 - records a lightweight per-command Git snapshot (HEAD and changed files) so the
@@ -88,6 +89,23 @@ debugbrief run --shell "pytest -q | tee out.txt"
 ```
 
 If no session is active, `run` auto-starts one first.
+
+### Live output and buffering
+
+DebugBrief forwards output as fast as the program writes it, and most tools
+(pytest, npm, cargo, go) stream progressively. A program that block-buffers its
+output when it is not attached to a terminal will instead appear in one burst
+when it finishes. That is the program's own buffering, not DebugBrief holding
+the output back, and the full output is captured for the report either way. To
+see a plain Python script live, run it unbuffered:
+
+```bash
+PYTHONUNBUFFERED=1 debugbrief run -- python script.py
+debugbrief run -- python -u script.py
+```
+
+For other programs, a line-buffering wrapper such as `stdbuf -oL -eL` (GNU
+coreutils) has the same effect.
 
 ### Declaring custom checks with --verify
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import List
 
+from ..markdown import code_span
 from ..utils import parse_iso8601
 from .base import BaseReporter, join_sections
 
@@ -70,7 +71,7 @@ class IncidentReporter(BaseReporter):
         lines = ["## Follow-up items", ""]
         items: List[str] = []
         for rc in self.ctx.failed_commands:
-            items.append(f"Resolve the failing command `{rc.command}`.")
+            items.append(f"Resolve the failing command {code_span(rc.command)}.")
         if not self.ctx.verification_commands:
             items.append("Add a passing verification command to confirm resolution.")
         if not items:

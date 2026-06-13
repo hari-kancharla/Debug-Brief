@@ -11,7 +11,7 @@ Failing check `python -m pytest tests/test_auth.py` passed after 3 attempts over
 - **Project root:** `<PROJECT_ROOT>`
 - **Started:** <DATETIME_UTC>
 - **Ended:** <DATETIME_UTC>
-- **Git branch:** feature/auth-refresh
+- **Git branch:** `feature/auth-refresh`
 - **Initial commit:** `<SHA>`  **Final commit:** `<SHA>`
 - **Notes:** 2  **Commands:** 3  **Failed commands:** 1
 
@@ -45,7 +45,7 @@ At least one verification command passed and no recorded commands are currently 
 
 ## Current repo state
 
-- Branch: feature/auth-refresh
+- Branch: `feature/auth-refresh`
 - HEAD at session end: `<SHA>`
 - Uncommitted changes: 3 file(s), +42 / -7 lines.
 

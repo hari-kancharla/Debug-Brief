@@ -28,7 +28,7 @@ def _ts(offset_seconds):
     return to_iso8601(NOW + timedelta(seconds=offset_seconds))
 
 
-def _cmd(command, status, ts, exit_code, changed_files=None, stderr="", **cls):
+def _cmd(command, status, ts, exit_code, changed_files=None, stderr="", stdout="", **cls):
     data = CommandData(
         command=command,
         started_at=ts,
@@ -36,6 +36,7 @@ def _cmd(command, status, ts, exit_code, changed_files=None, stderr="", **cls):
         duration_seconds=0.2,
         exit_code=exit_code,
         stderr_preview=stderr,
+        stdout_preview=stdout,
         classification=CommandClassification(status=status, **cls),
         git_changed_files=list(changed_files or []),
     )
@@ -170,9 +171,56 @@ def test_observed_error_prefers_error_line():
     assert d.observed_error == "AssertionError: boom"
 
 
-def test_observed_error_none_without_stderr():
+def test_observed_error_none_without_output():
     s = _session()
     s.events.append(_cmd("pytest", COMMAND_STATUS_FAILED, _ts(0), 1, is_test=True, tool="pytest"))
+    d = derive(s)
+    assert d.observed_error is None
+
+
+def test_observed_error_falls_back_to_stdout():
+    # pytest prints assertion failures to stdout, not stderr.
+    s = _session()
+    s.events.append(
+        _cmd(
+            "python -m pytest -q",
+            COMMAND_STATUS_FAILED,
+            _ts(0),
+            1,
+            is_test=True,
+            tool="pytest",
+            stderr="",  # empty stderr, like a real failing pytest run
+            stdout="collected 1 item\nFAILED test_x.py::test_add - AssertionError: boom\n1 failed",
+        )
+    )
+    d = derive(s)
+    assert d.observed_error == "FAILED test_x.py::test_add - AssertionError: boom"
+
+
+def test_observed_error_prefers_stderr_over_stdout():
+    s = _session()
+    s.events.append(
+        _cmd(
+            "pytest",
+            COMMAND_STATUS_FAILED,
+            _ts(0),
+            1,
+            is_test=True,
+            tool="pytest",
+            stderr="real error on stderr",
+            stdout="noise on stdout",
+        )
+    )
+    d = derive(s)
+    assert d.observed_error == "real error on stderr"
+
+
+def test_observed_error_ignores_passing_command_output():
+    s = _session()
+    s.events.append(
+        _cmd("pytest", COMMAND_STATUS_PASSED, _ts(0), 0, is_test=True, tool="pytest",
+             stdout="AssertionError: this passed so must not be shown")
+    )
     d = derive(s)
     assert d.observed_error is None
 

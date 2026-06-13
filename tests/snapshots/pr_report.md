@@ -11,7 +11,7 @@ Failing check `python -m pytest tests/test_auth.py` passed after 3 attempts over
 - **Project root:** `<PROJECT_ROOT>`
 - **Started:** <DATETIME_UTC>
 - **Ended:** <DATETIME_UTC>
-- **Git branch:** feature/auth-refresh
+- **Git branch:** `feature/auth-refresh`
 - **Initial commit:** `<SHA>`  **Final commit:** `<SHA>`
 - **Notes:** 2  **Commands:** 3  **Failed commands:** 1
 

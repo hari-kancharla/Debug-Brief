@@ -11,7 +11,7 @@ Recorded 1 command attempt over 5s; no verification commands were run.
 - **Project root:** `<PROJECT_ROOT>`
 - **Started:** <DATETIME_UTC>
 - **Ended:** <DATETIME_UTC>
-- **Git branch:** main
+- **Git branch:** `main`
 - **Initial commit:** `<SHA>`  **Final commit:** `<SHA>`
 - **Notes:** 1  **Commands:** 1  **Failed commands:** 0
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import List
 
 from ..derive import next_step_notes
+from ..markdown import code_span
 from .base import BaseReporter, join_sections
 
 
@@ -70,8 +71,8 @@ class HandoffReporter(BaseReporter):
         branch = s.git.branch or (
             "(detached HEAD)" if s.git.detached_head else "(unknown)"
         )
-        lines.append(f"- Branch: {branch}")
-        lines.append(f"- HEAD at session end: `{_sha(s.git.final_sha)}`")
+        lines.append(f"- Branch: {code_span(branch)}")
+        lines.append(f"- HEAD at session end: {code_span(_sha(s.git.final_sha))}")
         lines.append(
             f"- Uncommitted changes: {len(s.summary.modified_files)} file(s), "
             f"+{s.summary.lines_added} / -{s.summary.lines_deleted} lines."

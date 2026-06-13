@@ -245,6 +245,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_doctor.set_defaults(func=cmd_doctor)
 
+    p_recover = subparsers.add_parser(
+        "recover",
+        help="Repair a broken or stale active-session pointer after a crash.",
+    )
+    p_recover.set_defaults(func=cmd_recover)
+
     # last ---------------------------------------------------------------
     p_last = subparsers.add_parser(
         "last", help="Show the most recently generated report."
@@ -651,6 +657,28 @@ def cmd_init(args: argparse.Namespace) -> int:
     print('  debugbrief note "<observation>"            (record findings as you go)')
     print("  debugbrief redo                            (re-run the last command)")
     print("  debugbrief end                             (write the brief)")
+    return 0
+
+
+def cmd_recover(args: argparse.Namespace) -> int:
+    manager = _manager()
+    result = manager.recover()
+    action = result["action"]
+    if action == "healthy":
+        print(f"Active session is healthy, nothing to recover: {result['detail']}")
+    elif action == "cleared_broken_pointer":
+        print("Cleared a broken active-session pointer so a new session can start.")
+        print(f"  reason: {result['detail']}")
+    elif action == "cleared_stale_pointer":
+        print(f"Cleared a stale pointer to a {result['detail']} session.")
+    else:
+        print("No active-session pointer; nothing to recover.")
+    corrupt = result["corrupt"]
+    if corrupt:
+        print("")
+        print(f"Found {len(corrupt)} unreadable session file(s), left in place:")
+        for name in corrupt:
+            print(f"  - {name}")
     return 0
 
 

@@ -14,6 +14,7 @@ debugbrief end   [--mode pr|handoff|incident] Finalize and write a report
 debugbrief cancel [--yes]                     Discard the active session
 debugbrief status                             Show the active session
 debugbrief doctor [--fix]                     Health-check the project and state
+debugbrief recover                            Repair a broken/stale active pointer
 debugbrief last                               Show the most recent report
 debugbrief open  [--last | --path PATH]       Open a report in $EDITOR
 debugbrief list  [--json]                     List recorded sessions

@@ -344,6 +344,41 @@ class SessionManager:
         self._clear_active_pointer()
         return session
 
+    def recover(self) -> Dict[str, Any]:
+        """Repair a broken or stale active-session pointer; report corrupt files.
+
+        A healthy active session is left untouched. A pointer to a missing or
+        unreadable session file, or to a session that is no longer active (a
+        finalize interrupted before the pointer was cleared), is cleared so a new
+        session can start. Corrupt historical session files are reported, never
+        deleted, so nothing is lost silently.
+        """
+        result: Dict[str, Any] = {"action": "none", "detail": "", "corrupt": []}
+        if self.has_active():
+            try:
+                session = self.load_active()
+            except SessionError as exc:
+                self._clear_active_pointer()
+                result["action"] = "cleared_broken_pointer"
+                result["detail"] = str(exc)
+            else:
+                if session is not None and session.status == SessionStatus.ACTIVE.value:
+                    result["action"] = "healthy"
+                    result["detail"] = session.title
+                else:
+                    self._clear_active_pointer()
+                    result["action"] = "cleared_stale_pointer"
+                    result["detail"] = session.status if session else "unknown"
+
+        sessions_dir = self.paths.sessions_dir
+        if sessions_dir.is_dir():
+            for path in sorted(sessions_dir.glob("*.json")):
+                try:
+                    Session.from_dict(read_json(path))
+                except (ValueError, OSError, TypeError):
+                    result["corrupt"].append(path.name)
+        return result
+
     # Status ------------------------------------------------------------------
     def build_status(self) -> Dict[str, Any]:
         """Return a structured status payload for the CLI to render."""

@@ -213,6 +213,30 @@ def test_init_sets_up_storage_and_prints_guidance(paths, capsys):
     assert paths.base_dir.exists()  # safe setup created the storage directory
 
 
+def test_recover_leaves_a_healthy_active_session_untouched(paths):
+    mgr = SessionManager(paths)
+    mgr.start("healthy")
+    result = mgr.recover()
+    assert result["action"] == "healthy"
+    assert mgr.has_active()  # a healthy session must never be cleared
+    assert mgr.load_active().status == "ACTIVE"
+
+
+def test_recover_clears_a_broken_pointer(paths):
+    mgr = SessionManager(paths)
+    mgr.start("will break")
+    # Simulate a crash that left the pointer but lost the session file.
+    next(paths.sessions_dir.glob("*.json")).unlink()
+    result = mgr.recover()
+    assert result["action"] == "cleared_broken_pointer"
+    assert not mgr.has_active()  # pointer cleared so a new session can start
+
+
+def test_recover_command_runs_with_nothing_to_do(paths, capsys):
+    assert cli.main(["recover"]) == 0
+    assert "nothing to recover" in capsys.readouterr().out
+
+
 # preview ---------------------------------------------------------------------
 def test_preview_renders_without_mutating(paths, capsys):
     manager = SessionManager(paths)

@@ -52,7 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The observed-error section now searches a failed command's stdout when its
   stderr has no content. Many test tools (pytest among them) print assertion
   failures and the summary to stdout, so the section was previously empty for a
-  failing pytest run.
+  failing pytest run. Failing commands are weighed in priority order, each one's
+  stderr then its stdout, so the highest-priority failing command's error wins
+  even when it is only on stdout and an unrelated lower-priority command failed
+  with output on stderr.
 - Generated Markdown stays valid for arbitrary commands, output, and filenames.
   Captured output containing a line of backticks can no longer close a code
   fence early, and a command or filename containing backticks no longer breaks a

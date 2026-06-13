@@ -198,17 +198,21 @@ def _detect_red_to_green(
 def _extract_observed_error(records: List[CommandRecord]) -> Optional[str]:
     """Quote a single, real error line from a failed command's output.
 
-    Prefers the first failing verification command, then any failing command, and
-    stderr over stdout. Many test tools (pytest among them) print the assertion
-    and summary to stdout, so stdout is searched when stderr has no content. Only
-    failed commands are considered; the text was already redacted at capture.
+    Considers failing commands in priority order (the first failing verification
+    command, then any other failing command) and, for each, prefers its stderr
+    but falls back to its stdout. Many test tools (pytest among them) print the
+    assertion and summary to stdout, so a higher-priority command whose error is
+    only on stdout is still preferred over a lower-priority command's stderr.
+    Only failed commands are considered; the text was already redacted at capture.
     """
     failing = [r for r in records if r.failed]
     candidates = [r for r in failing if r.is_verification_candidate]
     candidates += [r for r in failing if not r.is_verification_candidate]
-    # stderr is the first preference across all candidates; fall back to stdout.
-    for source in ("stderr_preview", "stdout_preview"):
-        for rec in candidates:
+    # Command priority dominates: take each candidate's stderr, then its stdout,
+    # before moving to the next, so a lower-priority command's stderr never wins
+    # over a higher-priority command's stdout.
+    for rec in candidates:
+        for source in ("stderr_preview", "stdout_preview"):
             text = getattr(rec, source)
             if not text.strip():
                 continue

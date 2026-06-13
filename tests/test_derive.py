@@ -215,6 +215,31 @@ def test_observed_error_prefers_stderr_over_stdout():
     assert d.observed_error == "real error on stderr"
 
 
+def test_observed_error_prefers_higher_priority_command_over_lower_stderr():
+    # The failing verification command (pytest) prints its error only to stdout,
+    # while an unrelated lower-priority command fails with output on stderr. The
+    # primary command's error must win even though it is only on stdout; the
+    # source preference (stderr over stdout) must not override command priority.
+    s = _session()
+    s.events.append(
+        _cmd(
+            "python -m pytest -q",
+            COMMAND_STATUS_FAILED,
+            _ts(0),
+            1,
+            is_test=True,
+            tool="pytest",
+            stderr="",
+            stdout="collected 1 item\nFAILED test_x.py::test_add - AssertionError: boom\n1 failed",
+        )
+    )
+    s.events.append(
+        _cmd("ls /nope", COMMAND_STATUS_FAILED, _ts(1), 2, stderr="ls: /nope: No such file or directory")
+    )
+    d = derive(s)
+    assert d.observed_error == "FAILED test_x.py::test_add - AssertionError: boom"
+
+
 def test_observed_error_ignores_passing_command_output():
     s = _session()
     s.events.append(

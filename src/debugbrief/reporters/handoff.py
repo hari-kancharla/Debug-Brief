@@ -31,7 +31,7 @@ class HandoffReporter(BaseReporter):
     def _current_status_section(self) -> List[str]:
         lines = ["## Current status", ""]
         verified = len(self.ctx.verification_commands) > 0
-        failed = len(self.ctx.failed_commands)
+        failed = len(self.ctx.currently_failing)
 
         if verified and failed == 0:
             summary = (

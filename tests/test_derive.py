@@ -152,6 +152,23 @@ def test_verify_none_when_nothing_passes():
 
 
 # observed error -----------------------------------------------------------
+def test_currently_failing_reflects_latest_outcome_not_history():
+    from debugbrief.reporters import build_context
+
+    s = _session()
+    # The same check fails, then (well outside the dedup window) passes.
+    s.events.append(
+        _cmd("pytest", COMMAND_STATUS_FAILED, _ts(0), 1, is_test=True, tool="pytest")
+    )
+    s.events.append(
+        _cmd("pytest", COMMAND_STATUS_PASSED, _ts(120), 0, is_test=True, is_verification=True, tool="pytest")
+    )
+    ctx = build_context(s)
+    # The latest run passed, so nothing is currently failing, even though a
+    # historical failure exists.
+    assert ctx.currently_failing == []
+
+
 def test_red_to_green_requires_the_same_command():
     # A different check passing later is not the failing check turning green.
     s = _session()

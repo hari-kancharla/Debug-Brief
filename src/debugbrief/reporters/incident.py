@@ -43,7 +43,7 @@ class IncidentReporter(BaseReporter):
         s = self.session
         lines = ["## Resolution / current state", ""]
         verified = len(self.ctx.verification_commands) > 0
-        failed = len(self.ctx.failed_commands)
+        failed = len(self.ctx.currently_failing)
         if verified and failed == 0:
             lines.append(
                 "A verification command passed and no commands are failing. "
@@ -70,7 +70,7 @@ class IncidentReporter(BaseReporter):
     def _followup_section(self) -> List[str]:
         lines = ["## Follow-up items", ""]
         items: List[str] = []
-        for rc in self.ctx.failed_commands:
+        for rc in self.ctx.currently_failing:
             items.append(f"Resolve the failing command {code_span(rc.command)}.")
         if not self.ctx.verification_commands:
             items.append("Add a passing verification command to confirm resolution.")

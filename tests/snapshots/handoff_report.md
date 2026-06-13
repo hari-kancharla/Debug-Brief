@@ -39,7 +39,7 @@ At least one verification command passed and no recorded commands are currently 
 - `python -m pytest tests/test_auth.py` x2 -> passed (exit 0)
 - `npm run build` -> passed (exit 0)
 
-## What was ruled out
+## Failed attempts
 
 - `python -m pytest tests/test_auth.py` -> failed (exit 1)
 

@@ -109,7 +109,7 @@ def test_pr_required_sections():
         "## Modified files",
         "## Timeline",
         "## Verification and tests",
-        "## What was ruled out",
+        "## Failed attempts",
     ]:
         assert header in report, header
     # Derived one-liner reflects the real transition, not a templated overview.
@@ -212,10 +212,11 @@ def test_no_changes_omits_modified_files():
     assert "Just thinking out loud." in report
 
 
-def test_failed_command_is_ruled_out():
+def test_failed_command_is_listed_as_a_failed_attempt():
     report = render_report(_rich_session(), "pr")
-    # The failing pytest run is surfaced under "What was ruled out".
-    assert "## What was ruled out" in report
+    # The failing pytest run is surfaced under "Failed attempts" (a failed
+    # command is an attempt that did not pass, not a proven ruled-out cause).
+    assert "## Failed attempts" in report
     assert "pytest tests/test_auth.py` -> failed (exit 1)" in report
 
 

@@ -8,7 +8,7 @@ mode-specific markdown. No reporter invents root causes, intent, or results.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from ..derive import Derivation, derive
 from ..filters import ReportCommand, build_report_commands
@@ -38,6 +38,7 @@ class ReportContext:
     session: Session
     report_commands: List[ReportCommand] = field(default_factory=list)
     failed_commands: List[ReportCommand] = field(default_factory=list)
+    currently_failing: List[ReportCommand] = field(default_factory=list)
     verification_commands: List[ReportCommand] = field(default_factory=list)
     test_commands: List[ReportCommand] = field(default_factory=list)
     notes: List[Tuple[str, str]] = field(default_factory=list)
@@ -84,6 +85,15 @@ def build_context(session: Session) -> ReportContext:
     verification = [rc for rc in report_commands if rc.is_verification]
     tests = [rc for rc in report_commands if rc.is_test]
 
+    # "Currently failing" is judged by each command's latest outcome, not by any
+    # historical failure: a check that failed and was later fixed is not failing.
+    latest_by_command: Dict[str, ReportCommand] = {}
+    for rc in report_commands:
+        prev = latest_by_command.get(rc.command)
+        if prev is None or rc.last_timestamp > prev.last_timestamp:
+            latest_by_command[rc.command] = rc
+    currently_failing = [rc for rc in latest_by_command.values() if rc.failed]
+
     notes: List[Tuple[str, str]] = []
     for event in session.note_events():
         text = (event.data or {}).get("text", "").strip()
@@ -96,6 +106,7 @@ def build_context(session: Session) -> ReportContext:
         session=session,
         report_commands=report_commands,
         failed_commands=failed,
+        currently_failing=currently_failing,
         verification_commands=verification,
         test_commands=tests,
         notes=notes,
@@ -365,7 +376,7 @@ class BaseReporter:
         ruled = self.ctx.derivation.ruled_out
         if not ruled:
             return []
-        lines = ["## What was ruled out", ""]
+        lines = ["## Failed attempts", ""]
         for rec in ruled:
             exit_repr = "n/a" if rec.exit_code is None else str(rec.exit_code)
             lines.append(

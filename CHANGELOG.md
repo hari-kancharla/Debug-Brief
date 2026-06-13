@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.3.0] - 2026-06-13
 
+### Added
+
+- `debugbrief init` sets up a project in one step: it creates and locally
+  ignores `.debugbrief/`, reports health, and prints the recommended `db` alias
+  and the workflow. It never starts a session or writes a report.
+- `debugbrief recover` repairs a broken or stale active-session pointer left by a
+  crash or an interrupted finalize so a new session can start. A healthy active
+  session is left untouched, and corrupt session files are reported, not deleted.
+- `end --detail compact` (and `preview --detail compact`) writes a shorter PR
+  brief: the summary, changed files, and verification stay visible while the
+  metadata and timeline fold into a collapsible section. The default stays full.
+- An optional `.debugbrief.toml` at the project root sets defaults for the report
+  mode, the run timeout, and the report detail. An explicit flag always wins, and
+  a missing or malformed file is ignored. Standard library only, no dependencies.
+
 ### Fixed
 
 - A timeout now terminates the command's process group, not just the immediate
@@ -72,6 +87,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   internal length cap is discarded up to its terminator instead of leaking its
   tail into the report as text; a runaway control sequence (CSI/ESC), which is
   short by spec, is abandoned at the cap so normal output resumes.
+- Captured commands run from the directory they are invoked in, not the
+  repository root, so `cd packages/api && debugbrief run -- pytest` behaves the
+  way it would if typed directly. State still lives at the repository root.
+- Test and build recognition is anchored to the command's executable. A tool
+  name that only appears as an argument (`echo pytest`) is no longer treated as
+  a check, a path like `.venv/bin/pytest` is recognized by its basename, and
+  common wrappers (`python -m`, `uv`/`poetry`/`pdm`/`hatch`/`rye run`, `bundle
+  exec`, `npx`, `pnpm`/`yarn exec`) and their options are unwrapped to the inner
+  command.
+- The session title and warning messages are redacted before reaching disk, the
+  same as command output. Auto-start redacts the full command before truncating
+  it, so a secret cannot survive truncation into the title.
+- `.debugbrief/` is created mode 0700 and reports mode 0600, regardless of the
+  user's umask, so a project's debugging history is not left readable by other
+  local accounts.
+- Changed-file reporting compares against the working-tree state captured at
+  session start, so a fix committed during the session is included and a file
+  already dirty before the session and untouched since is no longer counted.
+- Red-to-green pairs a failing check with a later pass only when it is the same
+  command run in the same directory, not an unrelated check passing later.
+- The report section "What was ruled out" is now "Failed attempts" (a failed
+  command is an attempt that did not pass, not a proven ruled-out cause), and
+  handoff/incident current state is judged by each check's latest outcome rather
+  than any historical failure.
+- Finalizing a session is transactional: reports are rendered, written
+  atomically (temp file, fsync, rename), then the session is marked completed and
+  the active pointer is cleared last, so a failure mid-finalize leaves the
+  session recoverable instead of completed without a report.
+- Concurrent command recording is serialized with a per-repository advisory lock
+  so two terminals finishing at once cannot lose each other's event.
+- JSON-only reports (`end --format json`) are found by `last`, `list`, and
+  `show`, which previously looked only for Markdown.
+- The pseudo-terminal inherits the user's terminal size instead of a fixed
+  24x80, so captured output wraps the way the user sees it.
 
 ### Changed
 

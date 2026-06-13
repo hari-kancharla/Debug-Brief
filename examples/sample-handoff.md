@@ -41,7 +41,7 @@ Recorded 2 command attempts over 1m 24s; verification `python -m pytest -q test_
 
 - `python -m pytest -q test_chunker.py` x2 -> failed (exit -9)
 
-## What was ruled out
+## Failed attempts
 
 - `python -m pytest -q test_chunker.py` -> failed (exit 1)
 - `python -m pytest -q test_chunker.py` -> failed (exit -9)

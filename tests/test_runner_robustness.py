@@ -10,6 +10,8 @@ import subprocess
 import sys
 import time
 
+import pytest
+
 from debugbrief import filters
 from debugbrief.command_runner import RunResult, _BoundedText, run_command
 from debugbrief.models import (
@@ -160,3 +162,171 @@ def test_keyboard_interrupt_is_recorded_and_child_killed(tmp_path, monkeypatch):
     assert result.interrupted is True
     assert result.command_data.classification.status == COMMAND_STATUS_INTERRUPTED
     assert result.propagated_exit_code == 130
+
+
+# Partial PTY allocation cleanup ----------------------------------------------
+def test_second_pty_failure_closes_the_first_pair(tmp_path, monkeypatch):
+    import os
+    import pty
+
+    real_openpty = pty.openpty
+    opened: list = []
+    state = {"calls": 0}
+
+    def flaky_openpty():
+        state["calls"] += 1
+        if state["calls"] == 1:
+            pair = real_openpty()
+            opened.extend(pair)
+            return pair
+        raise OSError("no more pseudo-terminals")
+
+    monkeypatch.setattr(pty, "openpty", flaky_openpty)
+    result = run_command(f"{PY} -c \"print('viapipe')\"", cwd=tmp_path, echo=False)
+    # Fell back to pipes and still captured.
+    assert "viapipe" in result.command_data.stdout_preview
+    # The first pair must have been closed, not leaked.
+    for fd in opened:
+        with pytest.raises(OSError):
+            os.fstat(fd)
+
+
+# Process-group termination without a group id --------------------------------
+def test_terminate_group_signals_process_when_no_pgid():
+    import signal
+
+    from debugbrief.command_runner import _terminate_group
+
+    proc = subprocess.Popen([PY, "-c", "import time; time.sleep(30)"])
+    try:
+        _terminate_group(proc, None, (signal.SIGTERM, signal.SIGKILL))
+        assert proc.poll() is not None, "process without a pgid was not signalled"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
+# Interrupt during draining must not escape unrecorded ------------------------
+def test_keyboard_interrupt_during_drain_keeps_completed_result(tmp_path, monkeypatch):
+    import debugbrief.command_runner as cr
+
+    real_join = cr._join_deadline
+    state = {"n": 0}
+
+    def ki_once(readers, seconds):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise KeyboardInterrupt
+        return real_join(readers, seconds)
+
+    monkeypatch.setattr(cr, "_join_deadline", ki_once)
+    result = run_command(f"{PY} -c \"print('done')\"", cwd=tmp_path, echo=False)
+    # The command had already completed: an interrupt during cleanup must not
+    # escape, and must not mislabel a finished command as interrupted.
+    assert result.interrupted is False
+    assert result.command_data.exit_code == 0
+
+
+def test_interrupt_stores_raw_signal_code(tmp_path, monkeypatch):
+    real_wait = subprocess.Popen.wait
+    state = {"raised": False}
+
+    def fake_wait(self, timeout=None):
+        if not state["raised"]:
+            state["raised"] = True
+            raise KeyboardInterrupt
+        return real_wait(self, timeout=timeout)
+
+    monkeypatch.setattr(subprocess.Popen, "wait", fake_wait)
+    result = run_command(f"{PY} -c 'import time; time.sleep(30)'", cwd=tmp_path, echo=False)
+    # Raw reaped signal code is stored (negative), while the CLI exit stays 130.
+    assert result.command_data.exit_code is not None
+    assert result.command_data.exit_code < 0
+    assert result.propagated_exit_code == 130
+
+
+# Lingering detection via reader state (setsid escapee) -----------------------
+def test_setsid_descendant_triggers_warning(tmp_path):
+    marker = f"db_setsid_marker_{tmp_path.name}"
+    code = (
+        "import subprocess, sys; "
+        f"subprocess.Popen([sys.executable, '-c', "
+        f"'import time; time.sleep(3)', '{marker}'], start_new_session=True)"
+    )
+    start = time.monotonic()
+    result = run_command(f'{PY} -c "{code}"', cwd=tmp_path, echo=False)
+    elapsed = time.monotonic() - start
+    try:
+        # The detached child left the process group but still holds the stream;
+        # detection is by reader state, so the warning still fires, no hang.
+        assert elapsed < 2.0, f"runner hung for {elapsed:.1f}s on a setsid escapee"
+        assert result.warning is not None and "background process" in result.warning
+    finally:
+        subprocess.run(["pkill", "-f", marker])
+
+
+# ANSI cleaning across chunk and truncation boundaries ------------------------
+def test_ansi_cleaner_handles_sequences_split_across_chunks():
+    from debugbrief.command_runner import _AnsiCleaner
+
+    cleaner = _AnsiCleaner()
+    out = (
+        cleaner.feed("abc\x1b[3")
+        + cleaner.feed("1mRED\x1b[0")
+        + cleaner.feed("m done")
+        + cleaner.flush()
+    )
+    assert out == "abcRED done"
+
+    one_shot = _AnsiCleaner()
+    assert one_shot.feed("\x1b[32mok\x1b[0m\n") == "ok\n"
+    assert _AnsiCleaner().feed("line\r\n") == "line\n"
+
+
+def test_truncated_colored_output_has_no_escape_fragments(tmp_path):
+    prog = (
+        "import sys\n"
+        "for i in range(500): sys.stdout.write('\\x1b[31m' + str(i) + '\\x1b[0m line\\n')"
+    )
+    result = run_command(f'{PY} -c "{prog}"', cwd=tmp_path, stdout_limit=120, echo=False)
+    preview = result.command_data.stdout_preview
+    assert result.command_data.stdout_truncated is True
+    assert "\x1b" not in preview  # no escape codes, no split fragments
+
+
+# Real Ctrl-C at the process level --------------------------------------------
+def test_real_sigint_records_interrupted_and_kills_child(tmp_path):
+    import json
+    import signal
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        [PY, "-m", "debugbrief", "start", "sigint test"],
+        cwd=tmp_path, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
+    )
+    marker = f"db_real_sigint_{tmp_path.name}"
+    proc = subprocess.Popen(
+        [PY, "-m", "debugbrief", "run", "--", PY, "-c", f"import time; time.sleep(30)  # {marker}"],
+        cwd=tmp_path, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    time.sleep(2.0)
+    proc.send_signal(signal.SIGINT)
+    rc = proc.wait(timeout=15)
+    time.sleep(0.5)
+    orphan = subprocess.run(["pgrep", "-f", marker], stdout=subprocess.PIPE).stdout.strip()
+    if orphan:
+        subprocess.run(["pkill", "-f", marker])
+
+    assert rc == 130
+    assert not orphan, "the interrupted command left an orphaned child"
+    sessions = list((tmp_path / ".debugbrief" / "sessions").glob("*.json"))
+    assert sessions
+    data = json.loads(sessions[0].read_text())
+    statuses = [
+        e["data"]["classification"]["status"]
+        for e in data["events"]
+        if e["type"] == "command"
+    ]
+    assert "interrupted" in statuses

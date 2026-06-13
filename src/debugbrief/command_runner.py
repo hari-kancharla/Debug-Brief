@@ -2,37 +2,39 @@
 
 The runner never fakes an exit code and never claims success it did not observe.
 While the command runs, its stdout and stderr are forwarded to the user's own
-terminal as the program writes them, and accumulated in parallel for the stored
-previews.
+terminal as the program writes them, and a bounded preview of each is retained
+for the report.
 
 Design notes for the parts that are easy to get wrong:
 
 - Live output: the command runs under a pseudo-terminal (one for stdout, one for
   stderr). A program decides whether to line-buffer or block-buffer by asking
-  whether its output is a terminal; behind a plain pipe most runtimes block-buffer
-  and nothing appears until they exit. A pty makes them stream as in a real shell.
-  Where no pty can be allocated (a locked-down sandbox), capture falls back to
-  plain pipes and still works, just without live buffering.
+  whether its output is a terminal; behind a plain pipe most runtimes
+  block-buffer and nothing appears until they exit. A pty gives terminal-like
+  buffering, so output streams as it is written. Where no pty can be allocated
+  (a locked-down sandbox), capture falls back to plain pipes and still works,
+  just without live buffering.
 
-- Process tree: the command runs in its own session/process group
-  (``start_new_session``), so a timeout or a Ctrl-C terminates the whole group
-  with ``killpg``, not just the immediate process. A command that spawns
-  background children no longer leaves them running.
+- Process group: the command runs in its own session/process group
+  (``start_new_session``), so a timeout or a Ctrl-C terminates the group with
+  ``killpg``, not just the immediate process. A command that spawns background
+  children no longer leaves them running. A child that deliberately detaches
+  with its own ``setsid`` leaves the group and can still outlive the command;
+  that is reported as a warning rather than silently waited on.
 
-- No hang: after the immediate process exits, a background descendant can keep
-  the output streams open. The runner detects a still-living process group,
-  drains what is buffered, and returns with a warning instead of blocking
-  forever on the open stream.
+- No hang: after the immediate process exits, a background process can keep the
+  output streams open. The runner drains what is buffered, then stops instead of
+  blocking forever, and warns that the captured output may be incomplete.
 
-- Bounded memory: output is accumulated through a head-and-tail buffer that
-  retains at most the preview budget, so a command that prints gigabytes does
-  not grow the runner's memory. The preview limits bound the process, not only
-  the stored file.
+- Bounded memory: output is retained through a head-and-tail buffer capped at the
+  preview budget, so a command that prints gigabytes does not grow the runner's
+  memory. Only a bounded preview is kept, not the full output.
 
-Terminal control sequences are stripped from the stored previews so reports stay
-readable; the live echo keeps them. Pseudo-terminals, process groups, and
-signals are POSIX standard library only, so this keeps the zero-dependency,
-Unix-only design.
+Terminal control sequences are stripped from the stored preview as output is
+read (the live echo keeps them), so a sequence split across reads or across the
+preview's truncation boundary never leaves a fragment in the report.
+Pseudo-terminals, process groups, and signals are POSIX standard library only,
+so this keeps the zero-dependency, Unix-only design.
 """
 
 from __future__ import annotations
@@ -64,7 +66,7 @@ from .utils import (
 DEFAULT_TIMEOUT_SECONDS = 300
 
 # How long to let readers drain buffered output once the command's immediate
-# process has exited but a background descendant still holds the stream open.
+# process has exited but a background process still holds the stream open.
 _LINGER_DRAIN_SECONDS = 0.5
 # Upper bound on joining a reader once the writers are gone (EOF is near-instant;
 # this is only a safety cap).
@@ -76,7 +78,7 @@ _SELECT_INTERVAL = 0.2
 
 # Terminal escape sequences (CSI colors/cursor moves, OSC title sets, and the
 # simple two-character escapes) a program emits when it believes it is on a
-# terminal. Stripped from stored previews only; the live echo keeps them.
+# terminal. Stripped from the stored preview; the live echo keeps them.
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
 
 
@@ -97,8 +99,9 @@ class RunResult:
 
         Real exit codes pass through. A command killed by signal ``N`` is
         reported by the OS as ``-N``; the shell convention is ``128 + N`` (so
-        SIGINT becomes 130), and that is what callers and scripts expect.
-        Interrupts map to 130, and timeouts/errors (no exit code) to 1.
+        SIGINT becomes 130), and that is what callers and scripts expect. A user
+        interrupt maps to 130 regardless of how the child happened to die, and a
+        timeout or spawn error (no exit code) to 1.
         """
         if self.interrupted:
             return 130
@@ -112,6 +115,39 @@ class RunResult:
 
 class _PtyUnavailable(Exception):
     """Raised when a pseudo-terminal cannot be allocated; triggers pipe fallback."""
+
+
+class _AnsiCleaner:
+    """Incrementally strip ANSI escapes and normalize CR-LF.
+
+    Holds a not-yet-terminated escape sequence at a chunk boundary so a sequence
+    split across reads is not emitted as a fragment. Because cleaning happens
+    before output is accumulated, the stored preview never contains a broken
+    escape, including across the preview's head/tail truncation boundary.
+    """
+
+    _MAX_PENDING = 64
+
+    def __init__(self) -> None:
+        self._pending = ""
+
+    def feed(self, text: str) -> str:
+        work = self._pending + text
+        self._pending = ""
+        esc = work.rfind("\x1b")
+        if esc != -1 and _ANSI_RE.match(work, esc) is None:
+            # The last ESC starts a sequence that is not complete yet. Hold it
+            # for the next read (unless it is implausibly long, then treat it as
+            # literal content rather than buffer without bound).
+            tail = work[esc:]
+            if len(tail) <= self._MAX_PENDING:
+                self._pending = tail
+                work = work[:esc]
+        return _ANSI_RE.sub("", work).replace("\r\n", "\n")
+
+    def flush(self) -> str:
+        rest, self._pending = self._pending, ""
+        return _ANSI_RE.sub("", rest).replace("\r\n", "\n")
 
 
 class _BoundedText:
@@ -160,17 +196,6 @@ class _BoundedText:
         return head + marker + self._tail, True
 
 
-def _clean_for_storage(text: str) -> str:
-    """Normalize captured text for the stored preview.
-
-    Collapses the terminal's CR-LF to LF and strips ANSI escape sequences, so a
-    report shows plain readable text rather than color codes.
-    """
-    if not text:
-        return text
-    return _ANSI_RE.sub("", text.replace("\r\n", "\n"))
-
-
 def _popen_error_message(exc: OSError, command: str) -> str:
     if isinstance(exc, FileNotFoundError):
         return f"Command not found: {exc.filename or command}"
@@ -192,17 +217,28 @@ def _group_alive(pgid: Optional[int]) -> bool:
         return True
 
 
+def _still_running(process: "subprocess.Popen[Any]", pgid: Optional[int]) -> bool:
+    """True while there is still something to signal.
+
+    Uses the process group when one is known, and falls back to the immediate
+    process when it is not, so the no-group path actually does something.
+    """
+    if pgid is not None:
+        return _group_alive(pgid)
+    return process.poll() is None
+
+
 def _terminate_group(
     process: "subprocess.Popen[Any]", pgid: Optional[int], signals: Tuple[int, ...]
 ) -> None:
-    """Signal the whole process group, escalating until it is gone.
+    """Signal the process group, escalating until it is gone.
 
     SIGKILL (the last signal callers pass) cannot be caught, so the group is
-    guaranteed dead by the end. Falls back to signalling just the immediate
-    process if no group id is known.
+    gone by the end. Falls back to signalling just the immediate process when no
+    group id is known.
     """
     for sig in signals:
-        if not _group_alive(pgid):
+        if not _still_running(process, pgid):
             break
         try:
             if pgid is not None:
@@ -211,13 +247,10 @@ def _terminate_group(
                 process.send_signal(sig)
         except (ProcessLookupError, PermissionError, OSError):
             break
-        try:
+        with contextlib.suppress(subprocess.TimeoutExpired):
             process.wait(timeout=_GROUP_TERM_WAIT)
-        except subprocess.TimeoutExpired:
-            continue
-        else:
-            if not _group_alive(pgid):
-                return
+        if not _still_running(process, pgid):
+            break
     with contextlib.suppress(Exception):
         process.poll()
 
@@ -233,12 +266,25 @@ def _pump_fd(
 ) -> None:
     """Drain an output ``fd`` until EOF or ``stop``, echoing live and accumulating.
 
-    Uses ``select`` so the loop can notice ``stop`` even when no data arrives
-    (a background process holding the stream open). Decodes UTF-8 incrementally
-    so a character split across reads is not mangled. Reads bytes (a pty master
-    has no text mode) and never closes the fd; the caller owns it.
+    Echoes the raw bytes (the user's terminal keeps any color) and feeds a
+    cleaned copy to ``bounded`` (so the stored preview is plain text). Uses
+    ``select`` so the loop notices ``stop`` even when no data arrives (a
+    background process holding the stream open), decodes UTF-8 incrementally, and
+    never closes the fd; the caller owns it.
     """
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    cleaner = _AnsiCleaner()
+
+    def emit(raw: str) -> None:
+        nonlocal echo_to
+        if echo_to is not None:
+            try:
+                echo_to.write(raw)
+                echo_to.flush()
+            except (OSError, ValueError):
+                echo_to = None
+        bounded.feed(cleaner.feed(raw))
+
     try:
         while not stop.is_set():
             try:
@@ -254,18 +300,12 @@ def _pump_fd(
             if not data:
                 break
             text = decoder.decode(data)
-            if not text:
-                continue
-            bounded.feed(text)
-            if echo_to is not None:
-                try:
-                    echo_to.write(text)
-                    echo_to.flush()
-                except (OSError, ValueError):
-                    echo_to = None
+            if text:
+                emit(text)
         tail = decoder.decode(b"", final=True)
         if tail:
-            bounded.feed(tail)
+            emit(tail)
+        bounded.feed(cleaner.flush())
     except Exception:  # pragma: no cover - a reader thread must never crash the run
         pass
 
@@ -278,7 +318,10 @@ def _drive(
 ) -> Tuple[Optional[int], bool, bool, Optional[str], Optional[str]]:
     """Run reader threads, wait for the process, and wind everything down.
 
-    Returns (exit_code, timed_out, interrupted, error_message, warning).
+    Returns (exit_code, timed_out, interrupted, error_message, warning). A
+    KeyboardInterrupt anywhere in the wait/drain lifecycle terminates the group
+    and is reported as an interrupt; the function always returns a result rather
+    than letting the interrupt escape unrecorded.
     """
     stop = threading.Event()
     readers = [
@@ -290,37 +333,50 @@ def _drive(
 
     timed_out = False
     interrupted = False
+    completed = False
     error_message: Optional[str] = None
     warning: Optional[str] = None
     exit_code: Optional[int] = None
 
     try:
-        exit_code = process.wait(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        _terminate_group(process, pgid, (signal.SIGTERM, signal.SIGKILL))
-        error_message = f"Command timed out after {timeout_seconds}s."
-    except KeyboardInterrupt:
-        interrupted = True
-        _terminate_group(process, pgid, (signal.SIGINT, signal.SIGTERM, signal.SIGKILL))
-        error_message = "Command was interrupted before it finished."
+        try:
+            exit_code = process.wait(timeout=timeout_seconds)
+            completed = True
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _terminate_group(process, pgid, (signal.SIGTERM, signal.SIGKILL))
+            error_message = f"Command timed out after {timeout_seconds}s."
 
-    if not timed_out and not interrupted and _group_alive(pgid):
-        # The immediate process is done but a background descendant still holds
-        # the streams open. Drain what is buffered, then stop instead of hanging.
-        _join_deadline(readers, _LINGER_DRAIN_SECONDS)
-        if any(reader.is_alive() for reader in readers):
+        drain = _LINGER_DRAIN_SECONDS if completed else _READER_JOIN_SECONDS
+        _join_deadline(readers, drain)
+        # Decide lingering from the readers themselves, not process-group
+        # membership: a child that detached with setsid keeps the stream open
+        # while leaving the group.
+        if completed and any(reader.is_alive() for reader in readers):
             warning = (
                 "Output stream stayed open after the command exited; a "
                 "background process it started may still be running, so the "
                 "captured output may be incomplete."
             )
-    else:
-        _join_deadline(readers, _READER_JOIN_SECONDS)
+    except KeyboardInterrupt:
+        if not completed:
+            interrupted = True
+            timed_out = False
+            warning = None
+            _terminate_group(
+                process, pgid, (signal.SIGINT, signal.SIGTERM, signal.SIGKILL)
+            )
+            # Store the raw reaped signal code (e.g. -2); the propagated CLI exit
+            # code stays 130 because the user interrupted the run.
+            exit_code = process.returncode
+            error_message = "Command was interrupted before it finished."
+        # If the command had already completed, keep its real result and just
+        # fall through to stop the readers.
+    finally:
+        stop.set()
+        for reader in readers:
+            reader.join(timeout=_READER_JOIN_SECONDS)
 
-    stop.set()
-    for reader in readers:
-        reader.join(timeout=_READER_JOIN_SECONDS)
     return exit_code, timed_out, interrupted, error_message, warning
 
 
@@ -341,10 +397,18 @@ def _capture_via_pty(
     import struct
     import termios
 
+    opened: List[int] = []
     try:
         out_master, out_slave = pty.openpty()
+        opened += [out_master, out_slave]
         err_master, err_slave = pty.openpty()
+        opened += [err_master, err_slave]
     except OSError as exc:
+        # Close any descriptor already allocated before giving up, so a partial
+        # allocation does not leak.
+        for fd in opened:
+            with contextlib.suppress(OSError):
+                os.close(fd)
         raise _PtyUnavailable(str(exc)) from exc
 
     for slave in (out_slave, err_slave):
@@ -448,10 +512,10 @@ def run_command(
 
     The command runs under a pseudo-terminal in its own process group, so its
     output streams live (disable echo with ``echo=False``) and a timeout or a
-    Ctrl-C terminates the whole tree. Output is accumulated through a bounded
-    buffer, so the runner's memory stays bounded regardless of how much the
-    command prints. Pass ``redact=False`` to store output verbatim;
-    ``force_verification`` marks an unrecognized command as a declared check.
+    Ctrl-C terminates the group. Output is retained through a bounded buffer, so
+    the runner's memory stays bounded regardless of how much the command prints.
+    Pass ``redact=False`` to store output verbatim; ``force_verification`` marks
+    an unrecognized command as a declared check.
     """
     started_at = now_iso8601()
     start_monotonic = time.monotonic()
@@ -490,15 +554,17 @@ def run_command(
             exit_code, timed_out, interrupted, error_message, warning = _capture_via_pty(*args)
         except _PtyUnavailable:
             exit_code, timed_out, interrupted, error_message, warning = _capture_via_pipes(*args)
-        errored = error_message is not None and not timed_out and not interrupted
+        errored = (
+            error_message is not None and not timed_out and not interrupted
+        )
 
     ended_at = now_iso8601()
     duration = round(time.monotonic() - start_monotonic, 3)
 
-    stdout_raw, stdout_truncated = out_bounded.result()
-    stderr_raw, stderr_truncated = err_bounded.result()
-    stdout_preview = _clean_for_storage(stdout_raw)
-    stderr_preview = _clean_for_storage(stderr_raw)
+    # Output was cleaned (escapes stripped, CR-LF normalized) as it was read, so
+    # the bounded previews are already report-ready.
+    stdout_preview, stdout_truncated = out_bounded.result()
+    stderr_preview, stderr_truncated = err_bounded.result()
 
     # Classification is derived from the command tokens and the real outcome, so
     # it is computed before redaction may alter the stored command string.

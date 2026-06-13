@@ -724,7 +724,20 @@ def run_command(
         force_verification=force_verification,
         interrupted=outcome.interrupted,
         broken_pipe=outcome.broken_pipe,
+        use_shell=use_shell,
     )
+
+    # A recognized check run inside a shell pipeline is not treated as a
+    # verification (its exit status is only the last stage's); say so plainly.
+    warning = outcome.warning
+    if filters.shell_pipeline_suppressed_check(command, use_shell):
+        pipeline_warning = (
+            "The command is a shell pipeline, so its exit status reflects only "
+            "the last stage, not the check. It is recorded as a command but not "
+            "treated as a verification. Run the check without a pipeline (or set "
+            "the shell's pipefail) for a reliable pass/fail."
+        )
+        warning = f"{warning} {pipeline_warning}".strip() if warning else pipeline_warning
 
     stored_command = command
     redacted = False
@@ -756,5 +769,5 @@ def run_command(
         error_message=outcome.error_message,
         interrupted=outcome.interrupted,
         broken_pipe=outcome.broken_pipe,
-        warning=outcome.warning,
+        warning=warning,
     )

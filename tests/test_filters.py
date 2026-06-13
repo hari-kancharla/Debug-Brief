@@ -106,10 +106,28 @@ def test_classify_anchors_to_executable_not_arguments():
     assert filters.classify_command("npx jest", exit_code=0).tool == "jest"
     # A leading environment assignment is skipped.
     assert filters.classify_command("CI=1 pytest", exit_code=0).tool == "pytest"
-    # A wrapper's own options are skipped before the inner command.
+    # A wrapper's own options are handled. An option that takes a value
+    # (--with, --project) is consumed with its value so the real command shows.
     assert filters.classify_command("uv run --with pytest pytest", 0).tool == "pytest"
-    assert filters.classify_command("npx --yes jest", exit_code=0).tool == "jest"
+    assert filters.classify_command("uv run --project pkgs/api pytest", 0).tool == "pytest"
     assert filters.classify_command("poetry run -q pytest", exit_code=0).tool == "pytest"
+    # An option's value is never mistaken for the command (no false positive).
+    assert filters.classify_command("uv run --with pytest python app.py", 0).tool is None
+    # A long boolean flag before the command is not auto-recognized; use --verify.
+    assert filters.classify_command("npx --yes jest", exit_code=0).tool is None
+
+
+def test_shell_pipeline_is_not_treated_as_verification():
+    # A pipeline's exit status is only the last stage's, so a failed check piped
+    # into a passing command must not be recorded as a passed verification.
+    c = filters.classify_command("pytest -q | tee out.txt", exit_code=0, use_shell=True)
+    assert c.is_verification is False and c.tool is None and c.is_test is False
+    assert filters.shell_pipeline_suppressed_check("pytest -q | tee out.txt", True) is True
+    # Without --shell the "|" is a literal argument, not a pipeline.
+    assert filters.classify_command("pytest -q | tee out.txt", 0).tool == "pytest"
+    # "||" is logical-or, and a quoted "|" is not a pipe.
+    assert filters.shell_pipeline_suppressed_check("pytest || echo done", True) is False
+    assert filters.shell_pipeline_suppressed_check("pytest -k 'a | b'", True) is False
 
 
 def test_classify_unknown_command():

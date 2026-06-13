@@ -118,19 +118,31 @@ def _is_python(name: str) -> bool:
 
 
 def _skip_wrapper_options(toks: List[str]) -> List[str]:
-    """Drop a wrapper's own option flags so the wrapped command surfaces.
+    """Drop a wrapper's own options (and their values) so the command surfaces.
 
-    Wrappers accept options before the command (``uv run --with pytest pytest``,
-    ``npx --yes jest``). Leading ``-``-prefixed tokens are dropped; a ``--``
-    separator is dropped and ends option processing. A flag's value cannot be
-    told apart from the command in general, so each flag is dropped on its own,
-    which recognizes both of the above without guessing arities.
+    Wrappers take options before the command, and some consume the next token as
+    a value (``uv run --with pytest pytest``, ``uv run --project pkg pytest``).
+    Arities cannot be known in general, so a conservative rule is used that never
+    mistakes an option's value for the command (which would be a false-positive
+    classification, the dangerous direction for an honest tool):
+
+    - ``--`` ends option processing; the rest is the command.
+    - ``--name=value`` is self-contained.
+    - a bare long option (``--name``) consumes the following token as its value,
+      unless that token is itself an option.
+    - a short option (``-q``) is treated as a boolean flag and consumes nothing.
+
+    A consequence is that a *long* boolean flag written before the command
+    (``npx --yes jest``) is not recognized; declare such a command with
+    ``--verify``. Short flags (``poetry run -q pytest``) still work.
     """
     while toks and toks[0].startswith("-"):
-        end_of_options = toks[0] == "--"
+        opt = toks[0]
+        if opt == "--":
+            return toks[1:]
         toks = toks[1:]
-        if end_of_options:
-            break
+        if opt.startswith("--") and "=" not in opt and toks and not toks[0].startswith("-"):
+            toks = toks[1:]  # consume the long option's value
     return toks
 
 
@@ -188,6 +200,42 @@ def _match_build(tokens: List[str]) -> Optional[Tuple[str, str]]:
     return None
 
 
+def _is_shell_pipeline(command: str) -> bool:
+    """True if ``command`` contains a top-level shell pipe (``|``, not ``||``).
+
+    Quote-aware so a ``|`` inside a quoted string does not count. Conservative:
+    it does not parse the full shell grammar, only enough to spot a pipeline.
+    """
+    in_single = in_double = False
+    i, n = 0, len(command)
+    while i < n:
+        ch = command[i]
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif ch == "|" and not in_single and not in_double:
+            prev_pipe = i > 0 and command[i - 1] == "|"
+            next_pipe = i + 1 < n and command[i + 1] == "|"
+            if not prev_pipe and not next_pipe:
+                return True
+        i += 1
+    return False
+
+
+def shell_pipeline_suppressed_check(command: str, use_shell: bool) -> bool:
+    """True when a shell pipeline kept a would-be check from being classified.
+
+    The runner uses this to warn that a recognized test/build run inside a
+    pipeline is not treated as a verification, because the pipeline's exit status
+    reflects only its last stage rather than the check itself.
+    """
+    if not (use_shell and _is_shell_pipeline(command)):
+        return False
+    tokens = _tokenize(command)
+    return _match_test(tokens) is not None or _match_build(tokens) is not None
+
+
 def status_from_outcome(
     exit_code: Optional[int],
     timed_out: bool,
@@ -217,6 +265,7 @@ def classify_command(
     force_verification: bool = False,
     interrupted: bool = False,
     broken_pipe: bool = False,
+    use_shell: bool = False,
 ) -> CommandClassification:
     """Classify a command into test / verification categories.
 
@@ -228,13 +277,22 @@ def classify_command(
     custom test script, ``make integration``) as a check. It applies only when
     no pattern matched; a recognized runner always wins. The honesty rule is
     unchanged: ``is_verification`` is True only on a real exit 0.
+
+    A shell pipeline (``use_shell`` with a top-level ``|``) is never classified
+    as a check: its exit status reflects only the last stage, not the test, so
+    treating it as a verification could record a failed test as passed.
     """
-    tokens = _tokenize(command)
     status = status_from_outcome(
         exit_code, timed_out, errored, interrupted, broken_pipe
     )
     passed = status == COMMAND_STATUS_PASSED
 
+    if use_shell and _is_shell_pipeline(command):
+        return CommandClassification(
+            is_test=False, is_verification=False, tool=None, status=status
+        )
+
+    tokens = _tokenize(command)
     test_tool = _match_test(tokens)
     if test_tool is not None:
         return CommandClassification(

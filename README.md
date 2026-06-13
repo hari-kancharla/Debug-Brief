@@ -70,8 +70,8 @@ The resulting report leads with a derived one-liner like:
   mvn/gradle test. For custom scripts, declare the check yourself:
   `debugbrief run --verify -- ./scripts/test.sh`.
 - `end` derives the report from those events: the red-to-green window, the
-  reproduce/verify commands, a timeline, the observed error verbatim, and what
-  was ruled out. Empty sections are omitted, never padded.
+  reproduce/verify commands, a timeline, the observed error verbatim, and the
+  failed attempts. Empty sections are omitted, never padded.
 - Redaction runs before anything reaches disk and catches common shapes:
   sensitive `name=value` pairs, bearer and authorization headers, OpenAI/AWS/
   GitHub style keys, connection-string passwords, and PEM private key blocks,
@@ -82,19 +82,24 @@ The resulting report leads with a derived one-liner like:
 
 | Command | What it does |
 | --- | --- |
+| `init` | Set up the project and show the workflow |
 | `start "<title>"` | Start a session |
 | `note <text ...>` | Record a note (quoting optional) |
 | `run -- <command ...>` | Execute and capture a command |
 | `redo` | Re-run the last captured command |
 | `preview [--mode ...]` | Print the report without ending the session |
-| `end [--mode pr\|handoff\|incident]` | Finalize and write a report (default `pr`) |
+| `end [--mode pr\|handoff\|incident] [--detail compact]` | Finalize and write a report (default `pr`) |
 | `cancel [--yes]` | Discard the active session, no report |
 | `status` | Show the active session |
 | `doctor [--fix]` | Health-check the project and state |
+| `recover` | Repair a broken session pointer after a crash |
 | `last` / `open` | Find or open the most recent report |
 | `list` / `show <id>` | Browse recorded sessions |
 
-Full detail, flags, and the report modes: [docs/COMMANDS.md](https://github.com/harihkk/Debug-Brief/blob/main/docs/COMMANDS.md).
+`debugbrief init` sets up a project in one step (and prints the `db` alias).
+`end --detail compact` writes a shorter PR brief, and an optional
+`.debugbrief.toml` sets default mode, timeout, and detail. Full detail, flags,
+and the report modes: [docs/COMMANDS.md](https://github.com/harihkk/Debug-Brief/blob/main/docs/COMMANDS.md).
 
 Post a brief straight to a PR (GitHub CLI optional):
 

@@ -274,9 +274,9 @@ debugbrief end --stdout | gh pr comment --body-file -
 
 - `pr`: pull-request-ready. One-line summary, reproduce/verify commands, the
   red-to-green window, modified files, a condensed timeline, verification, and
-  what was ruled out.
+  the failed attempts.
 - `handoff`: hand a tricky issue to someone else. Current status, your notes, the
-  full timeline, commands attempted, what was ruled out, current repo state, and
+  full timeline, commands attempted, the failed attempts, current repo state, and
   next steps drawn only from your recorded notes.
 - `incident`: a chronological note. One-line summary, time window, full timeline,
   the observed error verbatim, resolution/current state, verification, and

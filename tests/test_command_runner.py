@@ -149,3 +149,57 @@ def test_timeout_keeps_partial_output(tmp_path):
     assert result.timed_out is True
     assert result.command_data.exit_code is None
     assert "before sleep" in result.command_data.stdout_preview
+
+
+# Pseudo-terminal capture (the live-output fix) ------------------------------
+def test_command_sees_a_tty(tmp_path):
+    # The whole point of the pty: the child believes it is on a terminal, so it
+    # line-buffers and streams live instead of block-buffering behind a pipe.
+    result = run_command(
+        f"{PY} -c \"import sys; print(sys.stdout.isatty(), sys.stderr.isatty())\"",
+        cwd=tmp_path,
+    )
+    assert "True True" in result.command_data.stdout_preview
+
+
+def test_ansi_color_stripped_from_stored_preview(tmp_path):
+    prog = "import sys; sys.stdout.write('\\x1b[31mRED\\x1b[0m done\\n')"
+    result = run_command(f'{PY} -c "{prog}"', cwd=tmp_path)
+    preview = result.command_data.stdout_preview
+    assert "RED done" in preview
+    assert "\x1b" not in preview  # escape codes gone from storage
+
+
+def test_stdout_and_stderr_stay_separate(tmp_path):
+    prog = (
+        "import sys; sys.stdout.write('TOOUT\\n'); sys.stdout.flush(); "
+        "sys.stderr.write('TOERR\\n')"
+    )
+    result = run_command(f'{PY} -c "{prog}"', cwd=tmp_path)
+    assert "TOOUT" in result.command_data.stdout_preview
+    assert "TOOUT" not in result.command_data.stderr_preview
+    assert "TOERR" in result.command_data.stderr_preview
+    assert "TOERR" not in result.command_data.stdout_preview
+
+
+def test_no_carriage_returns_in_stored_preview(tmp_path):
+    result = run_command(f"{PY} -c \"print('clean line')\"", cwd=tmp_path)
+    assert "\r" not in result.command_data.stdout_preview
+
+
+def test_pipe_fallback_when_pty_unavailable(tmp_path, monkeypatch):
+    # Simulate a sandbox with no pty: the runner must fall back to pipes and
+    # still capture the command honestly.
+    import pty
+
+    def _no_pty():
+        raise OSError("no pty available")
+
+    monkeypatch.setattr(pty, "openpty", _no_pty)
+    result = run_command(
+        f"{PY} -c \"import sys; print('viapipe', sys.stdout.isatty())\"",
+        cwd=tmp_path,
+    )
+    assert result.command_data.exit_code == 0
+    # Captured through a pipe, so stdout is not a tty.
+    assert "viapipe False" in result.command_data.stdout_preview

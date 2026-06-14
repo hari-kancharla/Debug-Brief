@@ -275,9 +275,18 @@ class SessionManager:
                     "A captured command is already running in this project. Wait "
                     "for it to finish before running another."
                 ) from exc
-            self._write_command_lease(
-                session, command_id, command_preview, invocation_cwd
-            )
+            try:
+                self._write_command_lease(
+                    session, command_id, command_preview, invocation_cwd
+                )
+            except BaseException:
+                # Writing the lease failed (e.g. disk full) after the lock was
+                # taken; release it, or every later command is wrongly rejected as
+                # already running. The yield-side cleanup below is never reached.
+                with contextlib.suppress(OSError):
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
+                raise
         clean_exit = False
         try:
             yield command_id

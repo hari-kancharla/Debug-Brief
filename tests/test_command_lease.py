@@ -150,6 +150,21 @@ def test_recover_reaps_a_dangling_lease_symlink(manager, tmp_path):
     assert not manager.paths.active_command_file.is_symlink()  # removed, not skipped
 
 
+def test_lease_write_failure_releases_the_lock(manager, tmp_path, monkeypatch):
+    manager.start("t")
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(manager, "_write_command_lease", boom)
+    with pytest.raises(OSError), manager.command_lease("x", str(tmp_path)):
+        pass
+    monkeypatch.undo()
+    # The lock was released despite the failure, so a new command can be leased.
+    with manager.command_lease("y", str(tmp_path)) as cid:
+        assert cid
+
+
 def test_recover_creates_no_state_when_nothing_exists(manager):
     # recover must stay read-only on a fresh project: it must not create
     # .debugbrief/ (which the repo lock would otherwise do under the umask).

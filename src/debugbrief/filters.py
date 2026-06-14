@@ -229,12 +229,52 @@ def _match_build(tokens: List[str]) -> Optional[Tuple[str, str]]:
     return None
 
 
+def _strip_shell_comment(command: str) -> str:
+    """Drop a top-level shell comment (``#`` to end of line), quote/backslash-aware.
+
+    A ``#`` starts a comment only at the start of a word (start of string or
+    after unquoted whitespace), matching the shell, so ``pytest # a && b`` is just
+    ``pytest`` and the operators in the comment do not make it look compound. A
+    ``#`` inside quotes, escaped, or mid-word (``a#b``) is left alone.
+    """
+    in_single = in_double = False
+    out: List[str] = []
+    i, n = 0, len(command)
+    while i < n:
+        ch = command[i]
+        if ch == "\\" and not in_single:
+            out.append(ch)
+            if i + 1 < n:
+                out.append(command[i + 1])
+            i += 2
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif (
+            ch == "#"
+            and not in_single
+            and not in_double
+            and (i == 0 or command[i - 1] in " \t")
+        ):
+            newline = command.find("\n", i)
+            if newline == -1:
+                break  # comment runs to end of string
+            i = newline  # keep the newline (a separator) and resume after it
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _is_shell_pipeline(command: str) -> bool:
     """True if ``command`` contains a top-level shell pipe (``|``, not ``||``).
 
     Quote-aware so a ``|`` inside a quoted string does not count. Conservative:
     it does not parse the full shell grammar, only enough to spot a pipeline.
     """
+    command = _strip_shell_comment(command)
     in_single = in_double = False
     i, n = 0, len(command)
     while i < n:
@@ -263,6 +303,7 @@ def _split_shell_segments(command: str) -> List[str]:
     inside a quoted string does not split. Lets a recognized check be found even
     when it does not sit at the very first token (``cd pkg && pytest | tee``).
     """
+    command = _strip_shell_comment(command)
     segments: List[str] = []
     current: List[str] = []
     in_single = in_double = False
@@ -346,8 +387,10 @@ def _is_compound_shell(command: str) -> bool:
     Scans for a top-level ``|`` (pipe or ``||``), ``&&``, a lone ``&``
     (background), ``;``, or newline, rather than counting segments, so a trailing
     operator (``pytest &``) is detected. A ``&`` that is part of a redirection
-    (``2>&1``, ``&>log``) does not count. Quote- and backslash-aware.
+    (``2>&1``, ``&>log``) does not count. Quote- and backslash-aware, and a
+    trailing shell comment is ignored.
     """
+    command = _strip_shell_comment(command)
     in_single = in_double = False
     i, n = 0, len(command)
     while i < n:
@@ -395,8 +438,10 @@ def _has_failure_masking_operator(command: str) -> bool:
     runs its right side only when the left failed; a lone ``&`` backgrounds a
     stage. ``&&`` and a ``|`` pipe (trustworthy under pipefail) instead propagate
     failure, so they are not masking, and a ``&`` that is part of a redirection
-    (``2>&1``, ``&>log``) is not an operator at all. Quote- and backslash-aware.
+    (``2>&1``, ``&>log``) is not an operator at all. Quote- and backslash-aware,
+    and a trailing shell comment is ignored.
     """
+    command = _strip_shell_comment(command)
     in_single = in_double = False
     i, n = 0, len(command)
     while i < n:

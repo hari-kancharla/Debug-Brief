@@ -243,6 +243,19 @@ def test_verify_declares_reliable_compound_but_never_an_unreliable_pipe():
     assert cu.is_verification is False and cu.tool is None
 
 
+def test_shell_comments_are_ignored_when_scanning_for_operators():
+    # Operators inside a trailing # comment are not real: the command is just the
+    # part before the comment, so a recognized check still classifies.
+    for cmd in ("pytest # compare a && b", "pytest # output | tee", "pytest  #note"):
+        c = filters.classify_command(cmd, exit_code=0, use_shell=True, pipefail=True)
+        assert c.tool == "pytest" and c.is_verification is True, cmd
+        assert _warn(cmd, True, passed=True) is None, cmd
+    # A '#' inside quotes is data, not a comment.
+    assert filters._is_shell_pipeline("pytest -k 'a # b'") is False
+    # A genuine compound with a trailing comment is still compound.
+    assert filters._is_compound_shell("cd x && pytest # done") is True
+
+
 def test_pipe_both_operator_is_a_reliable_pipeline():
     # `|&` pipes stdout and stderr; it is a pipeline operator, not a background &.
     # Under pipefail with --verify the declared check is therefore counted.

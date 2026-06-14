@@ -622,8 +622,10 @@ class SessionManager:
         }
         # With no state directory there is nothing to recover, and acquiring the
         # repo lock would create .debugbrief/.lock (under the umask, not 0700).
-        # Stay read-only and do not create state for a no-op recovery.
-        if not self.paths.base_dir.exists():
+        # Use lexists, not exists: a dangling symlink at .debugbrief still exists
+        # as a link and must be reported (assert_state_dirs_safe below rejects
+        # it), not treated as "nothing to recover".
+        if not os.path.lexists(self.paths.base_dir):
             return result
         with self._repo_lock():
             # Command lease first: a live one (lock still held by its process) is

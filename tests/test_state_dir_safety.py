@@ -77,6 +77,14 @@ def test_read_commands_refuse_a_symlinked_base_dir(tmp_path):
         SessionManager(proj_paths).build_status()
 
 
+def test_recover_reports_a_dangling_symlinked_base_dir(tmp_path):
+    # A dangling symlink at .debugbrief exists() == False, but recover must still
+    # report it (not silently say "nothing to recover").
+    (tmp_path / ".debugbrief").symlink_to(tmp_path / "does_not_exist")
+    with pytest.raises(UnsafeStateDirectory):
+        SessionManager(_paths(tmp_path)).recover()
+
+
 def test_symlinked_lock_file_is_rejected(tmp_path):
     paths = _paths(tmp_path)
     manager = SessionManager(paths)

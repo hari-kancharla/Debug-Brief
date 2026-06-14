@@ -123,6 +123,37 @@ def test_classify_anchors_to_executable_not_arguments():
     assert filters.classify_command("uv run --env-file pytest python app.py", 0).tool is None
 
 
+def test_every_recognized_test_pattern_classifies_by_exit_code():
+    # Cross-language coverage: every recognized test runner is a test, named with
+    # its tool, verified on exit 0 and a failed check on nonzero.
+    for pattern, tool in filters._TEST_PATTERNS:
+        cmd = " ".join(pattern)
+        passed = filters.classify_command(cmd, exit_code=0)
+        assert passed.is_test and passed.tool == tool and passed.is_verification, cmd
+        failed = filters.classify_command(cmd, exit_code=1)
+        assert failed.is_test and failed.tool == tool, cmd
+        assert failed.is_verification is False, cmd
+
+
+def test_every_recognized_build_pattern_classifies_by_exit_code():
+    # Build/lint/typecheck runners verify on exit 0 and fail on nonzero too.
+    for pattern, tool, _category in filters._BUILD_PATTERNS:
+        cmd = " ".join(pattern)
+        passed = filters.classify_command(cmd, exit_code=0)
+        assert passed.tool == tool and passed.is_test is False and passed.is_verification, cmd
+        failed = filters.classify_command(cmd, exit_code=1)
+        assert failed.tool == tool and failed.is_verification is False, cmd
+
+
+def test_unknown_check_is_classified_only_through_verify():
+    # An unrecognized command is captured but not a verification unless declared.
+    assert filters.classify_command("./scripts/it.sh", exit_code=0).tool is None
+    declared = filters.classify_command("./scripts/it.sh", exit_code=0, force_verification=True)
+    assert declared.tool == "custom" and declared.is_verification is True
+    failed = filters.classify_command("./scripts/it.sh", exit_code=1, force_verification=True)
+    assert failed.tool == "custom" and failed.is_verification is False
+
+
 def _warn(cmd, pipefail, passed, force_verification=False):
     return filters.shell_command_warning(
         cmd, True, pipefail, passed=passed, force_verification=force_verification

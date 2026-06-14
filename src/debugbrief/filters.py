@@ -414,15 +414,33 @@ def _is_compound_shell(command: str) -> bool:
     return False
 
 
+def _has_shell_negation(command: str) -> bool:
+    """True if a stage is prefixed with ``!``, which inverts its exit status.
+
+    ``! pytest`` exits 0 exactly when pytest fails, so the exit code cannot be
+    trusted as the check's pass/fail. A ``!`` only counts as negation when it is
+    the first token of a stage (``! pytest``, ``cd x && ! pytest``); a ``!``
+    inside an argument or quotes does not.
+    """
+    for segment in _split_shell_segments(command):
+        toks = _tokenize(segment)
+        if toks and toks[0] == "!":
+            return True
+    return False
+
+
 def _reliable_shell(command: str, pipefail: bool) -> bool:
     """True if the overall exit code reliably reflects every stage.
 
-    Reliable means no failure-masking operator (``||``, ``;``, ``&``, newline can
-    let the command exit 0 despite a failing stage) and, when a pipeline is
-    present, ``pipefail`` is in effect and not disabled in the command. Under
-    these conditions an exit of 0 proves every stage, the check included, passed;
-    a nonzero exit proves some stage failed, though not necessarily which one.
+    Reliable means no shell negation (``!`` inverts the status), no
+    failure-masking operator (``||``, ``;``, ``&``, newline can let the command
+    exit 0 despite a failing stage), and, when a pipeline is present, ``pipefail``
+    in effect and not disabled. Under these conditions an exit of 0 proves every
+    stage, the check included, passed; a nonzero exit proves some stage failed,
+    though not necessarily which one.
     """
+    if _has_shell_negation(command):
+        return False
     if _has_failure_masking_operator(command):
         return False
     if _is_shell_pipeline(command):
@@ -487,7 +505,15 @@ def shell_command_warning(
     verification), so the user is never left guessing. Simple commands and cleanly
     classified compounds return None.
     """
-    if not use_shell or not _is_compound_shell(command):
+    if not use_shell:
+        return None
+    if force_verification and _has_shell_negation(command):
+        # Covers a simple negated command too (which is otherwise not compound).
+        return (
+            "This command negates its exit status with '!', which inverts "
+            "pass/fail, so --verify did not record a verification."
+        )
+    if not _is_compound_shell(command):
         return None
     if force_verification and _reliable_shell(command, pipefail):
         return None  # classified as a declared whole-command custom check
@@ -637,7 +663,9 @@ def _classify_shell_command(
             return CommandClassification(
                 is_test=False, is_verification=passed, tool=build_match[0], status=status
             )
-        if force_verification:
+        # --verify declares an unrecognized command a custom check, but not when
+        # its exit code is inverted by a leading "!" (see _reliable_shell).
+        if force_verification and _reliable_shell(command, pipefail):
             return CommandClassification(
                 is_test=False, is_verification=passed, tool="custom", status=status
             )

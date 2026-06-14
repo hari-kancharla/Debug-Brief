@@ -23,6 +23,7 @@ from .paths import (
     ProjectPaths,
     UnsafeStateDirectory,
     ensure_local_ignore,
+    is_valid_session_id,
 )
 from .utils import is_regular_file, is_supported_platform, read_json_safe
 
@@ -64,6 +65,8 @@ def _exclude_has_entry(paths: ProjectPaths) -> Optional[bool]:
     exclude = paths.repo_root / ".git" / "info" / "exclude"
     if not exclude.exists():
         return False
+    if not is_regular_file(exclude):
+        return False  # do not follow a symlink or block on a FIFO here
     try:
         lines = {
             line.strip() for line in exclude.read_text(encoding="utf-8").splitlines()
@@ -300,18 +303,20 @@ def _active_session_checks(
             )
         )
         return
-    if not isinstance(pointer, dict) or "session_id" not in pointer:
+    if not isinstance(pointer, dict) or not is_valid_session_id(pointer.get("session_id")):
+        # Reject a missing or non-UUID session id, so a traversal value such as
+        # "../../outside" can never build a path that escapes sessions/.
         checks.append(
             CheckResult(
                 FAIL,
                 "Active session JSON",
-                "active_session.json is malformed (missing session_id).",
+                "active_session.json is malformed (missing or invalid session_id).",
             )
         )
         return
     checks.append(CheckResult(PASS, "Active session JSON", "valid"))
 
-    session_id = pointer.get("session_id", "")
+    session_id = pointer["session_id"]
     session_file = paths.session_file(session_id)
 
     # 12. interrupted?

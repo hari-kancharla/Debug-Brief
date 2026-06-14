@@ -120,3 +120,15 @@ def test_doctor_does_not_block_on_a_fifo_pointer(nogit_paths):
     os.mkfifo(nogit_paths.active_session_file)
     report = run_doctor(nogit_paths)  # must return, not block on the FIFO
     assert _find(report.checks, "Active session").level == FAIL
+
+
+def test_doctor_rejects_traversal_session_id(nogit_paths):
+    import json
+
+    nogit_paths.ensure_directories()
+    nogit_paths.active_session_file.write_text(
+        json.dumps({"session_id": "../../outside"}), encoding="utf-8"
+    )
+    report = run_doctor(nogit_paths)  # must not read the traversal target
+    check = _find(report.checks, "Active session JSON")
+    assert check.level == FAIL and "invalid session_id" in check.detail

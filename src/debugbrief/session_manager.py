@@ -25,7 +25,7 @@ from .models import (
     Session,
     SessionStatus,
 )
-from .paths import ProjectPaths, UnsafeStateDirectory
+from .paths import ProjectPaths, UnsafeStateDirectory, is_valid_session_id
 from .redaction import redact_text
 from .utils import (
     atomic_write_json,
@@ -56,19 +56,6 @@ def _require_regular_or_absent(path: "Any", label: str) -> None:
             f"{label} ({path}) is not a regular file; DebugBrief refuses to use "
             "it. Remove it to recover."
         )
-
-
-def _is_valid_session_id(session_id: "Any") -> bool:
-    """True for a UUID-shaped id, so a pointer/lease cannot escape sessions/.
-
-    Session ids are uuid4 (hex and dashes). Restricting to those characters means
-    a corrupt or hostile pointer can never build a path-traversing session path.
-    """
-    return (
-        isinstance(session_id, str)
-        and 0 < len(session_id) <= 64
-        and all(c in "0123456789abcdefABCDEF-" for c in session_id)
-    )
 
 
 class SessionManager:
@@ -210,7 +197,7 @@ class SessionManager:
         preview = meta.get("command_preview", "")
         if (
             isinstance(session_id, str)
-            and _is_valid_session_id(session_id)
+            and is_valid_session_id(session_id)
             and self.paths.session_file(session_id).exists()
         ):
             with contextlib.suppress(SessionError):
@@ -284,7 +271,7 @@ class SessionManager:
                 f"active_session.json exists but could not be read ({exc}). "
                 "Inspect or remove .debugbrief/active_session.json to recover."
             ) from exc
-        if not isinstance(data, dict) or not _is_valid_session_id(data.get("session_id")):
+        if not isinstance(data, dict) or not is_valid_session_id(data.get("session_id")):
             raise SessionError(
                 "active_session.json is malformed. Remove "
                 ".debugbrief/active_session.json to recover."
@@ -327,7 +314,7 @@ class SessionManager:
 
     def load_session_file(self, session_id: str) -> Session:
         self.paths.assert_state_dirs_safe()
-        if not _is_valid_session_id(session_id):
+        if not is_valid_session_id(session_id):
             raise SessionError(f"Invalid session id {session_id!r}.")
         path = self.paths.session_file(session_id)
         if not is_regular_file(path):
@@ -617,6 +604,11 @@ class SessionManager:
         result: Dict[str, Any] = {
             "action": "none", "detail": "", "corrupt": [], "lease": "none"
         }
+        # With no state directory there is nothing to recover, and acquiring the
+        # repo lock would create .debugbrief/.lock (under the umask, not 0700).
+        # Stay read-only and do not create state for a no-op recovery.
+        if not self.paths.base_dir.exists():
+            return result
         with self._repo_lock():
             # Command lease first: a live one (lock still held by its process) is
             # left untouched; a stale one (owner gone) is warned about on its

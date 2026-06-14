@@ -100,6 +100,13 @@ def test_recover_does_not_warn_when_the_command_was_already_recorded(manager, tm
     assert not any("did not finish" in w for w in final.warnings)
 
 
+def test_recover_creates_no_state_when_nothing_exists(manager):
+    # recover must stay read-only on a fresh project: it must not create
+    # .debugbrief/ (which the repo lock would otherwise do under the umask).
+    assert manager.recover()["action"] == "none"
+    assert not manager.paths.base_dir.exists()
+
+
 def test_recover_clears_a_stale_lease_and_preserves_the_session(manager, tmp_path):
     session = manager.start("t")
     # Simulate a crashed command: lease metadata on disk, but no live lock holder.

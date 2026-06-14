@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from . import git_utils
+from .utils import is_regular_file
 
 DEBUGBRIEF_DIRNAME = ".debugbrief"
 ACTIVE_SESSION_FILENAME = "active_session.json"
@@ -36,6 +37,20 @@ class UnsafeStateDirectory(Exception):
     DebugBrief refuses to follow a symlinked state path so it cannot be tricked
     into reading or writing session data and reports outside the project.
     """
+
+
+def is_valid_session_id(session_id: object) -> bool:
+    """True for a UUID-shaped id, so a pointer or lease cannot escape ``sessions/``.
+
+    Session ids are uuid4 (hex and dashes). Restricting to those characters means
+    a corrupt or hostile pointer/lease can never build a path-traversing session
+    path. Used everywhere a session id from disk becomes a file path.
+    """
+    return (
+        isinstance(session_id, str)
+        and 0 < len(session_id) <= 64
+        and all(c in "0123456789abcdefABCDEF-" for c in session_id)
+    )
 
 
 def _require_real_dir(path: Path, label: str) -> None:
@@ -173,6 +188,16 @@ def ensure_local_ignore(paths: ProjectPaths) -> Tuple[bool, List[str]]:
     info_dir = git_dir / "info"
     exclude_file = info_dir / "exclude"
     entry = f"{DEBUGBRIEF_DIRNAME}/"
+
+    # Refuse a symlinked or special exclude file: reading it could block on a
+    # FIFO and appending could write through a symlink to an external file.
+    if exclude_file.exists() and not is_regular_file(exclude_file):
+        warnings.append(
+            "Could not update .git/info/exclude (it is not a regular file). "
+            ".debugbrief/ may not be ignored automatically; add it to your ignore "
+            "rules manually if desired."
+        )
+        return False, warnings
 
     try:
         if exclude_file.exists():

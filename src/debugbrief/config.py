@@ -18,6 +18,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from .utils import is_regular_file, open_regular_text
+
 if sys.version_info >= (3, 11):
     import tomllib
 else:  # pragma: no cover - exercised on Python 3.9/3.10 via the tomli backport
@@ -46,14 +48,18 @@ def parse_error(project_root: Path) -> Optional[str]:
     the kind of failure but never quotes its contents, which could hold secrets.
     """
     path = Path(project_root) / CONFIG_FILENAME
+    if not path.exists():
+        return None
+    if not is_regular_file(path):
+        # A symlinked config would be followed and a FIFO would block the read.
+        return f"{CONFIG_FILENAME} is not a regular file (symlink or special) and was ignored"
     try:
-        if not path.is_file():
-            return None
-        text = path.read_text(encoding="utf-8")
+        with open_regular_text(path) as handle:
+            text = handle.read()
     except OSError:
         return None
     except UnicodeError:
-        # Invalid UTF-8 is raised by read_text, before tomllib sees it.
+        # Invalid UTF-8 surfaces while reading, before tomllib sees it.
         return f"{CONFIG_FILENAME} is not valid UTF-8 and was ignored"
     try:
         tomllib.loads(text)
@@ -65,14 +71,17 @@ def parse_error(project_root: Path) -> Optional[str]:
 
 
 def _read(project_root: Path) -> Optional[Dict[str, Any]]:
-    """Parse ``.debugbrief.toml`` into a dict, or None if absent/unreadable/bad."""
+    """Parse ``.debugbrief.toml`` into a dict, or None if absent/unsafe/unreadable/bad."""
     path = Path(project_root) / CONFIG_FILENAME
+    # is_regular_file (lstat) is the gate: a symlinked config is not followed and
+    # a FIFO does not block load_config, which runs on every command.
+    if not is_regular_file(path):
+        return None
     try:
-        if not path.is_file():
-            return None
-        text = path.read_text(encoding="utf-8")
+        with open_regular_text(path) as handle:
+            text = handle.read()
     except (OSError, UnicodeError):
-        # Unreadable or not valid UTF-8 (read_text raises before tomllib): ignore.
+        # Unreadable or not valid UTF-8 (raised while reading): ignore.
         return None
     try:
         parsed = tomllib.loads(text)

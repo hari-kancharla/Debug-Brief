@@ -6,6 +6,11 @@ Parsing uses the standard-library tomllib on 3.11+ and the tomli backport on
 
 from __future__ import annotations
 
+import os
+import sys
+
+import pytest
+
 from debugbrief.config import load_config, parse_error
 
 
@@ -75,6 +80,15 @@ def test_parse_error_is_none_for_valid_or_absent(tmp_path):
     assert parse_error(tmp_path) is None  # absent
     _write(tmp_path, 'default_mode = "pr"\n')
     assert parse_error(tmp_path) is None  # valid
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink/FIFO")
+def test_symlinked_or_special_config_is_ignored_without_blocking(tmp_path):
+    # load_config runs on every command; a FIFO at .debugbrief.toml must not block
+    # it, and a symlink must not be followed. Both are ignored, and doctor flags it.
+    os.mkfifo(tmp_path / ".debugbrief.toml")
+    assert load_config(tmp_path) == {}  # returns immediately, does not block
+    assert "not a regular file" in (parse_error(tmp_path) or "")
 
 
 def test_invalid_utf8_is_ignored_not_crashed(tmp_path):

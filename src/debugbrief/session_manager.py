@@ -124,28 +124,39 @@ class SessionManager:
             self.paths.active_command_file.unlink()
 
     def _recover_stale_lease(self) -> None:
-        """Warn the session named in a stale lease, then clear the lease.
+        """Clear a stale lease, warning only if its command never recorded.
 
-        The owning process is gone, so its command never recorded a result. The
-        session keeps all its data; only a (redacted) warning is added so the
-        report admits the gap. Called under the repo lock.
+        The owning process is gone. If its result was already persisted (the
+        lease's command_id is present among the session's events), the process
+        simply died after recording but before clearing the lease, so there is
+        nothing to warn about. Otherwise the command was lost and a (redacted)
+        warning is added so the report admits the gap. Session data is kept
+        either way. Called under the repo lock.
         """
         try:
             meta = read_json(self.paths.active_command_file)
         except (ValueError, OSError):
             meta = {}
-        session_id = meta.get("session_id") if isinstance(meta, dict) else None
-        preview = meta.get("command_preview", "") if isinstance(meta, dict) else ""
+        if not isinstance(meta, dict):
+            meta = {}
+        session_id = meta.get("session_id")
+        command_id = meta.get("command_id")
+        preview = meta.get("command_preview", "")
         if session_id and self.paths.session_file(session_id).exists():
             with contextlib.suppress(SessionError):
                 session = self.load_session_file(session_id)
-                # add_warning redacts, so even an unredacted preview is safe here.
-                session.add_warning(
-                    "A captured command did not finish (its process ended before "
-                    f"recording a result): {preview}".strip(),
-                    now_iso8601(),
+                already_recorded = command_id is not None and any(
+                    CommandData.from_dict(event.data).command_id == command_id
+                    for event in session.command_events()
                 )
-                self.save_session(session)
+                if not already_recorded:
+                    # add_warning redacts, so even an unredacted preview is safe.
+                    session.add_warning(
+                        "A captured command did not finish (its process ended "
+                        f"before recording a result): {preview}".strip(),
+                        now_iso8601(),
+                    )
+                    self.save_session(session)
         self._clear_command_lease()
 
     @contextlib.contextmanager

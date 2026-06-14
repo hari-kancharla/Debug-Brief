@@ -705,7 +705,7 @@ def cmd_recover(args: argparse.Namespace) -> int:
     elif lease == "cleared_stale":
         print(
             "Cleared a stale command lease (its process had exited); the session "
-            "was preserved and a warning was added to it."
+            "was preserved."
         )
     action = result["action"]
     if action == "healthy":

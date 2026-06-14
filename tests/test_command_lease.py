@@ -80,6 +80,26 @@ def test_recover_leaves_a_live_lease_untouched(manager, tmp_path):
         assert manager.paths.active_command_file.exists()
 
 
+def test_recover_does_not_warn_when_the_command_was_already_recorded(manager, tmp_path):
+    from debugbrief.command_runner import run_command
+
+    session = manager.start("t")
+    with manager.command_lease("echo hi", str(tmp_path)) as command_id:
+        result = run_command("echo hi", cwd=tmp_path, echo=False)
+        manager.record_command(result, command_id=command_id)
+    # Simulate a crash AFTER recording but BEFORE clearing the lease: the event is
+    # present, and a stale lease for that same command_id remains (lock now free).
+    reloaded = manager.load_session_file(session.session_id)
+    manager._write_command_lease(reloaded, command_id, "echo hi", str(tmp_path))
+    assert manager.paths.active_command_file.exists()
+
+    assert manager.recover()["lease"] == "cleared_stale"
+    final = manager.load_session_file(session.session_id)
+    assert len(final.command_events()) == 1
+    # The result was recorded, so recovery must NOT claim the command was lost.
+    assert not any("did not finish" in w for w in final.warnings)
+
+
 def test_recover_clears_a_stale_lease_and_preserves_the_session(manager, tmp_path):
     session = manager.start("t")
     # Simulate a crashed command: lease metadata on disk, but no live lock holder.

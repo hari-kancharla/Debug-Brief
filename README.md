@@ -12,8 +12,10 @@ done, it writes a report built only from what actually happened: what you tried,
 what failed, what then passed, and which files changed in between. It never
 invents a root cause and never claims a test result you did not get.
 
-It is local-first and dependency-free: standard library plus native `git`, no
-network, no AI, no telemetry. Unix-like systems only.
+It is local-first: standard library plus native `git`, with one conditional
+dependency (`tomli` on Python < 3.11, for reading `.debugbrief.toml`; 3.11+ uses
+the standard-library `tomllib`). No network, no AI, no telemetry. Unix-like
+systems only.
 
 See a real generated report: [examples/sample-pr.md](https://github.com/harihkk/Debug-Brief/blob/main/examples/sample-pr.md).
 

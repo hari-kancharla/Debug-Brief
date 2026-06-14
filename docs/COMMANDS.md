@@ -115,14 +115,16 @@ string:
 debugbrief run --shell "pytest -q | tee out.txt"
 ```
 
-DebugBrief runs `--shell` commands through bash with `pipefail` set, so a
-**pipeline**'s exit status reflects its first failing stage rather than only the
-last. A recognized check inside a pipeline (the example above) is therefore
-classified honestly: it counts as a passed verification only when every stage,
-the check included, succeeded. Where bash is unavailable `pipefail` cannot be
-guaranteed, so a recognized check in a pipeline is then recorded as a command
-with a warning rather than a verification; run it without a pipeline for a
-reliable pass/fail.
+DebugBrief runs `--shell` commands through bash (when available) with `pipefail`
+set, so a pipeline exits nonzero if any stage fails, not only its last (pipefail
+reports the rightmost failing stage's status, enough to tell pass from fail but
+not which stage failed). A **compound** shell command (anything joined by `|`,
+`&&`, `||`, `;`, `&`, or a newline) is recorded as a single command and is
+**not** attributed to an internal tool: an exit code cannot say which stage
+produced it. To get a recorded verification, run the check on its own
+(`debugbrief run -- pytest`), or declare the whole command a check with
+`--verify`, which is honored only when the exit code is reliable (for a pipeline,
+that means pipefail is in effect).
 
 If no session is active, `run` auto-starts one first.
 
@@ -404,7 +406,9 @@ detail          = "full"      # default report verbosity (full or compact)
 ```
 
 An explicit flag always wins over the config, and the config always wins over
-the built-in default. Parsed with the standard library only (no dependencies).
+the built-in default. Parsed with the standard-library `tomllib` on Python 3.11+
+and the `tomli` backport on 3.9/3.10; a malformed file is ignored as a whole, and
+`debugbrief doctor` flags it.
 
 ## Local storage
 

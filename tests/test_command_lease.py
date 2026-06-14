@@ -114,6 +114,42 @@ def test_recover_reports_an_unclearable_directory_lease(manager, tmp_path):
         pass
 
 
+def test_result_is_recorded_against_the_lease_session(manager, tmp_path):
+    from debugbrief.command_runner import run_command
+    from debugbrief.models import Session
+
+    s1 = manager.start("first")
+    with manager.command_lease("echo hi", str(tmp_path)) as command_id:
+        result = run_command("echo hi", cwd=tmp_path, echo=False)
+        # The active pointer moves to a different session while the command runs.
+        s2 = Session(title="second", project_root=str(tmp_path))
+        s2.timestamps.start = "2026-01-01T00:00:00.000Z"
+        manager.save_session(s2)
+        manager._write_active_pointer(s2)
+        manager.record_command(result, command_id=command_id)
+    # The result lands in the session that owned the lease (s1), never in s2.
+    assert len(manager.load_session_file(s1.session_id).command_events()) == 1
+    assert len(manager.load_session_file(s2.session_id).command_events()) == 0
+
+
+def test_start_refuses_while_a_command_is_live(manager, tmp_path):
+    manager.start("first")
+    with manager.command_lease("echo hi", str(tmp_path)):
+        # Even with the active pointer gone, a live command must block a new start
+        # so the running command's result cannot land in the new session.
+        manager._clear_active_pointer()
+        with pytest.raises(SessionError, match="still running"):
+            manager.start("second")
+
+
+def test_recover_reaps_a_dangling_lease_symlink(manager, tmp_path):
+    manager.start("t")
+    # A dangling symlink at active_command.json: exists() is False, lexists True.
+    manager.paths.active_command_file.symlink_to(tmp_path / "nowhere")
+    manager.recover()
+    assert not manager.paths.active_command_file.is_symlink()  # removed, not skipped
+
+
 def test_recover_creates_no_state_when_nothing_exists(manager):
     # recover must stay read-only on a fresh project: it must not create
     # .debugbrief/ (which the repo lock would otherwise do under the umask).

@@ -168,6 +168,21 @@ class SessionManager:
         if isinstance(meta, dict) and meta.get("command_id") == command_id:
             self._clear_command_lease()
 
+    def _lease_session_id(self, command_id: str) -> Optional[str]:
+        """Return the session id the lease for ``command_id`` belongs to, or None.
+
+        A command's result must be recorded against the session that started it,
+        even if the active pointer changed while the command ran.
+        """
+        try:
+            meta = read_json_safe(self.paths.active_command_file)
+        except (ValueError, OSError):
+            return None
+        if isinstance(meta, dict) and meta.get("command_id") == command_id:
+            sid = meta.get("session_id")
+            return sid if is_valid_session_id(sid) else None
+        return None
+
     def _reap_stale_lease(self) -> None:
         """Recover a stale lease before a new lease, end, or cancel.
 
@@ -176,8 +191,8 @@ class SessionManager:
         metadata is cleared. A live lease is left untouched. Called under the
         repo lock so the decision and recovery are atomic.
         """
-        if not self.paths.active_command_file.exists():
-            return
+        if not os.path.lexists(self.paths.active_command_file):
+            return  # lexists: a dangling lease symlink must still be reaped
         if self._command_is_active():
             return
         self._recover_stale_lease()
@@ -387,6 +402,15 @@ class SessionManager:
         # Decide and create under the repo lock so two simultaneous starts cannot
         # both pass the "already active" check and create two active sessions.
         with self._repo_lock():
+            # Refuse to start while a command is running: its result will be
+            # recorded against its own session, and a new session must not appear
+            # under it (which could otherwise capture that result).
+            self._reap_stale_lease()
+            if self._command_is_active():
+                raise SessionError(
+                    "A captured command is still running in this project; wait for "
+                    "it to finish before starting a new session."
+                )
             if self.has_active():
                 existing = self._read_active_pointer() or {}
                 raise SessionError(
@@ -480,7 +504,14 @@ class SessionManager:
             result.command_data.git_changed_files = git_utils.changed_files(cwd)
         result.command_data.command_id = command_id
         with self._repo_lock():
-            session = self.require_active("run a command")
+            # Record against the session that owns the lease, not whatever is
+            # active now: the active pointer may have changed while the command
+            # ran, and the result must never land in a different session.
+            target_id = self._lease_session_id(command_id) if command_id else None
+            if target_id is not None:
+                session = self.load_session_file(target_id)
+            else:
+                session = self.require_active("run a command")
             # Idempotent on command_id: a retried persistence after a partial
             # failure must not append the same result twice. The result is
             # already on disk, so the lease can be cleared.
@@ -502,7 +533,11 @@ class SessionManager:
             if result.warning:
                 session.add_warning(result.warning, now_iso8601())
             self.save_session(session)
-            self._write_active_pointer(session)
+            # Refresh the active pointer only if it still points at this session,
+            # so recording an old command does not clobber a newer active session.
+            pointer = self._read_active_pointer()
+            if pointer is not None and pointer.get("session_id") == session.session_id:
+                self._write_active_pointer(session)
             # Clear the lease only now that the event is safely persisted; if
             # save_session above raised, the lease is left for recover.
             if command_id is not None:
@@ -631,7 +666,7 @@ class SessionManager:
             # Command lease first: a live one (lock still held by its process) is
             # left untouched; a stale one (owner gone) is warned about on its
             # session and cleared, never touching session data.
-            if self.paths.active_command_file.exists():
+            if os.path.lexists(self.paths.active_command_file):
                 if self._command_is_active():
                     result["lease"] = "live"
                 else:

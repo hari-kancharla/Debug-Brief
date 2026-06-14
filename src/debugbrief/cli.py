@@ -488,49 +488,59 @@ def cmd_redo(args: argparse.Namespace) -> int:
             "Run a command first: debugbrief run -- <command>"
         )
         return 1
-
-    command_events = session.command_events()
-    if not command_events:
+    events = session.command_events()
+    if not events:
         eprint(
             "No commands have been captured in this session yet. "
             "Run one first: debugbrief run -- <command>"
         )
         return 1
 
-    last = CommandData.from_dict(command_events[-1].data)
-    if PLACEHOLDER in last.command:
-        eprint(
-            f"The last stored command contains {PLACEHOLDER}, a redaction "
-            "placeholder, not the real text, so it cannot be re-run. "
-            "Run the command again yourself: debugbrief run -- <command>"
-        )
-        return 1
-
-    # A redo of a command originally declared with --verify stays a declared
-    # check without retyping the flag; an explicit --verify also works.
-    inherit_verify = last.classification.tool == "custom"
-
-    # Re-run from the directory the original command ran in, so a redo behaves
-    # like the original even when invoked from elsewhere (important in monorepos).
-    if last.invocation_cwd:
-        invocation_cwd = Path(last.invocation_cwd)
-        if not invocation_cwd.is_dir():
+    # Acquire the lease first, then select the last command under it: once the
+    # lease is held no other command can complete, so "the last command" cannot
+    # change between selection and execution. The seed preview/cwd are just lease
+    # metadata; the command actually run is the one re-read inside the lease.
+    seed = CommandData.from_dict(events[-1].data)
+    seed_cwd = seed.invocation_cwd or str(Path.cwd())
+    with manager.command_lease(seed.command, seed_cwd) as command_id:
+        session = manager.load_active()
+        events = session.command_events() if session else []
+        if not events:
+            eprint("No commands have been captured in this session yet.")
+            return 1
+        last = CommandData.from_dict(events[-1].data)
+        if PLACEHOLDER in last.command:
             eprint(
-                f"The original command ran in {last.invocation_cwd}, which no "
-                "longer exists, so redo did not run it. Re-run it yourself from a "
-                "valid directory: debugbrief run -- <command>"
+                f"The last stored command contains {PLACEHOLDER}, a redaction "
+                "placeholder, not the real text, so it cannot be re-run. "
+                "Run the command again yourself: debugbrief run -- <command>"
             )
             return 1
-    else:
-        # Older session data did not record the directory; fall back to the
-        # current one and say so, so the change of directory is never silent.
-        invocation_cwd = Path.cwd()
-        eprint(
-            "  warning:   the original command's directory was not recorded; "
-            "re-running in the current directory."
-        )
 
-    with manager.command_lease(last.command, str(invocation_cwd)) as command_id:
+        # A redo of a command originally declared with --verify stays a declared
+        # check without retyping the flag; an explicit --verify also works.
+        inherit_verify = last.classification.tool == "custom"
+
+        # Re-run from the directory the original command ran in, so a redo behaves
+        # like the original even when invoked elsewhere (important in monorepos).
+        if last.invocation_cwd:
+            invocation_cwd = Path(last.invocation_cwd)
+            if not invocation_cwd.is_dir():
+                eprint(
+                    f"The original command ran in {last.invocation_cwd}, which no "
+                    "longer exists, so redo did not run it. Re-run it yourself from "
+                    "a valid directory: debugbrief run -- <command>"
+                )
+                return 1
+        else:
+            # Older session data did not record the directory; fall back to the
+            # current one and say so, so the change of directory is never silent.
+            invocation_cwd = Path.cwd()
+            eprint(
+                "  warning:   the original command's directory was not recorded; "
+                "re-running in the current directory."
+            )
+
         eprint(f"$ {last.command}  (redo)")
         result = run_command(
             command=last.command,

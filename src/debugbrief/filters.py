@@ -443,6 +443,14 @@ def shell_command_warning(
         return None
     if force_verification and _reliable_shell(command, pipefail):
         return None  # classified as a declared whole-command custom check
+    if force_verification:
+        # --verify was given but the compound's exit code cannot be trusted, so it
+        # was not counted. Say so even when no built-in tool is recognized.
+        return (
+            "This command was declared with --verify, but its exit code cannot be "
+            "trusted (an unreliable pipeline without pipefail, or a failure-masking "
+            "operator like ||, ;, or &), so it was not recorded as a verification."
+        )
     if not _contains_recognized_check(command):
         return None  # nothing looked like a check, so nothing to explain
     if not passed:

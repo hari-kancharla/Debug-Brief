@@ -212,6 +212,14 @@ def test_verify_declares_reliable_compound_but_never_an_unreliable_pipe():
     assert cu.is_verification is False and cu.tool is None
 
 
+def test_verify_on_an_unreliable_compound_warns_that_it_was_ignored():
+    # When --verify cannot be honored (unreliable exit code), say so, even when no
+    # built-in tool is recognized, so the user is not left thinking it counted.
+    for cmd, pipefail in (("make all || true", True), ("pytest | tee out", False)):
+        w = _warn(cmd, pipefail, passed=True, force_verification=True)
+        assert w is not None and "declared with --verify" in w, cmd
+
+
 def test_quoted_and_escaped_pipes_are_not_pipelines():
     # A "|" inside quotes or escaped with a backslash is data, not an operator, so
     # the command is a single stage and classifies normally.

@@ -115,11 +115,14 @@ string:
 debugbrief run --shell "pytest -q | tee out.txt"
 ```
 
-A shell **pipeline** is a special case for honesty: its exit status reflects only
-the last stage, not the check. So a recognized check inside a pipeline (the
-example above) is recorded as a command but **not** treated as a verification,
-and a warning is attached. Run the check without a pipeline, or set the shell's
-`pipefail`, for a reliable pass/fail.
+DebugBrief runs `--shell` commands through bash with `pipefail` set, so a
+**pipeline**'s exit status reflects its first failing stage rather than only the
+last. A recognized check inside a pipeline (the example above) is therefore
+classified honestly: it counts as a passed verification only when every stage,
+the check included, succeeded. Where bash is unavailable `pipefail` cannot be
+guaranteed, so a recognized check in a pipeline is then recorded as a command
+with a warning rather than a verification; run it without a pipeline for a
+reliable pass/fail.
 
 If no session is active, `run` auto-starts one first.
 

@@ -51,3 +51,22 @@ def test_flat_parser_reads_scalars_and_skips_sections():
         _parse_flat('default_mode = "pr"\ntimeout_seconds = 120\n[ignored]\nx = 1\n')
     )
     assert cfg == {"default_mode": "pr", "timeout_seconds": 120}
+
+
+def test_flat_parser_does_not_hoist_a_supported_key_out_of_a_section():
+    # A supported key that lives inside a section is NOT top-level in TOML, so the
+    # lenient fallback must not read it. (An unknown key would be dropped by
+    # _coerce regardless; a *recognized* key like timeout_seconds is the case that
+    # actually mattered.) Parsing stops at the first table header.
+    parsed = _parse_flat("[tool.other]\ntimeout_seconds = 1\n")
+    assert "timeout_seconds" not in parsed
+    assert _coerce(parsed) == {}
+
+
+def test_malformed_config_with_sectioned_key_does_not_alter_settings(tmp_path):
+    # End to end: a malformed file (so 3.11+ also takes the lenient path) whose
+    # only "timeout_seconds" sits under [tool.other] must not change the timeout.
+    (tmp_path / ".debugbrief.toml").write_text(
+        "[tool.other]\ntimeout_seconds = 1\ngarbage {{{ not toml\n", encoding="utf-8"
+    )
+    assert load_config(tmp_path) == {}

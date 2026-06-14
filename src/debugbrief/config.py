@@ -52,15 +52,20 @@ def _parse(text: str) -> Dict[str, Any]:
 def _parse_flat(text: str) -> Dict[str, Any]:
     """Fallback for Python < 3.11: top-level ``key = value`` scalars only.
 
-    Handles quoted strings, integers, and booleans. Sections, arrays, and
-    inline comments are not understood and are simply skipped, so only the
-    supported scalar keys are ever read.
+    Handles quoted strings, integers, and booleans. Comments are skipped. A
+    ``[section]`` / ``[[array]]`` header stops parsing entirely: in TOML every
+    key after the first table header belongs to that section, so no later key is
+    top-level. Stopping there keeps a sectioned key (``[tool.other]`` then
+    ``timeout_seconds = 1``) from being hoisted to the top level and silently
+    applied, which would otherwise diverge from how ``tomllib`` scopes it.
     """
     result: Dict[str, Any] = {}
     for raw in text.splitlines():
         line = raw.strip()
-        if not line or line.startswith(("#", "[")):
+        if not line or line.startswith("#"):
             continue
+        if line.startswith("["):
+            break
         key, sep, value = line.partition("=")
         key = key.strip()
         value = value.strip()

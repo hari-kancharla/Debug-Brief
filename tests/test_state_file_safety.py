@@ -18,7 +18,7 @@ from debugbrief.paths import ProjectPaths
 from debugbrief.reports_index import first_title, latest_report, list_reports
 from debugbrief.session_manager import SessionError, SessionManager
 from debugbrief.sessions_index import load_all_sessions
-from debugbrief.utils import read_json_safe
+from debugbrief.utils import open_regular_binary, read_json_safe
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink/FIFO")
 
@@ -130,3 +130,18 @@ def test_read_json_safe_reads_regular_and_rejects_non_regular(tmp_path):
     os.mkfifo(tmp_path / "fifo.json")
     with pytest.raises(OSError):
         read_json_safe(tmp_path / "fifo.json")
+
+
+def test_open_regular_binary_rejects_non_regular(tmp_path):
+    # The binary reader used by dirty-file fingerprinting refuses a symlink (via
+    # O_NOFOLLOW) and a FIFO (via O_NONBLOCK + fstat), closing the lstat race.
+    good = tmp_path / "data.bin"
+    good.write_bytes(b"abc")
+    with open_regular_binary(good) as handle:
+        assert handle.read() == b"abc"
+    (tmp_path / "blink").symlink_to(good)
+    with pytest.raises(OSError):
+        open_regular_binary(tmp_path / "blink")
+    os.mkfifo(tmp_path / "bfifo")
+    with pytest.raises(OSError):
+        open_regular_binary(tmp_path / "bfifo")

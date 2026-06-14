@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from .models import GitState
+from .utils import open_regular_binary
 
 _GIT_TIMEOUT_SECONDS = 15
 
@@ -271,6 +272,10 @@ def _file_fingerprint(cwd: Path, path: str, deleted: bool) -> str:
       FIFO would block waiting for a writer);
     - unreadable regular file: a sentinel from safe stat metadata, so a later
       change is still noticed without raising.
+
+    The regular-file branch opens with ``O_NOFOLLOW``/``O_NONBLOCK`` and verifies
+    the descriptor with ``fstat``, so a file swapped to a symlink or FIFO between
+    the ``lstat`` and the open is not followed and cannot block.
     """
     if deleted:
         return "<deleted>"
@@ -293,10 +298,11 @@ def _file_fingerprint(cwd: Path, path: str, deleted: bool) -> str:
 
     digest = hashlib.sha256()
     try:
-        with open(full, "rb") as handle:
+        with open_regular_binary(full) as handle:
             for chunk in iter(lambda: handle.read(65536), b""):
                 digest.update(chunk)
     except OSError:
+        # Unreadable, or swapped to a non-regular file after the lstat above.
         return f"<unreadable:{info.st_size}:{int(info.st_mtime)}>"
     return digest.hexdigest()
 

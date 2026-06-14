@@ -149,22 +149,33 @@ class UnsafeStateFile(OSError):
     """Raised when a state file is not a regular file (symlink, FIFO, ...)."""
 
 
-def open_regular_text(path: Any) -> "Any":
-    """Open ``path`` read-only as text, refusing anything but a regular file.
+def _open_regular(path: Any, mode: str) -> "Any":
+    """Open ``path`` read-only, refusing anything but a regular file.
 
     Opens with ``O_NOFOLLOW`` (a symlink raises) and ``O_NONBLOCK`` (a FIFO does
     not block), then confirms with ``fstat`` that the opened descriptor is a
-    regular file, closing the race a separate ``lstat`` would leave. Raises
-    :class:`UnsafeStateFile` for any non-regular target and ``OSError`` for other
-    filesystem problems.
+    regular file. The post-open ``fstat`` closes the race a separate ``lstat``
+    leaves, so a path swapped to a symlink or FIFO after a caller's check is
+    still caught. Raises :class:`UnsafeStateFile` for a non-regular target and
+    ``OSError`` for other filesystem problems.
     """
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     fd = os.open(os.fspath(path), flags)
-    handle = os.fdopen(fd, "r", encoding="utf-8")
+    handle = os.fdopen(fd, mode, encoding=None if "b" in mode else "utf-8")
     if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
         handle.close()
         raise UnsafeStateFile(f"{path} is not a regular file")
     return handle
+
+
+def open_regular_text(path: Any) -> "Any":
+    """Open a regular file read-only as UTF-8 text (see :func:`_open_regular`)."""
+    return _open_regular(path, "r")
+
+
+def open_regular_binary(path: Any) -> "Any":
+    """Open a regular file read-only in binary mode (see :func:`_open_regular`)."""
+    return _open_regular(path, "rb")
 
 
 def read_json_safe(path: Any) -> Any:

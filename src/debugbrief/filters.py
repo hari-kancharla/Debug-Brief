@@ -71,14 +71,25 @@ _TEST_PATTERNS: List[Tuple[List[str], str]] = [
 _RUN_WRAPPERS = {"uv", "poetry", "pdm", "hatch", "rye"}  # "<tool> run <cmd ...>"
 _EXEC_WRAPPERS = {"pnpm", "yarn"}  # "<tool> exec|dlx <cmd ...>"
 
-# Options of the supported wrappers that take the following token as a value.
-# Any other option is treated as a boolean flag, so a flag before the command
-# (npx --yes jest) is handled without mistaking the command for an option value.
-_VALUE_OPTIONS = frozenset(
+# Long options of the supported wrappers that are known to take NO value. Any
+# other long option is assumed to consume the following token as its value, so an
+# option's value is never mistaken for the command. That default is the safe one:
+# guessing "takes a value" can at most skip the real command (a missed check),
+# never promote a non-test to a passed test. Listing a flag here is only an
+# optimization to recognize the common boolean forms (npx --yes jest); a flag we
+# fail to list just falls back to the safe default. Every entry must be a genuine
+# boolean in its tool, or it could hide a real command behind it.
+_BOOLEAN_FLAGS = frozenset(
     {
-        "--with", "--with-requirements", "--project", "--directory", "--python",
-        "--index", "--index-url", "--extra", "--group", "--constraint",
-        "--override", "--package", "--prefix", "-C", "-p",
+        # npx / bunx
+        "--yes", "--no-install", "--prefer-offline", "--prefer-online",
+        "--offline", "--ignore-existing", "--quiet",
+        # uv run
+        "--no-sync", "--frozen", "--locked", "--no-dev", "--dev", "--all-extras",
+        "--no-editable", "--isolated", "--system", "--no-project", "--refresh",
+        "--reinstall", "--native-tls", "--no-cache", "--verbose",
+        # poetry / pdm / hatch / rye
+        "--no-interaction", "--sync", "--no-root",
     }
 )
 
@@ -131,17 +142,22 @@ def _is_python(name: str) -> bool:
 def _skip_wrapper_options(toks: List[str]) -> List[str]:
     """Drop a wrapper's own options so the wrapped command surfaces.
 
-    Wrappers take options before the command, and some consume the following
-    token as a value. The rule recognizes the real command in all the common
-    forms while never mistaking an option's value for the command (a
+    Wrappers take options before the command, and many consume the following
+    token as a value. Arities are not known in general, so the rule errs toward
+    consuming a value, which never mistakes an option's value for the command (a
     false-positive classification, the dangerous direction for an honest tool):
 
     - ``--`` ends option processing; the rest is the command.
     - ``--name=value`` is self-contained.
-    - a bare option named in :data:`_VALUE_OPTIONS` consumes the next token as
-      its value (``uv run --with pytest pytest``, ``uv run --project pkg pytest``).
-    - every other option is a boolean flag and consumes nothing, so a flag before
-      the command is handled (``npx --yes jest``, ``poetry run -q pytest``).
+    - a known boolean long flag (:data:`_BOOLEAN_FLAGS`) consumes nothing, so a
+      flag before the command is handled (``npx --yes jest``,
+      ``uv run --no-sync pytest``).
+    - any other long option consumes the next token as its value, so an unknown
+      value option (``uv run --env-file .env pytest``) cannot leave its value to
+      be read as the command. The cost is only a missed check when an unlisted
+      long flag is actually boolean, which ``--verify`` covers.
+    - a short option (``-q``) is treated as a boolean flag and consumes nothing,
+      so ``poetry run -q pytest`` still surfaces the command.
     """
     while toks and toks[0].startswith("-"):
         opt = toks[0]
@@ -149,8 +165,13 @@ def _skip_wrapper_options(toks: List[str]) -> List[str]:
             return toks[1:]
         toks = toks[1:]
         name = opt.split("=", 1)[0]
-        if "=" not in opt and name in _VALUE_OPTIONS and toks and not toks[0].startswith("-"):
-            toks = toks[1:]  # consume the option's value
+        takes_value = (
+            opt.startswith("--")
+            and "=" not in opt
+            and name not in _BOOLEAN_FLAGS
+        )
+        if takes_value and toks and not toks[0].startswith("-"):
+            toks = toks[1:]  # consume the long option's value
     return toks
 
 

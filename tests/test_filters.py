@@ -106,9 +106,9 @@ def test_classify_anchors_to_executable_not_arguments():
     assert filters.classify_command("npx jest", exit_code=0).tool == "jest"
     # A leading environment assignment is skipped.
     assert filters.classify_command("CI=1 pytest", exit_code=0).tool == "pytest"
-    # A wrapper's own options are handled: a value-taking option (--with,
-    # --project) is consumed with its value, and a boolean flag (--yes, -q,
-    # --no-sync) consumes nothing, so the real command is found either way.
+    # A wrapper's own options are handled: a known boolean flag (--yes, -q,
+    # --no-sync) consumes nothing, and any other long option consumes its value,
+    # so the real command is found either way.
     assert filters.classify_command("uv run --with pytest pytest", 0).tool == "pytest"
     assert filters.classify_command("uv run --project pkgs/api pytest", 0).tool == "pytest"
     assert filters.classify_command("uv run --no-sync pytest", exit_code=0).tool == "pytest"
@@ -116,6 +116,11 @@ def test_classify_anchors_to_executable_not_arguments():
     assert filters.classify_command("npx --yes jest", exit_code=0).tool == "jest"
     # An option's value is never mistaken for the command (no false positive).
     assert filters.classify_command("uv run --with pytest python app.py", 0).tool is None
+    # An unlisted value option consumes its value too, so its value is not read as
+    # the command. --env-file is not in the boolean list: its value is consumed,
+    # the real command surfaces, and a non-test never poses as a passed test.
+    assert filters.classify_command("uv run --env-file .env pytest", 0).tool == "pytest"
+    assert filters.classify_command("uv run --env-file pytest python app.py", 0).tool is None
 
 
 def test_shell_pipeline_honesty():

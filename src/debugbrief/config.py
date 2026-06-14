@@ -52,6 +52,9 @@ def parse_error(project_root: Path) -> Optional[str]:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return None
+    except UnicodeError:
+        # Invalid UTF-8 is raised by read_text, before tomllib sees it.
+        return f"{CONFIG_FILENAME} is not valid UTF-8 and was ignored"
     try:
         tomllib.loads(text)
     except tomllib.TOMLDecodeError:
@@ -68,7 +71,8 @@ def _read(project_root: Path) -> Optional[Dict[str, Any]]:
         if not path.is_file():
             return None
         text = path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeError):
+        # Unreadable or not valid UTF-8 (read_text raises before tomllib): ignore.
         return None
     try:
         parsed = tomllib.loads(text)

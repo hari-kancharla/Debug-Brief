@@ -75,3 +75,12 @@ def test_parse_error_is_none_for_valid_or_absent(tmp_path):
     assert parse_error(tmp_path) is None  # absent
     _write(tmp_path, 'default_mode = "pr"\n')
     assert parse_error(tmp_path) is None  # valid
+
+
+def test_invalid_utf8_is_ignored_not_crashed(tmp_path):
+    # Reading non-UTF-8 raises UnicodeDecodeError before tomllib; it must be
+    # handled, not crash run/redo/preview/end (load_config) or doctor (parse_error).
+    (tmp_path / ".debugbrief.toml").write_bytes(b"\xff\xfe not valid utf-8")
+    assert load_config(tmp_path) == {}
+    msg = parse_error(tmp_path)
+    assert msg is not None and ".debugbrief.toml" in msg

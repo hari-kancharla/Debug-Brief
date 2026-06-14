@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import os
+import stat
 import uuid
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -33,6 +34,38 @@ class SessionError(Exception):
     """Raised for expected, user-facing session errors."""
 
 
+def _require_regular_or_absent(path: "Any", label: str) -> None:
+    """Reject a lock/state file that exists but is not a regular file.
+
+    A symlink, FIFO, socket, or device at a lock path could redirect state or
+    block ``os.open``; ``O_NOFOLLOW`` alone catches only symlinks.
+    """
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return  # absent; it will be created as a regular file
+    except OSError:
+        return  # a concrete error will surface on use
+    if not stat.S_ISREG(info.st_mode):
+        raise UnsafeStateDirectory(
+            f"{label} ({path}) is not a regular file; DebugBrief refuses to use "
+            "it. Remove it to recover."
+        )
+
+
+def _is_valid_session_id(session_id: "Any") -> bool:
+    """True for a UUID-shaped id, so a pointer/lease cannot escape sessions/.
+
+    Session ids are uuid4 (hex and dashes). Restricting to those characters means
+    a corrupt or hostile pointer can never build a path-traversing session path.
+    """
+    return (
+        isinstance(session_id, str)
+        and 0 < len(session_id) <= 64
+        and all(c in "0123456789abcdefABCDEF-" for c in session_id)
+    )
+
+
 class SessionManager:
     def __init__(self, paths: ProjectPaths) -> None:
         self.paths = paths
@@ -50,14 +83,10 @@ class SessionManager:
         self.paths.assert_state_dirs_safe()
         self.paths.base_dir.mkdir(parents=True, exist_ok=True)
         lock_path = self.paths.base_dir / ".lock"
-        # Refuse a symlinked lock file: O_NOFOLLOW rejects it at open() where the
-        # platform supports it, and the explicit lstat check (Path.is_symlink)
-        # gives a clear message everywhere else.
-        if lock_path.is_symlink():
-            raise UnsafeStateDirectory(
-                f"{lock_path} is a symlink; DebugBrief refuses to follow it. "
-                "Remove it to recover."
-            )
+        # The lock must be a regular file or absent: a symlink could redirect it
+        # and a FIFO could block os.open. O_NOFOLLOW additionally refuses a
+        # symlink at open() where the platform supports it.
+        _require_regular_or_absent(lock_path, ".debugbrief/.lock")
         flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
         fd = os.open(str(lock_path), flags, 0o600)
         try:
@@ -75,19 +104,19 @@ class SessionManager:
     # wedges the lease and stale detection needs no PID probing.
     def _open_command_lock(self) -> int:
         lock_path = self.paths.command_lock_file
-        if lock_path.is_symlink():
-            raise UnsafeStateDirectory(
-                f"{lock_path} is a symlink; DebugBrief refuses to follow it. "
-                "Remove it to recover."
-            )
+        _require_regular_or_absent(lock_path, ".debugbrief/.command.lock")
         flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
         return os.open(str(lock_path), flags, 0o600)
 
     def _command_is_active(self) -> bool:
         """True only if a live process currently holds the command lock."""
         lock_path = self.paths.command_lock_file
-        if not lock_path.exists() or lock_path.is_symlink():
+        try:
+            info = os.lstat(lock_path)
+        except OSError:
             return False
+        if not stat.S_ISREG(info.st_mode):
+            return False  # not a real lock file; _open_command_lock will reject it
         try:
             fd = os.open(str(lock_path), os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
         except OSError:
@@ -123,6 +152,34 @@ class SessionManager:
         with contextlib.suppress(OSError):
             self.paths.active_command_file.unlink()
 
+    def _clear_command_lease_if(self, command_id: str) -> None:
+        """Remove the lease only when it belongs to ``command_id``.
+
+        Called after a command's result is persisted, so the lease is cleared
+        only once the event is safely on disk. If persistence failed, the lease
+        is left behind for ``recover``.
+        """
+        try:
+            meta = read_json(self.paths.active_command_file)
+        except (ValueError, OSError):
+            return
+        if isinstance(meta, dict) and meta.get("command_id") == command_id:
+            self._clear_command_lease()
+
+    def _reap_stale_lease(self) -> None:
+        """Recover a stale lease before a new lease, end, or cancel.
+
+        A lease whose lock is no longer held (its process crashed) is recovered
+        in place: a warning is added if its command never recorded, and the
+        metadata is cleared. A live lease is left untouched. Called under the
+        repo lock so the decision and recovery are atomic.
+        """
+        if not self.paths.active_command_file.exists():
+            return
+        if self._command_is_active():
+            return
+        self._recover_stale_lease()
+
     def _recover_stale_lease(self) -> None:
         """Clear a stale lease, warning only if its command never recorded.
 
@@ -133,8 +190,12 @@ class SessionManager:
         warning is added so the report admits the gap. Session data is kept
         either way. Called under the repo lock.
         """
+        lease_path = self.paths.active_command_file
         try:
-            meta = read_json(self.paths.active_command_file)
+            if not stat.S_ISREG(os.lstat(lease_path).st_mode):
+                self._clear_command_lease()  # symlink/FIFO/etc: not a real lease
+                return
+            meta = read_json(lease_path)
         except (ValueError, OSError):
             meta = {}
         if not isinstance(meta, dict):
@@ -142,7 +203,11 @@ class SessionManager:
         session_id = meta.get("session_id")
         command_id = meta.get("command_id")
         preview = meta.get("command_preview", "")
-        if session_id and self.paths.session_file(session_id).exists():
+        if (
+            isinstance(session_id, str)
+            and _is_valid_session_id(session_id)
+            and self.paths.session_file(session_id).exists()
+        ):
             with contextlib.suppress(SessionError):
                 session = self.load_session_file(session_id)
                 already_recorded = command_id is not None and any(
@@ -165,15 +230,18 @@ class SessionManager:
     ) -> Iterator[str]:
         """Hold an exclusive command lease for the lifetime of one command.
 
-        Under the repo lock it refuses a second concurrent command, takes the
-        command lock (held until the command finishes, so ``end``/``cancel``/a
-        second ``run`` see it), and writes the readable lease. The repo lock is
-        released while the command runs. On exit the lease is cleared and the
-        lock released; a crash lets the OS release the lock for us. Yields a
-        unique command id so the result is appended exactly once.
+        Under the repo lock it first recovers any stale lease, refuses a second
+        concurrent command, takes the command lock (held until the command
+        finishes, so ``end``/``cancel``/a second ``run`` see it), and writes the
+        readable lease. The repo lock is released while the command runs. On exit
+        this only releases the OS lock; the lease metadata is cleared by
+        ``record_command`` after the result is persisted, so a failed persistence
+        leaves the lease for ``recover`` rather than erasing the evidence. Yields
+        a unique command id so the result is appended exactly once.
         """
         command_id = uuid.uuid4().hex
         with self._repo_lock():
+            self._reap_stale_lease()
             session = self.require_active("run a command")
             lock_fd = self._open_command_lock()
             try:
@@ -190,8 +258,6 @@ class SessionManager:
         try:
             yield command_id
         finally:
-            with contextlib.suppress(Exception), self._repo_lock():
-                self._clear_command_lease()
             with contextlib.suppress(OSError):
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
             os.close(lock_fd)
@@ -201,6 +267,8 @@ class SessionManager:
         pointer_path = self.paths.active_session_file
         if not pointer_path.exists():
             return None
+        # Refuse a symlinked or non-regular pointer rather than follow it.
+        _require_regular_or_absent(pointer_path, ".debugbrief/active_session.json")
         try:
             data = read_json(pointer_path)
         except (ValueError, OSError) as exc:
@@ -208,7 +276,7 @@ class SessionManager:
                 f"active_session.json exists but could not be read ({exc}). "
                 "Inspect or remove .debugbrief/active_session.json to recover."
             ) from exc
-        if not isinstance(data, dict) or "session_id" not in data:
+        if not isinstance(data, dict) or not _is_valid_session_id(data.get("session_id")):
             raise SessionError(
                 "active_session.json is malformed. Remove "
                 ".debugbrief/active_session.json to recover."
@@ -394,11 +462,13 @@ class SessionManager:
         with self._repo_lock():
             session = self.require_active("run a command")
             # Idempotent on command_id: a retried persistence after a partial
-            # failure must not append the same result twice.
+            # failure must not append the same result twice. The result is
+            # already on disk, so the lease can be cleared.
             if command_id is not None and any(
                 CommandData.from_dict(event.data).command_id == command_id
                 for event in session.command_events()
             ):
+                self._clear_command_lease_if(command_id)
                 return session
             session.events.append(
                 Event.command(result.command_data, result.command_data.started_at)
@@ -413,6 +483,10 @@ class SessionManager:
                 session.add_warning(result.warning, now_iso8601())
             self.save_session(session)
             self._write_active_pointer(session)
+            # Clear the lease only now that the event is safely persisted; if
+            # save_session above raised, the lease is left for recover.
+            if command_id is not None:
+                self._clear_command_lease_if(command_id)
             return session
 
     def end(self, mode: str, report_format: str = "md", detail: str = "full") -> Session:
@@ -423,6 +497,7 @@ class SessionManager:
         from .utils import write_text
 
         with self._repo_lock():
+            self._reap_stale_lease()
             if self._command_is_active():
                 raise SessionError(
                     "A captured command is still running; wait for it to finish "
@@ -500,6 +575,7 @@ class SessionManager:
         silently deleted; it simply never becomes a brief.
         """
         with self._repo_lock():
+            self._reap_stale_lease()
             if self._command_is_active():
                 raise SessionError(
                     "A captured command is still running; wait for it to finish "

@@ -115,6 +115,74 @@ def test_recover_clears_a_stale_lease_and_preserves_the_session(manager, tmp_pat
     assert any("did not finish" in w for w in reloaded.warnings)
 
 
+def test_failed_persistence_leaves_the_lease_for_recovery(manager, tmp_path, monkeypatch):
+    from debugbrief.command_runner import run_command
+
+    manager.start("t")
+
+    def boom(_session):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(manager, "save_session", boom)
+    with pytest.raises(OSError), manager.command_lease("echo hi", str(tmp_path)) as cid:
+        result = run_command("echo hi", cwd=tmp_path, echo=False)
+        manager.record_command(result, command_id=cid)
+    # Persistence failed, so the lease must remain for recover, not be erased.
+    assert manager.paths.active_command_file.exists()
+
+    # A fresh (unpatched) manager recovers it: the command never persisted, so it
+    # is reported as a lost command.
+    sm2 = SessionManager(manager.paths)
+    assert sm2.recover()["lease"] == "cleared_stale"
+    session = sm2.load_active()
+    assert session is not None and any("did not finish" in w for w in session.warnings)
+
+
+def test_new_run_reaps_a_stale_lease_before_starting(manager, tmp_path):
+    from debugbrief.command_runner import run_command
+
+    session = manager.start("t")
+    manager._write_command_lease(session, "ghost", "pytest --crashed", str(tmp_path))
+    with manager.command_lease("echo hi", str(tmp_path)) as command_id:
+        result = run_command("echo hi", cwd=tmp_path, echo=False)
+        manager.record_command(result, command_id=command_id)
+    final = manager.load_active()
+    assert any("did not finish" in w for w in final.warnings)  # stale one reported
+    assert len(final.command_events()) == 1  # the new command recorded
+
+
+def test_end_reaps_a_stale_lease_before_finalizing(manager, tmp_path):
+    session = manager.start("t")
+    manager._write_command_lease(session, "ghost", "pytest --crashed", str(tmp_path))
+    ended = manager.end("pr")
+    assert ended.status == "COMPLETED"
+    assert any("did not finish" in w for w in ended.warnings)
+
+
+def test_cancel_reaps_a_stale_lease(manager, tmp_path):
+    session = manager.start("t")
+    manager._write_command_lease(session, "ghost", "pytest --crashed", str(tmp_path))
+    manager.cancel()
+    reloaded = manager.load_session_file(session.session_id)
+    assert reloaded.status == "ABANDONED"
+    assert any("did not finish" in w for w in reloaded.warnings)
+
+
+def test_end_does_not_warn_when_leftover_lease_was_already_recorded(manager, tmp_path):
+    from debugbrief.command_runner import run_command
+
+    manager.start("t")
+    with manager.command_lease("echo hi", str(tmp_path)) as command_id:
+        result = run_command("echo hi", cwd=tmp_path, echo=False)
+        manager.record_command(result, command_id=command_id)
+    # Leftover metadata for the SAME, already-recorded command (process died after
+    # recording, before clearing). end must reap it without a false warning.
+    manager._write_command_lease(manager.load_active(), command_id, "echo hi", str(tmp_path))
+    ended = manager.end("pr")
+    assert ended.status == "COMPLETED"
+    assert not any("did not finish" in w for w in ended.warnings)
+
+
 # Real multiprocess -----------------------------------------------------------
 def _wait_for_lease(tmp_path: Path, timeout: float = 15.0) -> bool:
     lease = tmp_path / ".debugbrief" / "active_command.json"

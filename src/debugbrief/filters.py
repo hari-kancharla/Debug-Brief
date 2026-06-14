@@ -239,6 +239,9 @@ def _is_shell_pipeline(command: str) -> bool:
     i, n = 0, len(command)
     while i < n:
         ch = command[i]
+        if ch == "\\" and not in_single:
+            i += 2  # backslash escapes the next char, so an escaped | is literal
+            continue
         if ch == "'" and not in_double:
             in_single = not in_single
         elif ch == '"' and not in_single:
@@ -263,7 +266,14 @@ def _split_shell_segments(command: str) -> List[str]:
     segments: List[str] = []
     current: List[str] = []
     in_single = in_double = False
-    for ch in command:
+    i, n = 0, len(command)
+    while i < n:
+        ch = command[i]
+        if ch == "\\" and not in_single and i + 1 < n:
+            current.append(ch)  # keep an escaped operator as literal text
+            current.append(command[i + 1])
+            i += 2
+            continue
         if ch == "'" and not in_double:
             in_single = not in_single
             current.append(ch)
@@ -277,33 +287,66 @@ def _split_shell_segments(command: str) -> List[str]:
             current = []
         else:
             current.append(ch)
+        i += 1
     segment = "".join(current).strip()
     if segment:
         segments.append(segment)
     return segments
 
 
-def _segment_check(command: str) -> Optional[Tuple[bool, str]]:
-    """Return ``(is_test, tool)`` for the first recognized check across segments.
+def _contains_recognized_check(command: str) -> bool:
+    """True if any segment of the command is a recognized test/build check.
 
     Scans each shell segment, not just the first token, so a check that follows
-    setup (``cd pkg && pytest | tee``) is found. Returns ``None`` if no segment is
-    a recognized test or build/lint/typecheck command.
+    setup (``cd pkg && pytest | tee``) is recognized. Used only to decide whether
+    to explain why a compound command was not attributed to a tool; a compound is
+    never classified as that tool.
     """
     for segment in _split_shell_segments(command):
         toks = _tokenize(segment)
-        test_tool = _match_test(toks)
-        if test_tool is not None:
-            return True, test_tool
-        build_match = _match_build(toks)
-        if build_match is not None:
-            return False, build_match[0]
-    return None
+        if _match_test(toks) is not None or _match_build(toks) is not None:
+            return True
+    return False
 
 
-def _contains_recognized_check(command: str) -> bool:
-    """True if any segment of the command is a recognized test/build check."""
-    return _segment_check(command) is not None
+def _pipefail_disabled(command: str) -> bool:
+    """True if the command turns ``pipefail`` off via ``set +o pipefail``.
+
+    The runner enables pipefail for shell commands, but a command can disable it
+    again (``set +o pipefail``, ``set +eo pipefail``). A disabling ``set`` segment
+    makes a later pipeline's exit status unreliable, so reliability must account
+    for it. Only the ``+``-prefixed disabling form counts, not ``set -o pipefail``.
+    """
+    for segment in _split_shell_segments(command):
+        toks = _tokenize(segment)
+        if not toks or os.path.basename(toks[0]) != "set":
+            continue
+        for i in range(1, len(toks)):
+            prev = toks[i - 1]
+            if toks[i] == "pipefail" and prev.startswith("+") and prev.endswith("o"):
+                return True
+    return False
+
+
+def _is_compound_shell(command: str) -> bool:
+    """True if the command has more than one shell stage (an operator joins it)."""
+    return len(_split_shell_segments(command)) > 1
+
+
+def _reliable_shell(command: str, pipefail: bool) -> bool:
+    """True if the overall exit code reliably reflects every stage.
+
+    Reliable means no failure-masking operator (``||``, ``;``, ``&``, newline can
+    let the command exit 0 despite a failing stage) and, when a pipeline is
+    present, ``pipefail`` is in effect and not disabled in the command. Under
+    these conditions an exit of 0 proves every stage, the check included, passed;
+    a nonzero exit proves some stage failed, though not necessarily which one.
+    """
+    if _has_failure_masking_operator(command):
+        return False
+    if _is_shell_pipeline(command):
+        return pipefail and not _pipefail_disabled(command)
+    return True
 
 
 def _has_failure_masking_operator(command: str) -> bool:
@@ -320,6 +363,9 @@ def _has_failure_masking_operator(command: str) -> bool:
     i, n = 0, len(command)
     while i < n:
         ch = command[i]
+        if ch == "\\" and not in_single:
+            i += 2  # an escaped operator is literal, not failure-masking
+            continue
         if ch == "'" and not in_double:
             in_single = not in_single
         elif ch == '"' and not in_single:
@@ -338,23 +384,36 @@ def _has_failure_masking_operator(command: str) -> bool:
     return False
 
 
-def shell_pipeline_suppressed_check(
-    command: str, use_shell: bool, pipefail: bool = False
-) -> bool:
-    """True when an unreliable pipeline kept a would-be check from classifying.
+def shell_command_warning(
+    command: str,
+    use_shell: bool,
+    pipefail: bool,
+    passed: bool,
+    force_verification: bool = False,
+) -> Optional[str]:
+    """Explain why a recognized check in a shell command was not counted, or None.
 
-    Only when ``pipefail`` is unavailable is a pipeline's exit status untrustworthy
-    (it reflects only the last stage). The runner uses this to warn that a
-    recognized check inside such a pipeline is not treated as a verification. With
-    pipefail the exit status is reliable and the check classifies normally.
-
-    The check is looked for in every segment, not just the first token, so a
-    setup-prefixed pipeline (``cd pkg && pytest | tee``) is recognized and warned
-    about rather than dropped silently.
+    Mirrors :func:`_classify_shell_command`: it returns a message only when a
+    command that contains a recognized check was recorded generically (not as a
+    verification), so the user is never left guessing. Simple commands and cleanly
+    classified compounds return None.
     """
-    if pipefail or not (use_shell and _is_shell_pipeline(command)):
-        return False
-    return _contains_recognized_check(command)
+    if not use_shell or not _is_compound_shell(command):
+        return None
+    if force_verification and _reliable_shell(command, pipefail):
+        return None  # classified as a declared whole-command custom check
+    if not _contains_recognized_check(command):
+        return None  # nothing looked like a check, so nothing to explain
+    if not passed:
+        return (
+            "Compound shell command failed; DebugBrief cannot determine which "
+            "stage failed, so it is recorded as a command, not a failed check."
+        )
+    return (
+        "DebugBrief records a compound shell command as a single command and does "
+        "not attribute the result to an individual tool. Run the check on its own, "
+        "or pass --verify to record the whole command as a check."
+    )
 
 
 def status_from_outcome(
@@ -400,14 +459,13 @@ def classify_command(
     no pattern matched; a recognized runner always wins. The honesty rule is
     unchanged: ``is_verification`` is True only on a real exit 0.
 
-    A shell command (``use_shell``) is classified from its segments only when its
-    exit code reliably reflects the check: no failure-masking operator (``||``,
-    ``;``, ``&``, newline) and, if it is a pipeline, ``pipefail`` in effect. Then
-    a recognized check in any ``&&``/pipe-joined stage is classified, because an
-    exit of 0 implies every stage (the check included) passed. Otherwise the shell
-    command is not auto-classified, so a failing check can never be recorded as
-    passed; ``--verify`` still declares a custom check from the exit code, except
-    for an unreliable pipeline, which is never a verification.
+    A simple shell command (one stage) is classified like a non-shell command. A
+    compound shell command (anything joined by ``|``, ``&&``, ``||``, ``;``,
+    ``&`` or a newline) is never attributed to an internal tool: the exit code
+    does not say which stage produced it. The only verification a compound can
+    yield is a user-declared whole-command check (``--verify``), and only when the
+    exit code is reliable: no failure-masking operator, and ``pipefail`` for a
+    pipeline. Everything else is recorded as a generic command.
     """
     status = status_from_outcome(
         exit_code, timed_out, errored, interrupted, broken_pipe
@@ -464,37 +522,41 @@ def _classify_shell_command(
 ) -> CommandClassification:
     """Classify a command run through the shell, trusting the exit code only when
     it reliably reflects a recognized check (see :func:`classify_command`)."""
-    unreliable_pipe = _is_shell_pipeline(command) and not pipefail
-
-    if not unreliable_pipe and not _has_failure_masking_operator(command):
-        found = _segment_check(command)
-        if found is not None:
-            is_test, tool = found
-            return CommandClassification(
-                is_test=is_test,
-                is_verification=passed,
-                tool=tool,
-                status=status,
-            )
-
-    # An unreliable pipeline (its exit status is only the last stage's) is never a
-    # verification, even with --verify, so a failed check piped into a passing
-    # command cannot be recorded as passed. --verify still declares any other
-    # shell command a custom check from its exit code.
-    if force_verification and not unreliable_pipe:
-        return CommandClassification(
-            is_test=False,
-            is_verification=passed,
-            tool="custom",
-            status=status,
-        )
-
-    return CommandClassification(
-        is_test=False,
-        is_verification=False,
-        tool=None,
-        status=status,
+    generic = CommandClassification(
+        is_test=False, is_verification=False, tool=None, status=status
     )
+
+    # A simple command (one stage) is classified directly: the exit code is its
+    # own, so a recognized check passes or fails honestly.
+    if not _is_compound_shell(command):
+        toks = _tokenize(command)
+        test_tool = _match_test(toks)
+        if test_tool is not None:
+            return CommandClassification(
+                is_test=True, is_verification=passed, tool=test_tool, status=status
+            )
+        build_match = _match_build(toks)
+        if build_match is not None:
+            return CommandClassification(
+                is_test=False, is_verification=passed, tool=build_match[0], status=status
+            )
+        if force_verification:
+            return CommandClassification(
+                is_test=False, is_verification=passed, tool="custom", status=status
+            )
+        return generic
+
+    # Compound command: never attribute the result to an internal tool, because
+    # the exit code does not say which stage produced it (pytest may not have run,
+    # or may have passed while another stage failed). The only verification a
+    # compound can yield is a user-declared whole-command check via --verify, and
+    # only when the exit code is reliable (no failure-masking operator, and a
+    # pipeline has pipefail). Everything else is a generic command.
+    if force_verification and _reliable_shell(command, pipefail):
+        return CommandClassification(
+            is_test=False, is_verification=passed, tool="custom", status=status
+        )
+    return generic
 
 
 def is_noise_command(command: str) -> bool:

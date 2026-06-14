@@ -38,8 +38,8 @@ Terminal control sequences and unsafe control characters are stripped from the
 stored preview by a small bounded state machine as output is read (the live echo
 keeps them), so a sequence split across reads or the truncation boundary never
 leaves a fragment in the report. Pseudo-terminals, process groups, and signals
-are POSIX standard library only, so this keeps the zero-dependency, Unix-only
-design.
+are POSIX standard library only, so command capture adds no dependency and stays
+within the Unix-only design.
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ from pathlib import Path
 from typing import IO, Any, List, Optional, Union
 
 from . import filters
-from .models import CommandData
+from .models import COMMAND_STATUS_PASSED, CommandData
 from .redaction import redact_text
 from .utils import (
     DEFAULT_STDERR_PREVIEW_LIMIT,
@@ -682,10 +682,12 @@ def run_command(
     if use_shell:
         bash = shutil.which("bash")
         if bash is not None:
-            # Run shell commands through bash with pipefail, so a pipeline's exit
-            # status reflects the first failing stage, not only the last. Without
-            # this, a failing `pytest | tee out` would exit 0 (tee's status) and
-            # be recorded as passed; with it, the failure propagates honestly.
+            # Run shell commands through bash with pipefail, so a pipeline exits
+            # nonzero when any stage fails, not only when its last stage does
+            # (pipefail returns the rightmost failing stage's status, which is
+            # enough to tell pass from fail, though not which stage failed).
+            # Without this, a failing `pytest | tee out` would exit 0 (tee's
+            # status) and be recorded as passed; with it, the failure propagates.
             popen_args = [bash, "-c", "set -o pipefail\n" + command]
             pipefail = True
         else:
@@ -742,19 +744,19 @@ def run_command(
         pipefail=pipefail,
     )
 
-    # Only when pipefail is unavailable (no bash) is a pipeline's exit status
-    # unreliable; then a recognized check in a pipeline is not treated as a
-    # verification, and we say so. With pipefail the exit status is trustworthy
-    # and the command is classified normally.
+    # A recognized check in a shell command is only attributed to a tool when the
+    # exit code reliably reflects it (single stage, or a reliable compound with
+    # exactly one check). When it was instead recorded generically, say why.
     warning = outcome.warning
-    if filters.shell_pipeline_suppressed_check(command, use_shell, pipefail):
-        pipeline_warning = (
-            "The command is a shell pipeline and bash (for pipefail) is not "
-            "available, so its exit status reflects only the last stage. It is "
-            "recorded as a command but not treated as a verification; run the "
-            "check without a pipeline for a reliable pass/fail."
-        )
-        warning = f"{warning} {pipeline_warning}".strip() if warning else pipeline_warning
+    shell_warning = filters.shell_command_warning(
+        command,
+        use_shell,
+        pipefail,
+        passed=classification.status == COMMAND_STATUS_PASSED,
+        force_verification=force_verification,
+    )
+    if shell_warning:
+        warning = f"{warning} {shell_warning}".strip() if warning else shell_warning
 
     stored_command = command
     redacted = False

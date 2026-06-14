@@ -417,6 +417,9 @@ def _has_failure_masking_operator(command: str) -> bool:
                 if i + 1 < n and command[i + 1] == "&":
                     i += 2  # "&&" propagates failure; not masking
                     continue
+                if i > 0 and command[i - 1] == "|":
+                    i += 1  # part of "|&" (pipe both streams): governed by the pipe
+                    continue
                 if _amp_is_redirection(command, i):
                     i += 1  # redirection "&" (2>&1, &>log): not masking
                     continue

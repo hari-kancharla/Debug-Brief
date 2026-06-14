@@ -212,6 +212,17 @@ def test_verify_declares_reliable_compound_but_never_an_unreliable_pipe():
     assert cu.is_verification is False and cu.tool is None
 
 
+def test_pipe_both_operator_is_a_reliable_pipeline():
+    # `|&` pipes stdout and stderr; it is a pipeline operator, not a background &.
+    # Under pipefail with --verify the declared check is therefore counted.
+    cmd = "pytest |& tee out"
+    c = filters.classify_command(
+        cmd, exit_code=0, use_shell=True, pipefail=True, force_verification=True
+    )
+    assert c.tool == "custom" and c.is_verification is True
+    assert _warn(cmd, True, passed=True, force_verification=True) is None
+
+
 def test_verify_on_an_unreliable_compound_warns_that_it_was_ignored():
     # When --verify cannot be honored (unreliable exit code), say so, even when no
     # built-in tool is recognized, so the user is not left thinking it counted.

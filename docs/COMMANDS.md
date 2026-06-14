@@ -115,6 +115,15 @@ string:
 debugbrief run --shell "pytest -q | tee out.txt"
 ```
 
+DebugBrief runs `--shell` commands through bash with `pipefail` set, so a
+**pipeline**'s exit status reflects its first failing stage rather than only the
+last. A recognized check inside a pipeline (the example above) is therefore
+classified honestly: it counts as a passed verification only when every stage,
+the check included, succeeded. Where bash is unavailable `pipefail` cannot be
+guaranteed, so a recognized check in a pipeline is then recorded as a command
+with a warning rather than a verification; run it without a pipeline for a
+reliable pass/fail.
+
 If no session is active, `run` auto-starts one first.
 
 ### Live output
@@ -274,9 +283,9 @@ debugbrief end --stdout | gh pr comment --body-file -
 
 - `pr`: pull-request-ready. One-line summary, reproduce/verify commands, the
   red-to-green window, modified files, a condensed timeline, verification, and
-  what was ruled out.
+  the failed attempts.
 - `handoff`: hand a tricky issue to someone else. Current status, your notes, the
-  full timeline, commands attempted, what was ruled out, current repo state, and
+  full timeline, commands attempted, the failed attempts, current repo state, and
   next steps drawn only from your recorded notes.
 - `incident`: a chronological note. One-line summary, time window, full timeline,
   the observed error verbatim, resolution/current state, verification, and
@@ -384,8 +393,9 @@ gh pr comment --body-file "$(ls -t .debugbrief/reports/*-pr.md | head -1)"
 ## Project configuration
 
 An optional `.debugbrief.toml` at the project root sets defaults so you do not
-retype the same flags. It is entirely optional, and a missing or malformed file
-is ignored. Only these keys are read:
+retype the same flags. It is entirely optional: a missing file is ignored, and
+lines that cannot be parsed are skipped rather than failing a command. Only
+these keys are read:
 
 ```toml
 default_mode    = "pr"        # default for end/preview (pr, handoff, incident)

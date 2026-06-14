@@ -71,6 +71,17 @@ _TEST_PATTERNS: List[Tuple[List[str], str]] = [
 _RUN_WRAPPERS = {"uv", "poetry", "pdm", "hatch", "rye"}  # "<tool> run <cmd ...>"
 _EXEC_WRAPPERS = {"pnpm", "yarn"}  # "<tool> exec|dlx <cmd ...>"
 
+# Options of the supported wrappers that take the following token as a value.
+# Any other option is treated as a boolean flag, so a flag before the command
+# (npx --yes jest) is handled without mistaking the command for an option value.
+_VALUE_OPTIONS = frozenset(
+    {
+        "--with", "--with-requirements", "--project", "--directory", "--python",
+        "--index", "--index-url", "--extra", "--group", "--constraint",
+        "--override", "--package", "--prefix", "-C", "-p",
+    }
+)
+
 # (pattern_tokens, tool, category) for build/lint/typecheck detection.
 _BUILD_PATTERNS: List[Tuple[List[str], str, str]] = [
     (["npm", "run", "build"], "npm", "build"),
@@ -118,19 +129,28 @@ def _is_python(name: str) -> bool:
 
 
 def _skip_wrapper_options(toks: List[str]) -> List[str]:
-    """Drop a wrapper's own option flags so the wrapped command surfaces.
+    """Drop a wrapper's own options so the wrapped command surfaces.
 
-    Wrappers accept options before the command (``uv run --with pytest pytest``,
-    ``npx --yes jest``). Leading ``-``-prefixed tokens are dropped; a ``--``
-    separator is dropped and ends option processing. A flag's value cannot be
-    told apart from the command in general, so each flag is dropped on its own,
-    which recognizes both of the above without guessing arities.
+    Wrappers take options before the command, and some consume the following
+    token as a value. The rule recognizes the real command in all the common
+    forms while never mistaking an option's value for the command (a
+    false-positive classification, the dangerous direction for an honest tool):
+
+    - ``--`` ends option processing; the rest is the command.
+    - ``--name=value`` is self-contained.
+    - a bare option named in :data:`_VALUE_OPTIONS` consumes the next token as
+      its value (``uv run --with pytest pytest``, ``uv run --project pkg pytest``).
+    - every other option is a boolean flag and consumes nothing, so a flag before
+      the command is handled (``npx --yes jest``, ``poetry run -q pytest``).
     """
     while toks and toks[0].startswith("-"):
-        end_of_options = toks[0] == "--"
+        opt = toks[0]
+        if opt == "--":
+            return toks[1:]
         toks = toks[1:]
-        if end_of_options:
-            break
+        name = opt.split("=", 1)[0]
+        if "=" not in opt and name in _VALUE_OPTIONS and toks and not toks[0].startswith("-"):
+            toks = toks[1:]  # consume the option's value
     return toks
 
 
@@ -188,6 +208,88 @@ def _match_build(tokens: List[str]) -> Optional[Tuple[str, str]]:
     return None
 
 
+def _is_shell_pipeline(command: str) -> bool:
+    """True if ``command`` contains a top-level shell pipe (``|``, not ``||``).
+
+    Quote-aware so a ``|`` inside a quoted string does not count. Conservative:
+    it does not parse the full shell grammar, only enough to spot a pipeline.
+    """
+    in_single = in_double = False
+    i, n = 0, len(command)
+    while i < n:
+        ch = command[i]
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif ch == "|" and not in_single and not in_double:
+            prev_pipe = i > 0 and command[i - 1] == "|"
+            next_pipe = i + 1 < n and command[i + 1] == "|"
+            if not prev_pipe and not next_pipe:
+                return True
+        i += 1
+    return False
+
+
+def _split_shell_segments(command: str) -> List[str]:
+    """Split a command into its shell segments on top-level separators.
+
+    Breaks on ``;``, ``&``, ``|`` and newlines (so ``&&`` / ``||`` / ``|`` and
+    command terminators all end a segment), staying quote-aware so a separator
+    inside a quoted string does not split. Lets a recognized check be found even
+    when it does not sit at the very first token (``cd pkg && pytest | tee``).
+    """
+    segments: List[str] = []
+    current: List[str] = []
+    in_single = in_double = False
+    for ch in command:
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            current.append(ch)
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+            current.append(ch)
+        elif ch in (";", "&", "|", "\n") and not in_single and not in_double:
+            segment = "".join(current).strip()
+            if segment:
+                segments.append(segment)
+            current = []
+        else:
+            current.append(ch)
+    segment = "".join(current).strip()
+    if segment:
+        segments.append(segment)
+    return segments
+
+
+def _contains_recognized_check(command: str) -> bool:
+    """True if any segment of the command is a recognized test/build check."""
+    for segment in _split_shell_segments(command):
+        toks = _tokenize(segment)
+        if _match_test(toks) is not None or _match_build(toks) is not None:
+            return True
+    return False
+
+
+def shell_pipeline_suppressed_check(
+    command: str, use_shell: bool, pipefail: bool = False
+) -> bool:
+    """True when an unreliable pipeline kept a would-be check from classifying.
+
+    Only when ``pipefail`` is unavailable is a pipeline's exit status untrustworthy
+    (it reflects only the last stage). The runner uses this to warn that a
+    recognized check inside such a pipeline is not treated as a verification. With
+    pipefail the exit status is reliable and the check classifies normally.
+
+    The check is looked for in every segment, not just the first token, so a
+    setup-prefixed pipeline (``cd pkg && pytest | tee``) is recognized and warned
+    about rather than dropped silently.
+    """
+    if pipefail or not (use_shell and _is_shell_pipeline(command)):
+        return False
+    return _contains_recognized_check(command)
+
+
 def status_from_outcome(
     exit_code: Optional[int],
     timed_out: bool,
@@ -217,6 +319,8 @@ def classify_command(
     force_verification: bool = False,
     interrupted: bool = False,
     broken_pipe: bool = False,
+    use_shell: bool = False,
+    pipefail: bool = False,
 ) -> CommandClassification:
     """Classify a command into test / verification categories.
 
@@ -228,13 +332,24 @@ def classify_command(
     custom test script, ``make integration``) as a check. It applies only when
     no pattern matched; a recognized runner always wins. The honesty rule is
     unchanged: ``is_verification`` is True only on a real exit 0.
+
+    A shell pipeline (``use_shell`` with a top-level ``|``) is classified as a
+    check only when ``pipefail`` is in effect, so its exit status reflects the
+    first failing stage. Without pipefail the exit status is only the last
+    stage's, so the pipeline is not treated as a check (it could otherwise record
+    a failed test as passed); the runner attaches a warning in that case.
     """
-    tokens = _tokenize(command)
     status = status_from_outcome(
         exit_code, timed_out, errored, interrupted, broken_pipe
     )
     passed = status == COMMAND_STATUS_PASSED
 
+    if use_shell and not pipefail and _is_shell_pipeline(command):
+        return CommandClassification(
+            is_test=False, is_verification=False, tool=None, status=status
+        )
+
+    tokens = _tokenize(command)
     test_tool = _match_test(tokens)
     if test_tool is not None:
         return CommandClassification(

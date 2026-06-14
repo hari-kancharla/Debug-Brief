@@ -10,6 +10,19 @@ from debugbrief.redaction import redact_text
 PY = sys.executable
 
 
+def test_add_warning_redacts_before_persisting():
+    # add_warning is the single choke point, so every persisted warning (from any
+    # caller, including the .git/info/exclude warning) is scrubbed.
+    from debugbrief.models import Session
+
+    session = Session(title="t", project_root="/x")
+    session.add_warning(
+        "could not write exclude: token=ghp_abcdefghij1234567890ABCDEF", "2026-01-01T00:00:00Z"
+    )
+    assert "ghp_abcdefghij1234567890ABCDEF" not in session.warnings[0]
+    assert "[redacted]" in session.warnings[0]
+
+
 def test_redacts_openai_style_key():
     out, n = redact_text("token is sk-abcdEFGH1234567890 ok")
     assert "sk-abcdEFGH" not in out

@@ -44,7 +44,7 @@ _1 file(s) changed, +1 / -1 lines._
 
 - [passed] test (pytest): `python -m pytest -q test_calc.py` x2
 
-## What was ruled out
+## Failed attempts
 
 - `python -m pytest -q test_calc.py` -> failed (exit 1)
 

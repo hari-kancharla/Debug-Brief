@@ -11,7 +11,7 @@ from typing import List, Optional, Tuple
 from .models import Session
 from .paths import ProjectPaths
 from .reporters import VALID_MODES, build_context
-from .utils import parse_iso8601, read_json
+from .utils import is_regular_file, parse_iso8601, read_json_safe
 
 
 def _start_seconds(session: Session) -> float:
@@ -36,12 +36,15 @@ def load_all_sessions(paths: ProjectPaths) -> List[Session]:
         return []
     sessions: List[Session] = []
     for path in sessions_dir.glob("*.json"):
-        if not path.is_file():
+        # is_regular_file (lstat) is the security check; Path.is_file follows
+        # symlinks. A symlinked or special entry is skipped, never followed, so
+        # one unsafe file cannot expose an external file or block the others.
+        if not is_regular_file(path):
             continue
         try:
-            sessions.append(Session.from_dict(read_json(path)))
+            sessions.append(Session.from_dict(read_json_safe(path)))
         except (ValueError, OSError, TypeError):
-            continue
+            continue  # corrupt or unreadable: skip without blocking other sessions
     sessions.sort(key=lambda s: (_start_seconds(s), s.session_id), reverse=True)
     return sessions
 
@@ -50,9 +53,10 @@ def report_modes_for(paths: ProjectPaths, session_id: str) -> List[str]:
     """Return the report modes that have been generated for ``session_id``."""
     modes = []
     for mode in VALID_MODES:
+        # is_regular_file, not exists(): a symlinked report must not count.
         if (
-            paths.report_file(session_id, mode).exists()
-            or paths.report_json_file(session_id, mode).exists()
+            is_regular_file(paths.report_file(session_id, mode))
+            or is_regular_file(paths.report_json_file(session_id, mode))
         ):
             modes.append(mode)
     return modes

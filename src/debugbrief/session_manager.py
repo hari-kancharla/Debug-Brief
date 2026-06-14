@@ -27,7 +27,12 @@ from .models import (
 )
 from .paths import ProjectPaths, UnsafeStateDirectory
 from .redaction import redact_text
-from .utils import atomic_write_json, now_iso8601, read_json
+from .utils import (
+    atomic_write_json,
+    is_regular_file,
+    now_iso8601,
+    read_json_safe,
+)
 
 
 class SessionError(Exception):
@@ -160,7 +165,7 @@ class SessionManager:
         is left behind for ``recover``.
         """
         try:
-            meta = read_json(self.paths.active_command_file)
+            meta = read_json_safe(self.paths.active_command_file)
         except (ValueError, OSError):
             return
         if isinstance(meta, dict) and meta.get("command_id") == command_id:
@@ -191,11 +196,11 @@ class SessionManager:
         either way. Called under the repo lock.
         """
         lease_path = self.paths.active_command_file
+        if not is_regular_file(lease_path):
+            self._clear_command_lease()  # symlink/FIFO/etc: not a real lease
+            return
         try:
-            if not stat.S_ISREG(os.lstat(lease_path).st_mode):
-                self._clear_command_lease()  # symlink/FIFO/etc: not a real lease
-                return
-            meta = read_json(lease_path)
+            meta = read_json_safe(lease_path)
         except (ValueError, OSError):
             meta = {}
         if not isinstance(meta, dict):
@@ -273,7 +278,7 @@ class SessionManager:
         # Refuse a symlinked or non-regular pointer rather than follow it.
         _require_regular_or_absent(pointer_path, ".debugbrief/active_session.json")
         try:
-            data = read_json(pointer_path)
+            data = read_json_safe(pointer_path)
         except (ValueError, OSError) as exc:
             raise SessionError(
                 f"active_session.json exists but could not be read ({exc}). "
@@ -325,10 +330,16 @@ class SessionManager:
         if not _is_valid_session_id(session_id):
             raise SessionError(f"Invalid session id {session_id!r}.")
         path = self.paths.session_file(session_id)
-        if not path.exists():
+        if not is_regular_file(path):
+            if path.exists():
+                raise SessionError(
+                    f"Session file for {session_id} is not a regular file; "
+                    "DebugBrief refuses to follow it."
+                )
             raise SessionError(f"Session file not found for id {session_id}.")
         try:
-            return Session.from_dict(read_json(path))
+            # read_json_safe re-checks with O_NOFOLLOW, closing the lstat race.
+            return Session.from_dict(read_json_safe(path))
         except (ValueError, OSError) as exc:
             raise SessionError(f"Could not read session {session_id}: {exc}") from exc
 
@@ -639,8 +650,13 @@ class SessionManager:
         sessions_dir = self.paths.sessions_dir
         if sessions_dir.is_dir():
             for path in sorted(sessions_dir.glob("*.json")):
+                # An unsafe (symlinked/special) entry is reported, never followed;
+                # a corrupt regular file is reported too. Neither is deleted.
+                if not is_regular_file(path):
+                    result["corrupt"].append(path.name)
+                    continue
                 try:
-                    Session.from_dict(read_json(path))
+                    Session.from_dict(read_json_safe(path))
                 except (ValueError, OSError, TypeError):
                     result["corrupt"].append(path.name)
         return result

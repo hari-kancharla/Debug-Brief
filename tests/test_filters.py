@@ -224,6 +224,30 @@ def test_quoted_and_escaped_pipes_are_not_pipelines():
     assert filters._is_shell_pipeline("pytest || echo done") is False
 
 
+def test_trailing_background_operator_is_compound_not_a_pass():
+    # `pytest &` backgrounds the job and bash returns 0 immediately, so it must
+    # not be recorded as a passed pytest even though it is the only segment.
+    for cmd in ("pytest &", "pytest -q &"):
+        c = filters.classify_command(cmd, exit_code=0, use_shell=True, pipefail=True)
+        assert c.tool is None and c.is_verification is False, cmd
+        assert _warn(cmd, True, passed=True) is not None, cmd
+
+
+def test_descriptor_redirections_are_simple_commands():
+    # The `&` in a redirection is part of one command, not a stage separator, so a
+    # recognized check with a redirection still classifies normally.
+    for cmd in ("pytest 2>&1", "pytest &>out.log", "pytest <&0", "pytest >out 2>&1"):
+        c = filters.classify_command(cmd, exit_code=0, use_shell=True, pipefail=True)
+        assert c.tool == "pytest" and c.is_verification is True, cmd
+        assert _warn(cmd, True, passed=True) is None, cmd
+    # A redirection inside a reliable compound does not make it unreliable.
+    c = filters.classify_command(
+        "cd pkg && pytest 2>&1", exit_code=0, use_shell=True, pipefail=True,
+        force_verification=True,
+    )
+    assert c.tool == "custom" and c.is_verification is True
+
+
 def test_classify_unknown_command():
     cls = filters.classify_command("echo hello", exit_code=0)
     assert cls.is_test is False

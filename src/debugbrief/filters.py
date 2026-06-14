@@ -328,9 +328,47 @@ def _pipefail_disabled(command: str) -> bool:
     return False
 
 
+def _amp_is_redirection(command: str, i: int) -> bool:
+    """True if the ``&`` at index ``i`` is part of a descriptor redirection.
+
+    Covers ``&>file`` (the next char is ``>``) and ``2>&1`` / ``>&2`` / ``<&0``
+    (the ``&`` follows ``>`` or ``<``). These belong to one command, so the ``&``
+    is neither a stage separator nor a background operator.
+    """
+    prev = command[i - 1] if i > 0 else ""
+    nxt = command[i + 1] if i + 1 < len(command) else ""
+    return prev in (">", "<") or nxt == ">"
+
+
 def _is_compound_shell(command: str) -> bool:
-    """True if the command has more than one shell stage (an operator joins it)."""
-    return len(_split_shell_segments(command)) > 1
+    """True if the command joins more than one shell stage.
+
+    Scans for a top-level ``|`` (pipe or ``||``), ``&&``, a lone ``&``
+    (background), ``;``, or newline, rather than counting segments, so a trailing
+    operator (``pytest &``) is detected. A ``&`` that is part of a redirection
+    (``2>&1``, ``&>log``) does not count. Quote- and backslash-aware.
+    """
+    in_single = in_double = False
+    i, n = 0, len(command)
+    while i < n:
+        ch = command[i]
+        if ch == "\\" and not in_single:
+            i += 2
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif not in_single and not in_double:
+            if ch in (";", "\n", "|"):
+                return True
+            if ch == "&":
+                if i + 1 < n and command[i + 1] == "&":
+                    return True  # "&&" and-list
+                if not _amp_is_redirection(command, i):
+                    return True  # a lone "&" backgrounds a stage
+        i += 1
+    return False
 
 
 def _reliable_shell(command: str, pipefail: bool) -> bool:
@@ -356,8 +394,8 @@ def _has_failure_masking_operator(command: str) -> bool:
     ``;`` and a newline run the next stage regardless of the previous one; ``||``
     runs its right side only when the left failed; a lone ``&`` backgrounds a
     stage. ``&&`` and a ``|`` pipe (trustworthy under pipefail) instead propagate
-    failure, so they are not masking. Quote-aware so an operator inside a quoted
-    string does not count.
+    failure, so they are not masking, and a ``&`` that is part of a redirection
+    (``2>&1``, ``&>log``) is not an operator at all. Quote- and backslash-aware.
     """
     in_single = in_double = False
     i, n = 0, len(command)
@@ -378,6 +416,9 @@ def _has_failure_masking_operator(command: str) -> bool:
             if ch == "&":
                 if i + 1 < n and command[i + 1] == "&":
                     i += 2  # "&&" propagates failure; not masking
+                    continue
+                if _amp_is_redirection(command, i):
+                    i += 1  # redirection "&" (2>&1, &>log): not masking
                     continue
                 return True  # a lone "&" backgrounds the preceding stage
         i += 1

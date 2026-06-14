@@ -115,6 +115,25 @@ def test_sensitive_segments_are_redacted():
         assert n == 1
 
 
+def test_json_style_quoted_keys_are_redacted():
+    # JSON/dict output is a common shape in captured logs. A quoted key must be
+    # recognized too, not only bare env/shell `key=` / `key:` forms, so a secret
+    # in a JSON value does not slip into a report verbatim.
+    cases = [
+        ('"password": "hunter2"', '"password": "[redacted]"'),
+        ('{"token": "abc123def456"}', '{"token": "[redacted]"}'),
+        ('{"api_key":"abcdef123456"}', '{"api_key":"[redacted]"}'),
+        ("{'secret': 'mypw'}", "{'secret': '[redacted]'}"),
+    ]
+    for text, expected in cases:
+        out, n = redact_text(text)
+        assert out == expected, f"{text!r} -> {out!r}"
+        assert n == 1
+    # A quoted non-sensitive key is still left untouched.
+    out, n = redact_text('"monkey": "banana"')
+    assert out == '"monkey": "banana"' and n == 0
+
+
 def test_stored_event_is_redacted_by_default(tmp_path):
     # The command prints a fake secret on stdout; the stored preview must mask it.
     result = run_command(

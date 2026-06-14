@@ -283,12 +283,58 @@ def _split_shell_segments(command: str) -> List[str]:
     return segments
 
 
-def _contains_recognized_check(command: str) -> bool:
-    """True if any segment of the command is a recognized test/build check."""
+def _segment_check(command: str) -> Optional[Tuple[bool, str]]:
+    """Return ``(is_test, tool)`` for the first recognized check across segments.
+
+    Scans each shell segment, not just the first token, so a check that follows
+    setup (``cd pkg && pytest | tee``) is found. Returns ``None`` if no segment is
+    a recognized test or build/lint/typecheck command.
+    """
     for segment in _split_shell_segments(command):
         toks = _tokenize(segment)
-        if _match_test(toks) is not None or _match_build(toks) is not None:
-            return True
+        test_tool = _match_test(toks)
+        if test_tool is not None:
+            return True, test_tool
+        build_match = _match_build(toks)
+        if build_match is not None:
+            return False, build_match[0]
+    return None
+
+
+def _contains_recognized_check(command: str) -> bool:
+    """True if any segment of the command is a recognized test/build check."""
+    return _segment_check(command) is not None
+
+
+def _has_failure_masking_operator(command: str) -> bool:
+    """True if a top-level operator can let the command exit 0 despite a failing
+    stage, so a recognized check's pass/fail cannot be read from the exit code.
+
+    ``;`` and a newline run the next stage regardless of the previous one; ``||``
+    runs its right side only when the left failed; a lone ``&`` backgrounds a
+    stage. ``&&`` and a ``|`` pipe (trustworthy under pipefail) instead propagate
+    failure, so they are not masking. Quote-aware so an operator inside a quoted
+    string does not count.
+    """
+    in_single = in_double = False
+    i, n = 0, len(command)
+    while i < n:
+        ch = command[i]
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif not in_single and not in_double:
+            if ch in (";", "\n"):
+                return True
+            if ch == "|" and i + 1 < n and command[i + 1] == "|":
+                return True
+            if ch == "&":
+                if i + 1 < n and command[i + 1] == "&":
+                    i += 2  # "&&" propagates failure; not masking
+                    continue
+                return True  # a lone "&" backgrounds the preceding stage
+        i += 1
     return False
 
 
@@ -354,20 +400,23 @@ def classify_command(
     no pattern matched; a recognized runner always wins. The honesty rule is
     unchanged: ``is_verification`` is True only on a real exit 0.
 
-    A shell pipeline (``use_shell`` with a top-level ``|``) is classified as a
-    check only when ``pipefail`` is in effect, so its exit status reflects the
-    first failing stage. Without pipefail the exit status is only the last
-    stage's, so the pipeline is not treated as a check (it could otherwise record
-    a failed test as passed); the runner attaches a warning in that case.
+    A shell command (``use_shell``) is classified from its segments only when its
+    exit code reliably reflects the check: no failure-masking operator (``||``,
+    ``;``, ``&``, newline) and, if it is a pipeline, ``pipefail`` in effect. Then
+    a recognized check in any ``&&``/pipe-joined stage is classified, because an
+    exit of 0 implies every stage (the check included) passed. Otherwise the shell
+    command is not auto-classified, so a failing check can never be recorded as
+    passed; ``--verify`` still declares a custom check from the exit code, except
+    for an unreliable pipeline, which is never a verification.
     """
     status = status_from_outcome(
         exit_code, timed_out, errored, interrupted, broken_pipe
     )
     passed = status == COMMAND_STATUS_PASSED
 
-    if use_shell and not pipefail and _is_shell_pipeline(command):
-        return CommandClassification(
-            is_test=False, is_verification=False, tool=None, status=status
+    if use_shell:
+        return _classify_shell_command(
+            command, status, passed, pipefail, force_verification
         )
 
     tokens = _tokenize(command)
@@ -391,6 +440,48 @@ def classify_command(
         )
 
     if force_verification:
+        return CommandClassification(
+            is_test=False,
+            is_verification=passed,
+            tool="custom",
+            status=status,
+        )
+
+    return CommandClassification(
+        is_test=False,
+        is_verification=False,
+        tool=None,
+        status=status,
+    )
+
+
+def _classify_shell_command(
+    command: str,
+    status: str,
+    passed: bool,
+    pipefail: bool,
+    force_verification: bool,
+) -> CommandClassification:
+    """Classify a command run through the shell, trusting the exit code only when
+    it reliably reflects a recognized check (see :func:`classify_command`)."""
+    unreliable_pipe = _is_shell_pipeline(command) and not pipefail
+
+    if not unreliable_pipe and not _has_failure_masking_operator(command):
+        found = _segment_check(command)
+        if found is not None:
+            is_test, tool = found
+            return CommandClassification(
+                is_test=is_test,
+                is_verification=passed,
+                tool=tool,
+                status=status,
+            )
+
+    # An unreliable pipeline (its exit status is only the last stage's) is never a
+    # verification, even with --verify, so a failed check piped into a passing
+    # command cannot be recorded as passed. --verify still declares any other
+    # shell command a custom check from its exit code.
+    if force_verification and not unreliable_pipe:
         return CommandClassification(
             is_test=False,
             is_verification=passed,

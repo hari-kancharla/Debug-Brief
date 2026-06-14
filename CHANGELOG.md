@@ -95,17 +95,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   name that only appears as an argument (`echo pytest`) is no longer treated as
   a check, a path like `.venv/bin/pytest` is recognized by its basename, and
   common wrappers (`python -m`, `uv`/`poetry`/`pdm`/`hatch`/`rye run`, `bundle
-  exec`, `npx`, `pnpm`/`yarn exec`) are unwrapped to the inner command. A wrapper
-  option that takes a value (`uv run --with pytest pytest`,
-  `uv run --project pkg pytest`) is consumed with its value, and an option's
-  value is never mistaken for the command. A boolean flag before the command
-  (`npx --yes jest`, `uv run --no-sync pytest`) is recognized too.
+  exec`, `npx`, `pnpm`/`yarn exec`) are unwrapped to the inner command. A known
+  boolean flag (`npx --yes jest`, `uv run --no-sync pytest`) is skipped, and any
+  other wrapper option consumes the following token as its value (`uv run --with
+  pytest pytest`, `uv run --env-file .env pytest`), so an option's value is never
+  read as the command and a non-test cannot pose as a passed test.
 - Shell commands (`run --shell`) run through bash with `pipefail` set, so a
   pipeline's exit status reflects its first failing stage rather than only the
-  last. A recognized check in a pipeline (`run --shell "pytest | tee out"`) is
-  therefore honest: it counts as a passed verification only when every stage, the
-  check included, succeeded. Where bash is unavailable, `pipefail` cannot be
-  guaranteed, so such a pipeline is kept as a command with a warning instead.
+  last. A recognized check in a pipeline (`run --shell "pytest | tee out"`), or
+  one that follows setup (`cd pkg && pytest | tee out`), is therefore honest: it
+  counts as a passed verification only when every stage, the check included,
+  succeeded. A command whose exit code cannot be trusted for the check, an
+  unreliable pipeline (no bash for `pipefail`) or one using `||`, `;`, or
+  backgrounding, is recorded as a command but not counted as a verification.
 - The session title and warning messages are redacted before reaching disk, the
   same as command output. Auto-start redacts the full command before truncating
   it, so a secret cannot survive truncation into the title.

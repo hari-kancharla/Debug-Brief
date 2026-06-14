@@ -154,6 +154,33 @@ def test_setup_prefixed_pipeline_is_still_warned():
     assert filters.shell_pipeline_suppressed_check("cd pkg && echo hi | tee out", True, False) is False
 
 
+def test_setup_prefixed_pipeline_is_classified_when_reliable():
+    # Under pipefail the whole pipeline's exit is trustworthy, so a check that
+    # follows setup is classified, not dropped: exit 0 means every stage passed.
+    cmd = "cd packages/api && pytest | tee out"
+    c = filters.classify_command(cmd, exit_code=0, use_shell=True, pipefail=True)
+    assert c.tool == "pytest" and c.is_test is True and c.is_verification is True
+    # A failure anywhere in the reliable pipeline is not a passed verification.
+    cf = filters.classify_command(cmd, exit_code=1, use_shell=True, pipefail=True)
+    assert cf.is_verification is False
+    # Without pipefail the same pipeline stays unclassified (and is warned about).
+    cu = filters.classify_command(cmd, exit_code=0, use_shell=True, pipefail=False)
+    assert cu.tool is None and cu.is_verification is False
+
+
+def test_failure_masking_operators_are_not_classified_as_passes():
+    # `|| true` and `; echo` let the command exit 0 even when the check failed, so
+    # the check must NOT be auto-classified as a passed verification.
+    for cmd in ("pytest || true", "pytest; echo done", "pytest & echo bg"):
+        c = filters.classify_command(cmd, exit_code=0, use_shell=True, pipefail=True)
+        assert c.is_verification is False and c.tool is None, cmd
+    # --verify on an unreliable pipeline is still never a verification.
+    c = filters.classify_command(
+        "pytest | tee out", exit_code=0, use_shell=True, pipefail=False, force_verification=True
+    )
+    assert c.is_verification is False and c.tool is None
+
+
 def test_classify_unknown_command():
     cls = filters.classify_command("echo hello", exit_code=0)
     assert cls.is_test is False

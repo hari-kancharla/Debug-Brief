@@ -140,9 +140,19 @@ class SessionManager:
             },
         )
 
-    def _clear_command_lease(self) -> None:
+    def _clear_command_lease(self) -> bool:
+        """Remove the lease file; return True if it is gone afterward.
+
+        Also removes an (empty) directory planted at the lease path. A non-empty
+        directory or other stubborn entry cannot be removed and returns False, so
+        callers report an actionable error instead of claiming success.
+        """
+        path = self.paths.active_command_file
         with contextlib.suppress(OSError):
-            self.paths.active_command_file.unlink()
+            path.unlink()
+        with contextlib.suppress(OSError):
+            os.rmdir(path)
+        return not path.exists()
 
     def _clear_command_lease_if(self, command_id: str) -> None:
         """Remove the lease only when it belongs to ``command_id``.
@@ -234,6 +244,12 @@ class SessionManager:
         command_id = uuid.uuid4().hex
         with self._repo_lock():
             self._reap_stale_lease()
+            # If a non-regular lease (e.g. a directory) could not be reaped, refuse
+            # with a clear message rather than crash when atomic_write_json later
+            # tries to replace it.
+            _require_regular_or_absent(
+                self.paths.active_command_file, ".debugbrief/active_command.json"
+            )
             session = self.require_active("run a command")
             lock_fd = self._open_command_lock()
             try:
@@ -617,8 +633,13 @@ class SessionManager:
                 if self._command_is_active():
                     result["lease"] = "live"
                 else:
-                    result["lease"] = "cleared_stale"
                     self._recover_stale_lease()
+                    # Only claim cleared if the lease is actually gone; a stubborn
+                    # entry (e.g. a non-empty directory) is reported, not hidden.
+                    if self.paths.active_command_file.exists():
+                        result["lease"] = "unclearable"
+                    else:
+                        result["lease"] = "cleared_stale"
 
             if self.has_active():
                 try:

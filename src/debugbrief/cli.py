@@ -707,6 +707,11 @@ def cmd_recover(args: argparse.Namespace) -> int:
             "Cleared a stale command lease (its process had exited); the session "
             "was preserved."
         )
+    elif lease == "unclearable":
+        print(
+            "A stale command lease could not be removed (it may be a directory). "
+            "Remove .debugbrief/active_command.json manually."
+        )
     action = result["action"]
     if action == "healthy":
         print(f"Active session is healthy, nothing to recover: {result['detail']}")

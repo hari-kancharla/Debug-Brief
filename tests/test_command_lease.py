@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from debugbrief.paths import ProjectPaths
+from debugbrief.paths import ProjectPaths, UnsafeStateDirectory
 from debugbrief.session_manager import SessionError, SessionManager
 
 PY = sys.executable
@@ -98,6 +98,20 @@ def test_recover_does_not_warn_when_the_command_was_already_recorded(manager, tm
     assert len(final.command_events()) == 1
     # The result was recorded, so recovery must NOT claim the command was lost.
     assert not any("did not finish" in w for w in final.warnings)
+
+
+def test_recover_reports_an_unclearable_directory_lease(manager, tmp_path):
+    manager.start("t")
+    # A non-empty directory at the lease path can be neither unlinked nor rmdir'd.
+    manager.paths.active_command_file.mkdir()
+    (manager.paths.active_command_file / "junk").write_text("x", encoding="utf-8")
+
+    result = manager.recover()
+    assert result["lease"] == "unclearable"  # not falsely claimed cleared
+    assert manager.paths.active_command_file.is_dir()  # still there
+    # A subsequent run refuses cleanly instead of crashing in atomic_write_json.
+    with pytest.raises(UnsafeStateDirectory), manager.command_lease("x", str(tmp_path)):
+        pass
 
 
 def test_recover_creates_no_state_when_nothing_exists(manager):

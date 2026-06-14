@@ -399,9 +399,10 @@ def test_terminal_size_is_positive():
     assert rows > 0 and cols > 0
 
 
-def test_concurrent_runs_all_persist(tmp_path):
-    # Two terminals recording commands at once must not lose an event; the
-    # per-repository lock serializes the read-modify-write.
+def test_concurrent_runs_are_serialized_without_event_loss(tmp_path):
+    # The active-command lease lets only one captured command run at a time:
+    # overlapping runs are rejected (exit 1), never recorded twice or lost. Every
+    # run that succeeded must appear exactly once, in a valid session file.
     import json
 
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
@@ -416,12 +417,17 @@ def test_concurrent_runs_all_persist(tmp_path):
         )
         for i in range(6)
     ]
-    for p in procs:
-        p.wait(timeout=30)
+    codes = [p.wait(timeout=30) for p in procs]
+    succeeded = codes.count(0)
     session_file = next((tmp_path / ".debugbrief" / "sessions").glob("*.json"))
     events = json.loads(session_file.read_text())["events"]
     commands = [e for e in events if e["type"] == "command"]
-    assert len(commands) == 6, f"a concurrent event was lost: {len(commands)}/6"
+    command_ids = [e["data"].get("command_id") for e in commands]
+
+    assert succeeded >= 1  # at least one run got the lease and completed
+    assert all(code in (0, 1) for code in codes)  # the rest were rejected, not crashed
+    assert len(commands) == succeeded  # no event lost, none recorded for a reject
+    assert len(set(command_ids)) == len(command_ids)  # unique ids: no overwrite/dup
 
 
 def test_real_sigint_records_interrupted_and_kills_child(tmp_path):

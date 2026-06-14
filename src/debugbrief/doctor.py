@@ -17,8 +17,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from . import git_utils
-from .paths import DEBUGBRIEF_DIRNAME, ProjectPaths, ensure_local_ignore
+from . import config, git_utils
+from .paths import (
+    DEBUGBRIEF_DIRNAME,
+    ProjectPaths,
+    UnsafeStateDirectory,
+    ensure_local_ignore,
+)
 from .utils import is_supported_platform, read_json
 
 PASS = "PASS"
@@ -71,9 +76,18 @@ def _exclude_has_entry(paths: ProjectPaths) -> Optional[bool]:
 def run_doctor(paths: ProjectPaths, fix: bool = False) -> DoctorReport:
     checks: List[CheckResult] = []
 
+    # Reject a symlinked or non-directory state path up-front so neither --fix nor
+    # the later checks follow it.
+    state_dirs_safe = True
+    try:
+        paths.assert_state_dirs_safe()
+    except UnsafeStateDirectory as exc:
+        state_dirs_safe = False
+        checks.append(CheckResult(FAIL, "State directory", str(exc)))
+
     # Optional safe fixes applied up-front so subsequent checks reflect them.
     fix_notes: List[str] = []
-    if fix:
+    if fix and state_dirs_safe:
         try:
             paths.ensure_directories()
             fix_notes.append("ensured .debugbrief/ directories exist")
@@ -210,7 +224,22 @@ def run_doctor(paths: ProjectPaths, fix: bool = False) -> DoctorReport:
             )
         )
 
-    # 14. Experimental shell mode
+    # 14. Optional project config (.debugbrief.toml)
+    cfg_error = config.parse_error(paths.project_root)
+    if cfg_error is None:
+        checks.append(
+            CheckResult(PASS, "Project config", ".debugbrief.toml is valid or absent")
+        )
+    else:
+        checks.append(
+            CheckResult(
+                WARN,
+                "Project config",
+                f"{cfg_error}; its defaults are not applied. Fix the TOML to use it.",
+            )
+        )
+
+    # 15. Experimental shell mode
     checks.append(
         CheckResult(
             PASS,

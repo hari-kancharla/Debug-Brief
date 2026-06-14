@@ -146,6 +146,9 @@ class CommandData:
     # Directory the command actually ran in (the user's cwd). Used to tell apart
     # same-named checks run in different directories. None for older sessions.
     invocation_cwd: Optional[str] = None
+    # Unique id for this captured command, so a retried persistence cannot append
+    # the same result twice. None for older sessions.
+    command_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -164,6 +167,7 @@ class CommandData:
             "git_head": self.git_head,
             "git_changed_files": list(self.git_changed_files),
             "invocation_cwd": self.invocation_cwd,
+            "command_id": self.command_id,
         }
 
     @classmethod
@@ -186,6 +190,7 @@ class CommandData:
             git_head=data.get("git_head"),
             git_changed_files=list(data.get("git_changed_files", [])),
             invocation_cwd=data.get("invocation_cwd"),
+            command_id=data.get("command_id"),
         )
 
 

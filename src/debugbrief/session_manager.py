@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import os
+import uuid
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from . import git_utils
@@ -23,7 +24,7 @@ from .models import (
     Session,
     SessionStatus,
 )
-from .paths import ProjectPaths
+from .paths import ProjectPaths, UnsafeStateDirectory
 from .redaction import redact_text
 from .utils import atomic_write_json, now_iso8601, read_json
 
@@ -46,8 +47,19 @@ class SessionManager:
         per-repository lock file makes the load-append-save atomic. The lock is
         held only around that quick persistence step, never while a command runs.
         """
+        self.paths.assert_state_dirs_safe()
         self.paths.base_dir.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(self.paths.base_dir / ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
+        lock_path = self.paths.base_dir / ".lock"
+        # Refuse a symlinked lock file: O_NOFOLLOW rejects it at open() where the
+        # platform supports it, and the explicit lstat check (Path.is_symlink)
+        # gives a clear message everywhere else.
+        if lock_path.is_symlink():
+            raise UnsafeStateDirectory(
+                f"{lock_path} is a symlink; DebugBrief refuses to follow it. "
+                "Remove it to recover."
+            )
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(str(lock_path), flags, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             yield
@@ -55,6 +67,123 @@ class SessionManager:
             with contextlib.suppress(OSError):
                 fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
+
+    # Active-command lease ----------------------------------------------------
+    # A running command holds an exclusive flock on .debugbrief/.command.lock for
+    # its entire lifetime, alongside readable metadata in active_command.json. The
+    # OS releases the flock automatically if the process dies, so a crash never
+    # wedges the lease and stale detection needs no PID probing.
+    def _open_command_lock(self) -> int:
+        lock_path = self.paths.command_lock_file
+        if lock_path.is_symlink():
+            raise UnsafeStateDirectory(
+                f"{lock_path} is a symlink; DebugBrief refuses to follow it. "
+                "Remove it to recover."
+            )
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        return os.open(str(lock_path), flags, 0o600)
+
+    def _command_is_active(self) -> bool:
+        """True only if a live process currently holds the command lock."""
+        lock_path = self.paths.command_lock_file
+        if not lock_path.exists() or lock_path.is_symlink():
+            return False
+        try:
+            fd = os.open(str(lock_path), os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+        except OSError:
+            return False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True  # another live process holds it
+        else:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return False
+        finally:
+            os.close(fd)
+
+    def _write_command_lease(
+        self, session: Session, command_id: str, preview: str, invocation_cwd: str
+    ) -> None:
+        redacted_preview, _ = redact_text(preview or "")
+        atomic_write_json(
+            self.paths.active_command_file,
+            {
+                "schema_version": 1,
+                "session_id": session.session_id,
+                "command_id": command_id,
+                "command_preview": redacted_preview[:200],
+                "invocation_cwd": str(invocation_cwd),
+                "pid": os.getpid(),
+                "started_at": now_iso8601(),
+            },
+        )
+
+    def _clear_command_lease(self) -> None:
+        with contextlib.suppress(OSError):
+            self.paths.active_command_file.unlink()
+
+    def _recover_stale_lease(self) -> None:
+        """Warn the session named in a stale lease, then clear the lease.
+
+        The owning process is gone, so its command never recorded a result. The
+        session keeps all its data; only a (redacted) warning is added so the
+        report admits the gap. Called under the repo lock.
+        """
+        try:
+            meta = read_json(self.paths.active_command_file)
+        except (ValueError, OSError):
+            meta = {}
+        session_id = meta.get("session_id") if isinstance(meta, dict) else None
+        preview = meta.get("command_preview", "") if isinstance(meta, dict) else ""
+        if session_id and self.paths.session_file(session_id).exists():
+            with contextlib.suppress(SessionError):
+                session = self.load_session_file(session_id)
+                # add_warning redacts, so even an unredacted preview is safe here.
+                session.add_warning(
+                    "A captured command did not finish (its process ended before "
+                    f"recording a result): {preview}".strip(),
+                    now_iso8601(),
+                )
+                self.save_session(session)
+        self._clear_command_lease()
+
+    @contextlib.contextmanager
+    def command_lease(
+        self, command_preview: str, invocation_cwd: str
+    ) -> Iterator[str]:
+        """Hold an exclusive command lease for the lifetime of one command.
+
+        Under the repo lock it refuses a second concurrent command, takes the
+        command lock (held until the command finishes, so ``end``/``cancel``/a
+        second ``run`` see it), and writes the readable lease. The repo lock is
+        released while the command runs. On exit the lease is cleared and the
+        lock released; a crash lets the OS release the lock for us. Yields a
+        unique command id so the result is appended exactly once.
+        """
+        command_id = uuid.uuid4().hex
+        with self._repo_lock():
+            session = self.require_active("run a command")
+            lock_fd = self._open_command_lock()
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                os.close(lock_fd)
+                raise SessionError(
+                    "A captured command is already running in this project. Wait "
+                    "for it to finish before running another."
+                ) from exc
+            self._write_command_lease(
+                session, command_id, command_preview, invocation_cwd
+            )
+        try:
+            yield command_id
+        finally:
+            with contextlib.suppress(Exception), self._repo_lock():
+                self._clear_command_lease()
+            with contextlib.suppress(OSError):
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
 
     # Active-pointer handling -------------------------------------------------
     def _read_active_pointer(self) -> Optional[Dict[str, Any]]:
@@ -148,15 +277,6 @@ class SessionManager:
 
     # Lifecycle ---------------------------------------------------------------
     def start(self, title: str) -> Session:
-        if self.has_active():
-            existing = self._read_active_pointer() or {}
-            raise SessionError(
-                "A DebugBrief session is already active"
-                + (f" ({existing.get('title')!r})." if existing.get("title") else ".")
-                + " End it with: debugbrief end --mode pr|handoff|incident, "
-                "or check it with: debugbrief status"
-            )
-
         clean_title = title.strip()
         if not clean_title:
             raise SessionError("Session title must not be empty.")
@@ -165,36 +285,48 @@ class SessionManager:
         # session file and the active pointer, the same as command output.
         clean_title, _ = redact_text(clean_title)
 
-        self.paths.ensure_directories()
-        git_state = git_utils.capture_state(self.paths.project_root, initial=True)
-        if git_state.is_repo:
-            # Baseline of files already changed before the session, so the final
-            # report counts only what the session actually changed.
-            git_state.initial_dirty = git_utils.working_tree_fingerprints(
-                self.paths.project_root
+        # Decide and create under the repo lock so two simultaneous starts cannot
+        # both pass the "already active" check and create two active sessions.
+        with self._repo_lock():
+            if self.has_active():
+                existing = self._read_active_pointer() or {}
+                raise SessionError(
+                    "A DebugBrief session is already active"
+                    + (f" ({existing.get('title')!r})." if existing.get("title") else ".")
+                    + " End it with: debugbrief end --mode pr|handoff|incident, "
+                    "or check it with: debugbrief status"
+                )
+
+            self.paths.ensure_directories()
+            git_state = git_utils.capture_state(self.paths.project_root, initial=True)
+            if git_state.is_repo:
+                # Baseline of files already changed before the session, so the
+                # final report counts only what the session actually changed.
+                git_state.initial_dirty = git_utils.working_tree_fingerprints(
+                    self.paths.project_root
+                )
+
+            session = Session(
+                title=clean_title,
+                project_root=str(self.paths.project_root),
+                git=git_state,
+            )
+            session.timestamps.start = now_iso8601()
+
+            # Record an initial snapshot event for an honest timeline.
+            session.events.append(
+                Event.snapshot(
+                    {
+                        "phase": "start",
+                        "git": git_state.to_dict(),
+                    },
+                    session.timestamps.start,
+                )
             )
 
-        session = Session(
-            title=clean_title,
-            project_root=str(self.paths.project_root),
-            git=git_state,
-        )
-        session.timestamps.start = now_iso8601()
-
-        # Record an initial snapshot event for an honest timeline.
-        session.events.append(
-            Event.snapshot(
-                {
-                    "phase": "start",
-                    "git": git_state.to_dict(),
-                },
-                session.timestamps.start,
-            )
-        )
-
-        self.save_session(session)
-        self._write_active_pointer(session)
-        return session
+            self.save_session(session)
+            self._write_active_pointer(session)
+            return session
 
     def auto_start(self, seed_text: str) -> Session:
         """Start a session with a title derived from the time and ``seed_text``.
@@ -237,7 +369,9 @@ class SessionManager:
             self._write_active_pointer(session)
             return session
 
-    def record_command(self, result: RunResult) -> Session:
+    def record_command(
+        self, result: RunResult, command_id: Optional[str] = None
+    ) -> Session:
         # Lightweight git snapshot at the moment of the command, taken outside
         # the lock since it only reads the working tree, so reports can later
         # correlate file changes. Safe and silent outside a repo.
@@ -245,8 +379,16 @@ class SessionManager:
             cwd = self.paths.project_root
             result.command_data.git_head = git_utils.current_short_sha(cwd)
             result.command_data.git_changed_files = git_utils.changed_files(cwd)
+        result.command_data.command_id = command_id
         with self._repo_lock():
             session = self.require_active("run a command")
+            # Idempotent on command_id: a retried persistence after a partial
+            # failure must not append the same result twice.
+            if command_id is not None and any(
+                CommandData.from_dict(event.data).command_id == command_id
+                for event in session.command_events()
+            ):
+                return session
             session.events.append(
                 Event.command(result.command_data, result.command_data.started_at)
             )
@@ -270,6 +412,11 @@ class SessionManager:
         from .utils import write_text
 
         with self._repo_lock():
+            if self._command_is_active():
+                raise SessionError(
+                    "A captured command is still running; wait for it to finish "
+                    "before ending the session."
+                )
             session = self.require_active("end the session")
 
             # Capture final Git state, preserving the initial SHA.
@@ -341,12 +488,18 @@ class SessionManager:
         The session file is kept on disk with status ABANDONED, so nothing is
         silently deleted; it simply never becomes a brief.
         """
-        session = self.require_active("cancel the session")
-        session.status = SessionStatus.ABANDONED.value
-        session.timestamps.end = now_iso8601()
-        self.save_session(session)
-        self._clear_active_pointer()
-        return session
+        with self._repo_lock():
+            if self._command_is_active():
+                raise SessionError(
+                    "A captured command is still running; wait for it to finish "
+                    "before cancelling the session."
+                )
+            session = self.require_active("cancel the session")
+            session.status = SessionStatus.ABANDONED.value
+            session.timestamps.end = now_iso8601()
+            self.save_session(session)
+            self._clear_active_pointer()
+            return session
 
     def recover(self) -> Dict[str, Any]:
         """Repair a broken or stale active-session pointer; report corrupt files.
@@ -357,22 +510,38 @@ class SessionManager:
         session can start. Corrupt historical session files are reported, never
         deleted, so nothing is lost silently.
         """
-        result: Dict[str, Any] = {"action": "none", "detail": "", "corrupt": []}
-        if self.has_active():
-            try:
-                session = self.load_active()
-            except SessionError as exc:
-                self._clear_active_pointer()
-                result["action"] = "cleared_broken_pointer"
-                result["detail"] = str(exc)
-            else:
-                if session is not None and session.status == SessionStatus.ACTIVE.value:
-                    result["action"] = "healthy"
-                    result["detail"] = session.title
+        result: Dict[str, Any] = {
+            "action": "none", "detail": "", "corrupt": [], "lease": "none"
+        }
+        with self._repo_lock():
+            # Command lease first: a live one (lock still held by its process) is
+            # left untouched; a stale one (owner gone) is warned about on its
+            # session and cleared, never touching session data.
+            if self.paths.active_command_file.exists():
+                if self._command_is_active():
+                    result["lease"] = "live"
                 else:
+                    result["lease"] = "cleared_stale"
+                    self._recover_stale_lease()
+
+            if self.has_active():
+                try:
+                    session = self.load_active()
+                except SessionError as exc:
                     self._clear_active_pointer()
-                    result["action"] = "cleared_stale_pointer"
-                    result["detail"] = session.status if session else "unknown"
+                    result["action"] = "cleared_broken_pointer"
+                    result["detail"] = str(exc)
+                else:
+                    if (
+                        session is not None
+                        and session.status == SessionStatus.ACTIVE.value
+                    ):
+                        result["action"] = "healthy"
+                        result["detail"] = session.title
+                    else:
+                        self._clear_active_pointer()
+                        result["action"] = "cleared_stale_pointer"
+                        result["detail"] = session.status if session else "unknown"
 
         sessions_dir = self.paths.sessions_dir
         if sessions_dir.is_dir():

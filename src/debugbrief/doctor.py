@@ -76,18 +76,26 @@ def _exclude_has_entry(paths: ProjectPaths) -> Optional[bool]:
 def run_doctor(paths: ProjectPaths, fix: bool = False) -> DoctorReport:
     checks: List[CheckResult] = []
 
-    # Reject a symlinked or non-directory state path up-front so neither --fix nor
-    # the later checks follow it.
-    state_dirs_safe = True
+    # Reject a symlinked or non-directory state path up-front. If unsafe, report
+    # the failure and stop: the remaining checks read .debugbrief, and continuing
+    # would follow the very symlink we are refusing.
     try:
         paths.assert_state_dirs_safe()
     except UnsafeStateDirectory as exc:
-        state_dirs_safe = False
         checks.append(CheckResult(FAIL, "State directory", str(exc)))
+        checks.append(
+            CheckResult(
+                FAIL,
+                "Remaining checks",
+                "skipped; refusing to read through an unsafe .debugbrief path.",
+            )
+        )
+        exit_code, summary = _overall(checks)
+        return DoctorReport(checks=checks, exit_code=exit_code, summary=summary)
 
     # Optional safe fixes applied up-front so subsequent checks reflect them.
     fix_notes: List[str] = []
-    if fix and state_dirs_safe:
+    if fix:
         try:
             paths.ensure_directories()
             fix_notes.append("ensured .debugbrief/ directories exist")

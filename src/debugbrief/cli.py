@@ -741,6 +741,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 def cmd_last(args: argparse.Namespace) -> int:
     paths = resolve_project_paths()
+    paths.assert_state_dirs_safe()  # refuse a symlinked .debugbrief before reading
     report_path = latest_report(paths.reports_dir)
     if report_path is None:
         eprint(
@@ -761,6 +762,7 @@ def cmd_last(args: argparse.Namespace) -> int:
 
 def cmd_open(args: argparse.Namespace) -> int:
     paths = resolve_project_paths()
+    paths.assert_state_dirs_safe()  # refuse a symlinked .debugbrief before reading
 
     target: Optional[Path]
     if args.path:

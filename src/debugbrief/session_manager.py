@@ -264,6 +264,9 @@ class SessionManager:
 
     # Active-pointer handling -------------------------------------------------
     def _read_active_pointer(self) -> Optional[Dict[str, Any]]:
+        # Validate the state directories before any read, so a symlinked
+        # .debugbrief is refused on read-only commands too, not only mutations.
+        self.paths.assert_state_dirs_safe()
         pointer_path = self.paths.active_session_file
         if not pointer_path.exists():
             return None
@@ -318,6 +321,9 @@ class SessionManager:
         )
 
     def load_session_file(self, session_id: str) -> Session:
+        self.paths.assert_state_dirs_safe()
+        if not _is_valid_session_id(session_id):
+            raise SessionError(f"Invalid session id {session_id!r}.")
         path = self.paths.session_file(session_id)
         if not path.exists():
             raise SessionError(f"Session file not found for id {session_id}.")

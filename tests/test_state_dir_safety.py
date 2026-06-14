@@ -57,6 +57,26 @@ def test_non_directory_base_is_rejected(tmp_path):
         _paths(tmp_path).assert_state_dirs_safe()
 
 
+def test_read_commands_refuse_a_symlinked_base_dir(tmp_path):
+    # Read-only paths must validate too, not only mutations: a project whose
+    # .debugbrief is a symlink elsewhere must be refused on list/show/status.
+    from debugbrief.sessions_index import load_all_sessions
+
+    real = tmp_path / "real_project"
+    real.mkdir()
+    SessionManager(_paths(real)).start("t")  # creates real/.debugbrief
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".debugbrief").symlink_to(real / ".debugbrief")
+    proj_paths = _paths(proj)
+
+    with pytest.raises(UnsafeStateDirectory):
+        load_all_sessions(proj_paths)
+    with pytest.raises(UnsafeStateDirectory):
+        SessionManager(proj_paths).build_status()
+
+
 def test_symlinked_lock_file_is_rejected(tmp_path):
     paths = _paths(tmp_path)
     manager = SessionManager(paths)

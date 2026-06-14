@@ -30,6 +30,7 @@ def load_all_sessions(paths: ProjectPaths) -> List[Session]:
     Unreadable session files are skipped silently so a single corrupt file
     cannot break listing.
     """
+    paths.assert_state_dirs_safe()  # refuse a symlinked .debugbrief on read too
     sessions_dir = paths.sessions_dir
     if not sessions_dir.is_dir():
         return []

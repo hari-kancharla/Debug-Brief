@@ -24,7 +24,7 @@ from .paths import (
     UnsafeStateDirectory,
     ensure_local_ignore,
 )
-from .utils import is_supported_platform, read_json
+from .utils import is_regular_file, is_supported_platform, read_json_safe
 
 PASS = "PASS"
 WARN = "WARN"
@@ -275,12 +275,22 @@ def _active_session_checks(
         )
         return
 
-    # 9. exists
+    # 9. exists and is a regular file (never follow a symlink / block on a FIFO)
+    if not is_regular_file(pointer_path):
+        checks.append(
+            CheckResult(
+                FAIL,
+                "Active session",
+                "active_session.json is not a regular file (symlink or special); "
+                "remove it to recover.",
+            )
+        )
+        return
     checks.append(CheckResult(PASS, "Active session", "active_session.json exists"))
 
-    # 10. valid JSON
+    # 10. valid JSON (read through the safe reader)
     try:
-        pointer = read_json(pointer_path)
+        pointer = read_json_safe(pointer_path)
     except (ValueError, OSError) as exc:
         checks.append(
             CheckResult(
@@ -315,9 +325,18 @@ def _active_session_checks(
             )
         )
         return
+    if not is_regular_file(session_file):
+        checks.append(
+            CheckResult(
+                FAIL,
+                "Session integrity",
+                "session file is not a regular file (symlink or special).",
+            )
+        )
+        return
 
     try:
-        session_data = read_json(session_file)
+        session_data = read_json_safe(session_file)
     except (ValueError, OSError) as exc:
         checks.append(
             CheckResult(

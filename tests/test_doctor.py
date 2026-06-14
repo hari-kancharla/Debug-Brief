@@ -95,3 +95,28 @@ def test_doctor_fix_creates_dirs_and_ignore(git_paths):
     assert git_paths.reports_dir.is_dir()
     exclude = git_paths.repo_root / ".git" / "info" / "exclude"
     assert ".debugbrief/" in exclude.read_text(encoding="utf-8")
+
+
+import os  # noqa: E402
+import sys  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink/FIFO")
+def test_doctor_rejects_symlinked_active_session_pointer(nogit_paths, tmp_path):
+    nogit_paths.ensure_directories()
+    external = tmp_path / "outside.json"
+    external.write_text('{"session_id": "abc"}', encoding="utf-8")
+    nogit_paths.active_session_file.symlink_to(external)
+    report = run_doctor(nogit_paths)  # must not follow the link
+    active = _find(report.checks, "Active session")
+    assert active.level == FAIL and "not a regular file" in active.detail
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX FIFO")
+def test_doctor_does_not_block_on_a_fifo_pointer(nogit_paths):
+    nogit_paths.ensure_directories()
+    os.mkfifo(nogit_paths.active_session_file)
+    report = run_doctor(nogit_paths)  # must return, not block on the FIFO
+    assert _find(report.checks, "Active session").level == FAIL

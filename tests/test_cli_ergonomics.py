@@ -84,6 +84,9 @@ def test_redo_refuses_redacted_command(paths, capsys):
     assert "cannot be re-run" in capsys.readouterr().err
     # No new command event was recorded.
     assert len(_active_session(paths).command_events()) == 1
+    # redo acquired the lease then returned early; the lease must be cleared, not
+    # left behind to look like a crashed command.
+    assert not paths.active_command_file.exists()
 
 
 def test_redo_keeps_original_shell_mode(paths):

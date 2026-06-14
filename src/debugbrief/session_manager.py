@@ -278,9 +278,19 @@ class SessionManager:
             self._write_command_lease(
                 session, command_id, command_preview, invocation_cwd
             )
+        clean_exit = False
         try:
             yield command_id
+            clean_exit = True
         finally:
+            # On a clean exit, clear the lease for this command: if a result was
+            # recorded, record_command already cleared it; if the body returned
+            # early without running (e.g. redo of a redacted command), clear it so
+            # it is not mistaken for a crashed command. On an exception (a failed
+            # persistence), leave the lease so recover can report the lost result.
+            if clean_exit:
+                with contextlib.suppress(Exception), self._repo_lock():
+                    self._clear_command_lease_if(command_id)
             with contextlib.suppress(OSError):
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
             os.close(lock_fd)

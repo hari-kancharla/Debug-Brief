@@ -257,14 +257,22 @@ def _leading_int(text: str) -> int:
 
 
 def _file_fingerprint(cwd: Path, path: str, deleted: bool) -> str:
-    """A content fingerprint for a working-tree file (sentinel if gone)."""
+    """A content fingerprint for a working-tree file (sentinel if gone).
+
+    Hashes the file in fixed-size chunks rather than reading it whole, so a
+    large dirty file (a build artifact, a dataset, a log) cannot spike memory
+    when the baseline is captured at session start or compared at session end.
+    """
     if deleted:
         return "<deleted>"
+    digest = hashlib.sha256()
     try:
-        data = (Path(cwd) / path).read_bytes()
+        with open(Path(cwd) / path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(65536), b""):
+                digest.update(chunk)
     except OSError:
         return "<unreadable>"
-    return hashlib.sha256(data).hexdigest()
+    return digest.hexdigest()
 
 
 def working_tree_fingerprints(cwd: Path) -> Dict[str, str]:

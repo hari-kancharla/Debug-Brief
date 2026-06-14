@@ -106,10 +106,79 @@ def test_classify_anchors_to_executable_not_arguments():
     assert filters.classify_command("npx jest", exit_code=0).tool == "jest"
     # A leading environment assignment is skipped.
     assert filters.classify_command("CI=1 pytest", exit_code=0).tool == "pytest"
-    # A wrapper's own options are skipped before the inner command.
+    # A wrapper's own options are handled: a known boolean flag (--yes, -q,
+    # --no-sync) consumes nothing, and any other long option consumes its value,
+    # so the real command is found either way.
     assert filters.classify_command("uv run --with pytest pytest", 0).tool == "pytest"
-    assert filters.classify_command("npx --yes jest", exit_code=0).tool == "jest"
+    assert filters.classify_command("uv run --project pkgs/api pytest", 0).tool == "pytest"
+    assert filters.classify_command("uv run --no-sync pytest", exit_code=0).tool == "pytest"
     assert filters.classify_command("poetry run -q pytest", exit_code=0).tool == "pytest"
+    assert filters.classify_command("npx --yes jest", exit_code=0).tool == "jest"
+    # An option's value is never mistaken for the command (no false positive).
+    assert filters.classify_command("uv run --with pytest python app.py", 0).tool is None
+    # An unlisted value option consumes its value too, so its value is not read as
+    # the command. --env-file is not in the boolean list: its value is consumed,
+    # the real command surfaces, and a non-test never poses as a passed test.
+    assert filters.classify_command("uv run --env-file .env pytest", 0).tool == "pytest"
+    assert filters.classify_command("uv run --env-file pytest python app.py", 0).tool is None
+
+
+def test_shell_pipeline_honesty():
+    cmd = "pytest -q | tee out.txt"
+    # With pipefail (bash) the exit status is reliable, so the pipeline is
+    # classified normally: exit 0 means the whole pipeline passed.
+    cp = filters.classify_command(cmd, exit_code=0, use_shell=True, pipefail=True)
+    assert cp.tool == "pytest" and cp.is_verification is True
+    # A failing stage under pipefail is correctly a failure, not a pass.
+    cf = filters.classify_command(cmd, exit_code=1, use_shell=True, pipefail=True)
+    assert cf.is_verification is False
+    assert filters.shell_pipeline_suppressed_check(cmd, True, pipefail=True) is False
+    # Without pipefail the exit status is only the last stage's, so a recognized
+    # check in a pipeline is NOT treated as a verification and the runner warns.
+    cu = filters.classify_command(cmd, exit_code=0, use_shell=True, pipefail=False)
+    assert cu.is_verification is False and cu.tool is None and cu.is_test is False
+    assert filters.shell_pipeline_suppressed_check(cmd, True, pipefail=False) is True
+    # Without --shell the "|" is a literal argument, not a pipeline.
+    assert filters.classify_command(cmd, 0).tool == "pytest"
+    # "||" is logical-or, and a quoted "|" is not a pipe.
+    assert filters.shell_pipeline_suppressed_check("pytest || echo done", True, False) is False
+    assert filters.shell_pipeline_suppressed_check("pytest -k 'a | b'", True, False) is False
+
+
+def test_setup_prefixed_pipeline_is_still_warned():
+    # The check is not the first token, but a pipeline without pipefail still
+    # suppresses it -- so the warning must fire rather than drop it silently.
+    for cmd in ("cd packages/api && pytest | tee out", "set -o pipefail; pytest | tee out"):
+        assert filters.shell_pipeline_suppressed_check(cmd, True, pipefail=False) is True
+    # A pipeline with no recognized check anywhere does not warn.
+    assert filters.shell_pipeline_suppressed_check("cd pkg && echo hi | tee out", True, False) is False
+
+
+def test_setup_prefixed_pipeline_is_classified_when_reliable():
+    # Under pipefail the whole pipeline's exit is trustworthy, so a check that
+    # follows setup is classified, not dropped: exit 0 means every stage passed.
+    cmd = "cd packages/api && pytest | tee out"
+    c = filters.classify_command(cmd, exit_code=0, use_shell=True, pipefail=True)
+    assert c.tool == "pytest" and c.is_test is True and c.is_verification is True
+    # A failure anywhere in the reliable pipeline is not a passed verification.
+    cf = filters.classify_command(cmd, exit_code=1, use_shell=True, pipefail=True)
+    assert cf.is_verification is False
+    # Without pipefail the same pipeline stays unclassified (and is warned about).
+    cu = filters.classify_command(cmd, exit_code=0, use_shell=True, pipefail=False)
+    assert cu.tool is None and cu.is_verification is False
+
+
+def test_failure_masking_operators_are_not_classified_as_passes():
+    # `|| true` and `; echo` let the command exit 0 even when the check failed, so
+    # the check must NOT be auto-classified as a passed verification.
+    for cmd in ("pytest || true", "pytest; echo done", "pytest & echo bg"):
+        c = filters.classify_command(cmd, exit_code=0, use_shell=True, pipefail=True)
+        assert c.is_verification is False and c.tool is None, cmd
+    # --verify on an unreliable pipeline is still never a verification.
+    c = filters.classify_command(
+        "pytest | tee out", exit_code=0, use_shell=True, pipefail=False, force_verification=True
+    )
+    assert c.is_verification is False and c.tool is None
 
 
 def test_classify_unknown_command():

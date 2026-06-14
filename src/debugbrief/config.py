@@ -1,9 +1,11 @@
 """Optional per-project configuration from ``.debugbrief.toml``.
 
 Zero-dependency and best effort. Parsed with the standard-library ``tomllib`` on
-Python 3.11+, or a tiny flat-key parser on older versions. Only a small set of
-defaults is supported; anything else is ignored. A missing or malformed file
-never raises, so configuration can never break a command. Supported keys:
+Python 3.11+, falling back to a tiny flat-key parser (also used on older
+versions) when ``tomllib`` reports a syntax error, so behavior is the same on
+every supported Python: recognized keys are read and lines that cannot be parsed
+are skipped. A missing or unreadable file never raises, so configuration can
+never break a command. Supported keys:
 
     default_mode    = "pr" | "handoff" | "incident"   # default for end/preview
     timeout_seconds = <positive integer>              # default for run/redo
@@ -36,27 +38,34 @@ def load_config(project_root: Path) -> Dict[str, Any]:
 def _parse(text: str) -> Dict[str, Any]:
     try:
         import tomllib  # type: ignore[import-not-found]  # Python 3.11+
-
-        return tomllib.loads(text)
     except ModuleNotFoundError:
         return _parse_flat(text)
+    try:
+        return tomllib.loads(text)
     except Exception:
-        # A malformed TOML file is ignored rather than allowed to crash a command.
-        return {}
+        # A TOML syntax error falls back to the lenient flat parser, so behavior
+        # is the same on every supported Python (recognized key = value lines are
+        # read, unparseable lines are skipped) rather than differing by version.
+        return _parse_flat(text)
 
 
 def _parse_flat(text: str) -> Dict[str, Any]:
     """Fallback for Python < 3.11: top-level ``key = value`` scalars only.
 
-    Handles quoted strings, integers, and booleans. Sections, arrays, and
-    inline comments are not understood and are simply skipped, so only the
-    supported scalar keys are ever read.
+    Handles quoted strings, integers, and booleans. Comments are skipped. A
+    ``[section]`` / ``[[array]]`` header stops parsing entirely: in TOML every
+    key after the first table header belongs to that section, so no later key is
+    top-level. Stopping there keeps a sectioned key (``[tool.other]`` then
+    ``timeout_seconds = 1``) from being hoisted to the top level and silently
+    applied, which would otherwise diverge from how ``tomllib`` scopes it.
     """
     result: Dict[str, Any] = {}
     for raw in text.splitlines():
         line = raw.strip()
-        if not line or line.startswith(("#", "[")):
+        if not line or line.startswith("#"):
             continue
+        if line.startswith("["):
+            break
         key, sep, value = line.partition("=")
         key = key.strip()
         value = value.strip()

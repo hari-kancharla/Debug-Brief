@@ -49,6 +49,7 @@ import contextlib
 import os
 import select
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -676,8 +677,21 @@ def run_command(
     err_bounded = _BoundedText(stderr_limit)
 
     popen_args: Union[str, List[str]]
+    popen_shell = False
+    pipefail = False
     if use_shell:
-        popen_args = command
+        bash = shutil.which("bash")
+        if bash is not None:
+            # Run shell commands through bash with pipefail, so a pipeline's exit
+            # status reflects the first failing stage, not only the last. Without
+            # this, a failing `pytest | tee out` would exit 0 (tee's status) and
+            # be recorded as passed; with it, the failure propagates honestly.
+            popen_args = [bash, "-c", "set -o pipefail\n" + command]
+            pipefail = True
+        else:
+            # No bash: fall back to the default shell (no reliable pipefail).
+            popen_args = command
+            popen_shell = True
     else:
         try:
             parsed: List[str] = shlex.split(command)
@@ -694,7 +708,7 @@ def run_command(
         outcome = _Outcome(error_message=error_message)
     else:
         args = (
-            popen_args, command, cwd, use_shell, timeout_seconds, echo,
+            popen_args, command, cwd, popen_shell, timeout_seconds, echo,
             out_bounded, err_bounded,
         )
         try:
@@ -724,7 +738,23 @@ def run_command(
         force_verification=force_verification,
         interrupted=outcome.interrupted,
         broken_pipe=outcome.broken_pipe,
+        use_shell=use_shell,
+        pipefail=pipefail,
     )
+
+    # Only when pipefail is unavailable (no bash) is a pipeline's exit status
+    # unreliable; then a recognized check in a pipeline is not treated as a
+    # verification, and we say so. With pipefail the exit status is trustworthy
+    # and the command is classified normally.
+    warning = outcome.warning
+    if filters.shell_pipeline_suppressed_check(command, use_shell, pipefail):
+        pipeline_warning = (
+            "The command is a shell pipeline and bash (for pipefail) is not "
+            "available, so its exit status reflects only the last stage. It is "
+            "recorded as a command but not treated as a verification; run the "
+            "check without a pipeline for a reliable pass/fail."
+        )
+        warning = f"{warning} {pipeline_warning}".strip() if warning else pipeline_warning
 
     stored_command = command
     redacted = False
@@ -756,5 +786,5 @@ def run_command(
         error_message=outcome.error_message,
         interrupted=outcome.interrupted,
         broken_pipe=outcome.broken_pipe,
-        warning=outcome.warning,
+        warning=warning,
     )

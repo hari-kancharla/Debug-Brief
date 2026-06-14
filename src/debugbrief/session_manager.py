@@ -250,16 +250,14 @@ class SessionManager:
             session.events.append(
                 Event.command(result.command_data, result.command_data.started_at)
             )
-            # Warning text can echo the command or its error output, so it is
-            # scrubbed before being persisted, the same as command output.
+            # add_warning redacts the text, so error/warning messages that echo
+            # the command or its output are scrubbed before they reach disk.
             if result.error_message and (
                 result.errored or result.timed_out or result.interrupted
             ):
-                message, _ = redact_text(result.error_message)
-                session.add_warning(message, now_iso8601())
+                session.add_warning(result.error_message, now_iso8601())
             if result.warning:
-                message, _ = redact_text(result.warning)
-                session.add_warning(message, now_iso8601())
+                session.add_warning(result.warning, now_iso8601())
             self.save_session(session)
             self._write_active_pointer(session)
             return session

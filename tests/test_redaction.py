@@ -10,6 +10,19 @@ from debugbrief.redaction import redact_text
 PY = sys.executable
 
 
+def test_add_warning_redacts_before_persisting():
+    # add_warning is the single choke point, so every persisted warning (from any
+    # caller, including the .git/info/exclude warning) is scrubbed.
+    from debugbrief.models import Session
+
+    session = Session(title="t", project_root="/x")
+    session.add_warning(
+        "could not write exclude: token=ghp_abcdefghij1234567890ABCDEF", "2026-01-01T00:00:00Z"
+    )
+    assert "ghp_abcdefghij1234567890ABCDEF" not in session.warnings[0]
+    assert "[redacted]" in session.warnings[0]
+
+
 def test_redacts_openai_style_key():
     out, n = redact_text("token is sk-abcdEFGH1234567890 ok")
     assert "sk-abcdEFGH" not in out
@@ -100,6 +113,25 @@ def test_sensitive_segments_are_redacted():
         out, n = redact_text(text)
         assert out == expected, f"{text!r} -> {out!r}"
         assert n == 1
+
+
+def test_json_style_quoted_keys_are_redacted():
+    # JSON/dict output is a common shape in captured logs. A quoted key must be
+    # recognized too, not only bare env/shell `key=` / `key:` forms, so a secret
+    # in a JSON value does not slip into a report verbatim.
+    cases = [
+        ('"password": "hunter2"', '"password": "[redacted]"'),
+        ('{"token": "abc123def456"}', '{"token": "[redacted]"}'),
+        ('{"api_key":"abcdef123456"}', '{"api_key":"[redacted]"}'),
+        ("{'secret': 'mypw'}", "{'secret': '[redacted]'}"),
+    ]
+    for text, expected in cases:
+        out, n = redact_text(text)
+        assert out == expected, f"{text!r} -> {out!r}"
+        assert n == 1
+    # A quoted non-sensitive key is still left untouched.
+    out, n = redact_text('"monkey": "banana"')
+    assert out == '"monkey": "banana"' and n == 0
 
 
 def test_stored_event_is_redacted_by_default(tmp_path):

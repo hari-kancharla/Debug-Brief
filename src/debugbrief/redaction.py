@@ -31,11 +31,13 @@ _SENSITIVE_KEY = (
 # The match starts at the token itself; any prefix segments are simply left in
 # place by the replacement. Anchoring at the token instead of lazily scanning
 # the whole key keeps the pass linear on long unbroken text, where the lazy
-# prefix walk was quadratic.
+# prefix walk was quadratic. An optional closing quote before the separator lets
+# a JSON-style quoted key (``"password": "..."``) match, not only the bare
+# ``password=`` / ``password:`` shells and env shapes.
 _SENSITIVE_KEY_NAME = (
     r"(?P<key>(?<![A-Za-z0-9])"
     + _SENSITIVE_KEY
-    + r"(?![A-Za-z0-9])[A-Za-z0-9_.\-]*\s*[:=]\s*)"
+    + r"(?![A-Za-z0-9])[A-Za-z0-9_.\-]*[\"']?\s*[:=]\s*)"
 )
 
 # A redaction replacement is either a literal string or a match-to-string

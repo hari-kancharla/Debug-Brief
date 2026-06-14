@@ -34,6 +34,17 @@ def _init_repo(tmp_path):
     _git(["checkout", "-q", "-b", "main"], tmp_path)
 
 
+def test_working_tree_fingerprints_hash_large_files_correctly(tmp_path):
+    import hashlib
+
+    _init_repo(tmp_path)
+    data = b"abc" * 100000  # ~300 KB, several 64 KB read chunks
+    (tmp_path / "big.bin").write_bytes(data)  # untracked, so a working-tree change
+    fps = git_utils.working_tree_fingerprints(tmp_path)
+    # Chunked hashing must produce the same digest as hashing the whole file.
+    assert fps.get("big.bin") == hashlib.sha256(data).hexdigest()
+
+
 def test_session_changes_reports_edits_after_a_clean_start(tmp_path):
     _init_repo(tmp_path)
     (tmp_path / "a.py").write_text("v1\n", encoding="utf-8")

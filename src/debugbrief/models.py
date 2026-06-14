@@ -309,7 +309,15 @@ class Session:
         return [e for e in self.events if e.type == EventType.NOTE.value]
 
     def add_warning(self, message: str, timestamp: str) -> None:
-        """Record a warning both in the warnings list and the event timeline."""
+        """Record a warning in the warnings list and the event timeline.
+
+        The text is redacted first: a warning can echo a command, an error
+        message, or a path, so a secret must never reach disk through it. This is
+        the single choke point, so every persisted warning is scrubbed.
+        """
+        from .redaction import redact_text
+
+        message, _ = redact_text(message)
         if message not in self.warnings:
             self.warnings.append(message)
         self.events.append(Event.warning(message, timestamp))

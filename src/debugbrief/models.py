@@ -46,6 +46,39 @@ NON_SUCCESS_STATUSES = (
 )
 
 
+def _as_dict(value: Any) -> Dict[str, Any]:
+    """``value`` when it is a dict, otherwise an empty dict.
+
+    Persisted state can be hand-edited, corrupted, or (when ``.debugbrief`` is
+    committed) supplied by a cloned repository. A nested field that should be an
+    object but is null or the wrong type degrades to defaults here instead of
+    raising ``AttributeError`` on a later ``.get``. A structurally broken
+    top-level session file is still rejected by :meth:`Session.from_dict`, so the
+    file is reported as corrupt rather than silently truncated.
+    """
+    return value if isinstance(value, dict) else {}
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    """``value`` as an int, or ``default`` for a missing or unparsable value.
+
+    A leaf number in persisted state degrades to its default rather than raising,
+    so a single bad value cannot crash a consumer reading the record.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(value: Any, default: float = 0.0) -> float:
+    """``value`` as a float, or ``default`` for a missing or unparsable value."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass
 class GitState:
     is_repo: bool = False
@@ -72,6 +105,7 @@ class GitState:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "GitState":
+        data = _as_dict(data)
         return cls(
             is_repo=bool(data.get("is_repo", False)),
             repo_root=data.get("repo_root"),
@@ -93,6 +127,7 @@ class Timestamps:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Timestamps":
+        data = _as_dict(data)
         return cls(start=data.get("start"), end=data.get("end"))
 
 
@@ -113,6 +148,7 @@ class CommandClassification:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CommandClassification":
+        data = _as_dict(data)
         return cls(
             is_test=bool(data.get("is_test", False)),
             is_verification=bool(data.get("is_verification", False)),
@@ -172,11 +208,12 @@ class CommandData:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CommandData":
+        data = _as_dict(data)
         return cls(
             command=data.get("command", ""),
             started_at=data.get("started_at", ""),
             ended_at=data.get("ended_at", ""),
-            duration_seconds=float(data.get("duration_seconds", 0.0)),
+            duration_seconds=_as_float(data.get("duration_seconds"), 0.0),
             exit_code=data.get("exit_code"),
             stdout_preview=data.get("stdout_preview", ""),
             stderr_preview=data.get("stderr_preview", ""),
@@ -205,6 +242,7 @@ class Event:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Event":
+        data = _as_dict(data)
         return cls(
             type=data.get("type", ""),
             timestamp=data.get("timestamp", ""),
@@ -249,6 +287,7 @@ class FileChange:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "FileChange":
+        data = _as_dict(data)
         return cls(status=data.get("status", "M"), path=data.get("path", ""))
 
 
@@ -279,17 +318,18 @@ class Summary:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Summary":
+        data = _as_dict(data)
         return cls(
             modified_files=list(data.get("modified_files", [])),
             file_changes=[
                 FileChange.from_dict(fc) for fc in data.get("file_changes", [])
             ],
-            lines_added=int(data.get("lines_added", 0)),
-            lines_deleted=int(data.get("lines_deleted", 0)),
+            lines_added=_as_int(data.get("lines_added")),
+            lines_deleted=_as_int(data.get("lines_deleted")),
             tests_run=list(data.get("tests_run", [])),
-            notes_count=int(data.get("notes_count", 0)),
-            commands_count=int(data.get("commands_count", 0)),
-            failed_commands_count=int(data.get("failed_commands_count", 0)),
+            notes_count=_as_int(data.get("notes_count")),
+            commands_count=_as_int(data.get("commands_count")),
+            failed_commands_count=_as_int(data.get("failed_commands_count")),
             command_capture_status=data.get("command_capture_status", "full"),
         )
 
@@ -343,14 +383,30 @@ class Session:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Session":
+        # A session file must be a JSON object. Reject anything else (a list,
+        # string, number, or null from a corrupt or hostile file) with a
+        # ValueError the loaders turn into a controlled SessionError, rather than
+        # an AttributeError traceback from calling .get on a non-dict.
+        if not isinstance(data, dict):
+            raise ValueError("session data must be a JSON object")
+        # warnings and events carry the timeline; a non-list here is structural
+        # corruption (a string would silently split into characters), so reject it
+        # rather than load garbage. Leaf values degrade elsewhere; structure does
+        # not.
+        warnings = data.get("warnings", [])
+        if not isinstance(warnings, list):
+            raise ValueError("session 'warnings' must be a list")
+        events = data.get("events", [])
+        if not isinstance(events, list):
+            raise ValueError("session 'events' must be a list")
         return cls(
             session_id=data.get("session_id", str(uuid.uuid4())),
             title=data.get("title", ""),
             status=data.get("status", SessionStatus.ACTIVE.value),
             project_root=data.get("project_root", ""),
-            warnings=list(data.get("warnings", [])),
+            warnings=[str(w) for w in warnings],
             git=GitState.from_dict(data.get("git", {})),
             timestamps=Timestamps.from_dict(data.get("timestamps", {})),
-            events=[Event.from_dict(e) for e in data.get("events", [])],
+            events=[Event.from_dict(e) for e in events],
             summary=Summary.from_dict(data.get("summary", {})),
         )

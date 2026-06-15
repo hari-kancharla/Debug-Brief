@@ -79,6 +79,16 @@ def _as_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _as_list(value: Any) -> List[Any]:
+    """``value`` when it is a list, otherwise an empty list.
+
+    A null or wrong-typed optional collection (e.g. ``"git_changed_files": null``)
+    degrades to empty instead of raising in ``list(None)``, so reading an older
+    or hand-edited record never crashes a consumer.
+    """
+    return value if isinstance(value, list) else []
+
+
 @dataclass
 class GitState:
     is_repo: bool = False
@@ -225,7 +235,7 @@ class CommandData:
             ),
             redacted=bool(data.get("redacted", False)),
             git_head=data.get("git_head"),
-            git_changed_files=list(data.get("git_changed_files", [])),
+            git_changed_files=[str(p) for p in _as_list(data.get("git_changed_files"))],
             invocation_cwd=data.get("invocation_cwd"),
             command_id=data.get("command_id"),
         )
@@ -246,7 +256,9 @@ class Event:
         return cls(
             type=data.get("type", ""),
             timestamp=data.get("timestamp", ""),
-            data=data.get("data", {}) or {},
+            # Guarantee a dict so event.data.get(...) is always safe, even for a
+            # stored payload that is null or the wrong type.
+            data=_as_dict(data.get("data")),
         )
 
     # Convenience constructors -------------------------------------------------

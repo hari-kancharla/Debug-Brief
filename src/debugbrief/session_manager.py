@@ -239,6 +239,21 @@ class SessionManager:
             return sid if is_valid_session_id(sid) else None
         return None
 
+    @staticmethod
+    def _command_recorded(session: Session, command_id: str) -> bool:
+        """True if a command event with this id is already on the session.
+
+        Reads the raw command_id field rather than deserializing each stored
+        command. An older event can carry malformed optional data (e.g. a null
+        list); deserializing it just to compare an id would raise after the
+        just-finished command completed, stranding its result and leaving the
+        lease behind. event.data is always a dict (see Event.from_dict).
+        """
+        return any(
+            event.data.get("command_id") == command_id
+            for event in session.command_events()
+        )
+
     def _reap_stale_lease(self) -> None:
         """Recover a stale lease before a new lease, end, or cancel.
 
@@ -283,9 +298,8 @@ class SessionManager:
         ):
             with contextlib.suppress(SessionError):
                 session = self.load_session_file(session_id)
-                already_recorded = command_id is not None and any(
-                    CommandData.from_dict(event.data).command_id == command_id
-                    for event in session.command_events()
+                already_recorded = command_id is not None and self._command_recorded(
+                    session, command_id
                 )
                 if not already_recorded:
                     # add_warning redacts, so even an unredacted preview is safe.
@@ -614,10 +628,7 @@ class SessionManager:
             # Idempotent on command_id: a retried persistence after a partial
             # failure must not append the same result twice. The result is
             # already on disk, so the lease can be cleared.
-            if command_id is not None and any(
-                CommandData.from_dict(event.data).command_id == command_id
-                for event in session.command_events()
-            ):
+            if command_id is not None and self._command_recorded(session, command_id):
                 self._clear_command_lease_if(command_id)
                 return session
             session.events.append(

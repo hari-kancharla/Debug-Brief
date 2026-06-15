@@ -58,6 +58,35 @@ def _require_regular_or_absent(path: "Any", label: str) -> None:
         )
 
 
+def _open_lock_fd(path: "Any", label: str) -> int:
+    """Open (creating if absent) a lock file, refusing a non-regular target.
+
+    Mirrors the safe state-file reader: ``O_NOFOLLOW`` refuses a symlink at the
+    final component, ``O_NONBLOCK`` avoids blocking on a planted FIFO, and a
+    post-open ``fstat`` closes the race a separate ``lstat`` leaves, so a path
+    swapped to a symlink or FIFO between the check and the open is still rejected.
+    Returns an fd the caller owns and must close.
+    """
+    _require_regular_or_absent(path, label)
+    flags = (
+        os.O_CREAT
+        | os.O_RDWR
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    fd = os.open(str(path), flags, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise UnsafeStateDirectory(
+                f"{label} ({path}) is not a regular file; DebugBrief refuses to "
+                "use it. Remove it to recover."
+            )
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 class SessionManager:
     def __init__(self, paths: ProjectPaths) -> None:
         self.paths = paths
@@ -89,11 +118,10 @@ class SessionManager:
         self.paths.base_dir.mkdir(parents=True, exist_ok=True)
         lock_path = self.paths.base_dir / ".lock"
         # The lock must be a regular file or absent: a symlink could redirect it
-        # and a FIFO could block os.open. O_NOFOLLOW additionally refuses a
-        # symlink at open() where the platform supports it.
-        _require_regular_or_absent(lock_path, ".debugbrief/.lock")
-        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(str(lock_path), flags, 0o600)
+        # and a FIFO could block os.open. _open_lock_fd opens with O_NOFOLLOW and
+        # O_NONBLOCK and confirms the opened descriptor with fstat, closing the
+        # race a separate lstat would leave.
+        fd = _open_lock_fd(lock_path, ".debugbrief/.lock")
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             yield
@@ -108,10 +136,12 @@ class SessionManager:
     # OS releases the flock automatically if the process dies, so a crash never
     # wedges the lease and stale detection needs no PID probing.
     def _open_command_lock(self) -> int:
-        lock_path = self.paths.command_lock_file
-        _require_regular_or_absent(lock_path, ".debugbrief/.command.lock")
-        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
-        return os.open(str(lock_path), flags, 0o600)
+        # O_NOFOLLOW + O_NONBLOCK + a post-open fstat (see _open_lock_fd) reject a
+        # symlink/FIFO planted at the lock path even if it is swapped in after the
+        # lstat, closing the same race already closed for state-file reads.
+        return _open_lock_fd(
+            self.paths.command_lock_file, ".debugbrief/.command.lock"
+        )
 
     def _command_is_active(self) -> bool:
         """True only if a live process currently holds the command lock."""
@@ -122,15 +152,25 @@ class SessionManager:
             return False
         if not stat.S_ISREG(info.st_mode):
             return False  # not a real lock file; _open_command_lock will reject it
+        # O_NOFOLLOW + O_NONBLOCK and a post-open fstat: a path swapped to a
+        # symlink or FIFO after the lstat is rejected rather than followed or
+        # blocked on, matching the safe open used to acquire the lock.
         try:
-            fd = os.open(str(lock_path), os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+            fd = os.open(
+                str(lock_path),
+                os.O_RDWR
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0),
+            )
         except OSError:
             return False
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            return True  # another live process holds it
-        else:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return False  # swapped to a non-regular file; not a live lock
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return True  # another live process holds it
             fcntl.flock(fd, fcntl.LOCK_UN)
             return False
         finally:
@@ -165,7 +205,10 @@ class SessionManager:
             path.unlink()
         with contextlib.suppress(OSError):
             os.rmdir(path)
-        return not path.exists()
+        # lexists, not exists: a dangling symlink that could not be removed is
+        # still an entry at this path, so cleanup must not report success while it
+        # remains (exists() is False for a broken symlink and would lie here).
+        return not os.path.lexists(path)
 
     def _clear_command_lease_if(self, command_id: str) -> None:
         """Remove the lease only when it belongs to ``command_id``.
@@ -374,6 +417,14 @@ class SessionManager:
 
     # Session persistence -----------------------------------------------------
     def save_session(self, session: Session) -> None:
+        # The id becomes a file path under sessions/, so never write through an
+        # unvalidated one: a corrupt or hostile id (e.g. one carrying ../) must be
+        # refused at the write boundary, not allowed to escape the directory.
+        if not is_valid_session_id(session.session_id):
+            raise SessionError(
+                f"Refusing to save a session with an invalid id "
+                f"({session.session_id!r})."
+            )
         self._recompute_counts(session)
         atomic_write_json(
             self.paths.session_file(session.session_id), session.to_dict()
@@ -393,9 +444,21 @@ class SessionManager:
             raise SessionError(f"Session file not found for id {session_id}.")
         try:
             # read_json_safe re-checks with O_NOFOLLOW, closing the lstat race.
-            return Session.from_dict(read_json_safe(path))
-        except (ValueError, OSError) as exc:
+            session = Session.from_dict(read_json_safe(path))
+        except (ValueError, TypeError, OSError) as exc:
             raise SessionError(f"Could not read session {session_id}: {exc}") from exc
+        # Bind the loaded object to the file it was read from. The session_id
+        # embedded in the JSON is otherwise used to build write paths
+        # (save_session, report_file), so a file whose body carries a different or
+        # path-traversing id must be refused, never trusted. The requested id was
+        # validated above, so requiring equality keeps every later write inside
+        # sessions/.
+        if session.session_id != session_id:
+            raise SessionError(
+                f"Session file {session_id} declares a different id "
+                f"({session.session_id!r}); refusing to use it."
+            )
+        return session
 
     def load_active(self) -> Optional[Session]:
         """Return the active Session, or None if no session is active.
@@ -708,8 +771,10 @@ class SessionManager:
                 else:
                     self._recover_stale_lease()
                     # Only claim cleared if the lease is actually gone; a stubborn
-                    # entry (e.g. a non-empty directory) is reported, not hidden.
-                    if self.paths.active_command_file.exists():
+                    # entry (a non-empty directory, or a dangling symlink that
+                    # could not be unlinked) is reported, not hidden. lexists, not
+                    # exists, so a broken symlink still counts as present.
+                    if os.path.lexists(self.paths.active_command_file):
                         result["lease"] = "unclearable"
                     else:
                         result["lease"] = "cleared_stale"

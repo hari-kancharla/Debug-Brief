@@ -351,20 +351,32 @@ def _contains_recognized_check(command: str) -> bool:
 
 
 def _pipefail_disabled(command: str) -> bool:
-    """True if the command turns ``pipefail`` off via ``set +o pipefail``.
+    """True if the command turns ``pipefail`` off via ``set`` or ``shopt``.
 
     The runner enables pipefail for shell commands, but a command can disable it
-    again (``set +o pipefail``, ``set +eo pipefail``). A disabling ``set`` segment
-    makes a later pipeline's exit status unreliable, so reliability must account
-    for it. Only the ``+``-prefixed disabling form counts, not ``set -o pipefail``.
+    again, which makes a later pipeline's exit status unreliable, so reliability
+    must account for it. Two forms disable it:
+
+    - ``set +o pipefail`` (also ``set +eo pipefail``): the ``+``-prefixed form,
+      not ``set -o pipefail`` which enables it;
+    - ``shopt -u -o pipefail``: ``-o`` selects ``set -o`` option names and ``-u``
+      unsets them, so this unsets pipefail (flags may be combined, e.g. ``-uo``).
+      ``shopt -s -o pipefail`` enables it and does not count.
     """
     for segment in _split_shell_segments(command):
         toks = _tokenize(segment)
-        if not toks or os.path.basename(toks[0]) != "set":
+        if not toks:
             continue
-        for i in range(1, len(toks)):
-            prev = toks[i - 1]
-            if toks[i] == "pipefail" and prev.startswith("+") and prev.endswith("o"):
+        name = os.path.basename(toks[0])
+        if name == "set":
+            for i in range(1, len(toks)):
+                prev = toks[i - 1]
+                if toks[i] == "pipefail" and prev.startswith("+") and prev.endswith("o"):
+                    return True
+        elif name == "shopt":
+            flags = "".join(t[1:] for t in toks[1:] if t.startswith("-"))
+            args = [t for t in toks[1:] if not t.startswith("-")]
+            if "u" in flags and "o" in flags and "pipefail" in args:
                 return True
     return False
 

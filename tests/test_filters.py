@@ -210,6 +210,23 @@ def test_masking_and_unreliable_compounds_warn_and_do_not_verify():
         assert _warn(cmd, pipefail, passed=True) is not None, cmd
 
 
+def test_pipefail_disabled_via_shopt_is_not_a_verification():
+    # `shopt -u -o pipefail` disables pipefail exactly like `set +o pipefail`
+    # (-o selects set -o options, -u unsets them; flags may be combined). A
+    # pipeline after it cannot be trusted, so --verify must not record a pass when
+    # a stage failed but the overall exit is 0. `shopt -s -o pipefail` enables it
+    # and must not be mistaken for disabling.
+    assert filters._pipefail_disabled("shopt -u -o pipefail") is True
+    assert filters._pipefail_disabled("shopt -uo pipefail") is True
+    assert filters._pipefail_disabled("shopt -s -o pipefail") is False
+    cmd = "shopt -u -o pipefail && false | true"
+    c = filters.classify_command(
+        cmd, exit_code=0, use_shell=True, pipefail=True, force_verification=True
+    )
+    assert c.is_verification is False and c.tool is None
+    assert _warn(cmd, True, passed=True, force_verification=True) is not None
+
+
 def test_exotic_shell_constructs_are_never_attributed_to_a_tool():
     # Substitutions, backticks, process substitution, subshells, braces, and
     # heredocs must never let a tool name be mistaken for the command that ran, so

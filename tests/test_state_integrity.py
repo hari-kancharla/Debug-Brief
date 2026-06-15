@@ -23,8 +23,13 @@ from pathlib import Path
 import pytest
 
 from debugbrief import cli, git_utils
+from debugbrief.command_runner import run_command
 from debugbrief.models import CommandData, Event, Session
-from debugbrief.paths import ProjectPaths, UnsafeStateDirectory
+from debugbrief.paths import (
+    ProjectPaths,
+    UnsafeStateDirectory,
+    ensure_local_ignore,
+)
 from debugbrief.session_manager import SessionError, SessionManager
 from debugbrief.utils import now_iso8601
 
@@ -311,3 +316,57 @@ def test_clear_command_lease_reports_a_stuck_dangling_symlink(project, monkeypat
     # lexists() catches the lingering symlink that exists() would miss, so the
     # cleanup must not claim success.
     assert mgr._clear_command_lease() is False
+
+
+# A dangling exclude symlink is refused before any write ----------------------
+def test_ensure_local_ignore_refuses_a_dangling_exclude_symlink(tmp_path):
+    _init_repo(tmp_path)
+    info_dir = tmp_path / ".git" / "info"
+    info_dir.mkdir(parents=True, exist_ok=True)
+    escape_target = tmp_path.parent / "debugbrief-exclude-escape.txt"
+    if escape_target.exists():
+        escape_target.unlink()
+    exclude = info_dir / "exclude"
+    if exclude.exists():  # git init writes a default one; replace it
+        exclude.unlink()
+    # A dangling symlink: exists() is False, so an exists()-only guard would be
+    # bypassed and write_text would follow the link, creating a file outside the
+    # repository.
+    exclude.symlink_to(escape_target)
+    paths = ProjectPaths(
+        project_root=tmp_path, is_git_repo=True, repo_root=tmp_path
+    )
+
+    changed, warnings = ensure_local_ignore(paths)
+    assert changed is False
+    assert any("not a regular file" in w for w in warnings)
+    assert not escape_target.exists()  # the write never followed the link out
+
+
+# The idempotency scan tolerates a malformed prior command event --------------
+def test_command_data_coerces_a_null_changed_files_list():
+    command = CommandData.from_dict({"command": "x", "git_changed_files": None})
+    assert command.git_changed_files == []
+
+
+def test_record_command_tolerates_a_prior_malformed_command_event(project, tmp_path):
+    paths, mgr = project
+    session = mgr.start("t")
+    now = now_iso8601()
+    # A prior command event with malformed optional data; deserializing it just
+    # to compare ids would raise. The raw-id scan must skip over it.
+    session.events.append(
+        Event(
+            type="command",
+            timestamp=now,
+            data={"command": "old", "command_id": "old-id", "git_changed_files": None},
+        )
+    )
+    mgr.save_session(session)
+
+    result = run_command(
+        command="true", cwd=tmp_path, use_shell=False, timeout_seconds=30
+    )
+    updated = mgr.record_command(result, command_id="new-id")
+    recorded_ids = [e.data.get("command_id") for e in updated.command_events()]
+    assert "new-id" in recorded_ids  # recorded without choking on the bad event

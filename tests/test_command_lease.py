@@ -13,6 +13,7 @@ path. All are POSIX-only (flock), matching the supported platforms.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -163,6 +164,41 @@ def test_lease_write_failure_releases_the_lock(manager, tmp_path, monkeypatch):
     # The lock was released despite the failure, so a new command can be leased.
     with manager.command_lease("y", str(tmp_path)) as cid:
         assert cid
+
+
+def test_command_pass_fds_exposes_the_lock_during_a_lease(manager, tmp_path):
+    assert manager.command_pass_fds == ()
+    manager.start("t")
+    with manager.command_lease("x", str(tmp_path)):
+        assert len(manager.command_pass_fds) == 1  # the held lock fd, for the child
+    assert manager.command_pass_fds == ()
+
+
+def test_inherited_flock_survives_an_abrupt_parent_fd_close(tmp_path):
+    # The fix relies on a child inheriting the command lock (via pass_fds) keeping
+    # the flock held even if the parent drops its fd without unlocking (a crash).
+    import fcntl
+    import time
+
+    lock = tmp_path / "x.lock"
+    fd = os.open(str(lock), os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    child = subprocess.Popen(
+        [PY, "-c", "import time; time.sleep(5)"], pass_fds=(fd,)
+    )
+    try:
+        os.close(fd)  # parent drops its fd without LOCK_UN, like an abrupt death
+        time.sleep(0.3)
+        probe = os.open(str(lock), os.O_RDWR)
+        try:
+            # The child still holds the inherited lock, so this fails.
+            with pytest.raises(OSError):
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(probe)
+    finally:
+        child.terminate()
+        child.wait(timeout=10)
 
 
 def test_recover_creates_no_state_when_nothing_exists(manager):

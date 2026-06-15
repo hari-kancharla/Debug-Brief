@@ -61,6 +61,19 @@ def _require_regular_or_absent(path: "Any", label: str) -> None:
 class SessionManager:
     def __init__(self, paths: ProjectPaths) -> None:
         self.paths = paths
+        # While a command runs, the command-lock fd, so the captured child can
+        # inherit it and keep the lock held even if this parent is killed.
+        self._command_lock_fd: Optional[int] = None
+
+    @property
+    def command_pass_fds(self) -> "tuple[int, ...]":
+        """Fds to pass to a captured command (the held command lock, if any).
+
+        Passing the command-lock fd to the child means the flock is held until
+        the child exits, not only while this parent lives, so a parent killed
+        mid-command does not let the lease look stale while the child runs on.
+        """
+        return (self._command_lock_fd,) if self._command_lock_fd is not None else ()
 
     @contextlib.contextmanager
     def _repo_lock(self) -> Iterator[None]:
@@ -287,11 +300,15 @@ class SessionManager:
                     fcntl.flock(lock_fd, fcntl.LOCK_UN)
                 os.close(lock_fd)
                 raise
+        # Expose the lock fd so the captured child can inherit it (see
+        # command_pass_fds); the child then holds the lock until it exits.
+        self._command_lock_fd = lock_fd
         clean_exit = False
         try:
             yield command_id
             clean_exit = True
         finally:
+            self._command_lock_fd = None
             # On a clean exit, clear the lease for this command: if a result was
             # recorded, record_command already cleared it; if the body returned
             # early without running (e.g. redo of a redacted command), clear it so

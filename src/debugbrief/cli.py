@@ -438,6 +438,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             timeout_seconds=args.timeout,
             redact=not args.no_redact,
             force_verification=args.verify,
+            pass_fds=manager.command_pass_fds,
         )
         result.command_data.invocation_cwd = str(invocation_cwd)
         with _deferred_sigint():
@@ -549,6 +550,7 @@ def cmd_redo(args: argparse.Namespace) -> int:
             timeout_seconds=args.timeout,
             redact=not args.no_redact,
             force_verification=args.verify or inherit_verify,
+            pass_fds=manager.command_pass_fds,
         )
         result.command_data.invocation_cwd = str(invocation_cwd)
         with _deferred_sigint():

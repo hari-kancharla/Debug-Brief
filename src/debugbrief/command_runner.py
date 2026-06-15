@@ -545,6 +545,7 @@ def _capture_via_pty(
     echo: bool,
     out_bounded: _BoundedText,
     err_bounded: _BoundedText,
+    pass_fds: "tuple[int, ...]" = (),
 ) -> _Outcome:
     """Run under pseudo-terminals so output streams live. Raises
     :class:`_PtyUnavailable` when a pty cannot be allocated."""
@@ -584,6 +585,7 @@ def _capture_via_pty(
             stderr=err_slave,
             start_new_session=True,
             close_fds=True,
+            pass_fds=pass_fds,
         )
     except (FileNotFoundError, PermissionError, OSError) as exc:
         for fd in (out_master, out_slave, err_master, err_slave):
@@ -615,6 +617,7 @@ def _capture_via_pipes(
     echo: bool,
     out_bounded: _BoundedText,
     err_bounded: _BoundedText,
+    pass_fds: "tuple[int, ...]" = (),
 ) -> _Outcome:
     """Run with plain pipes (fallback when no pty is available)."""
     try:
@@ -627,6 +630,7 @@ def _capture_via_pipes(
             start_new_session=True,
             bufsize=0,
             close_fds=True,
+            pass_fds=pass_fds,
         )
     except (FileNotFoundError, PermissionError, OSError) as exc:
         return _Outcome(error_message=_popen_error_message(exc, command))
@@ -654,6 +658,7 @@ def run_command(
     redact: bool = True,
     echo: bool = True,
     force_verification: bool = False,
+    pass_fds: "tuple[int, ...]" = (),
 ) -> RunResult:
     """Run ``command`` from ``cwd`` and capture a :class:`CommandData`.
 
@@ -711,7 +716,7 @@ def run_command(
     else:
         args = (
             popen_args, command, cwd, popen_shell, timeout_seconds, echo,
-            out_bounded, err_bounded,
+            out_bounded, err_bounded, pass_fds,
         )
         try:
             outcome = _capture_via_pty(*args)

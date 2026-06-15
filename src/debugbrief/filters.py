@@ -350,6 +350,23 @@ def _contains_recognized_check(command: str) -> bool:
     return False
 
 
+def _strip_builtin_wrappers(toks: List[str]) -> List[str]:
+    """Drop leading ``builtin``/``command`` wrappers so the real command is first.
+
+    ``builtin set +o pipefail`` and ``command set +o pipefail`` both run ``set``;
+    the wrapper would otherwise hide the option-changing command from detection.
+    ``command`` accepts options (e.g. ``-p``); ``builtin`` does not, but skipping a
+    leading dash-option after either is harmless because the result is only
+    inspected for ``set``/``shopt``.
+    """
+    i = 0
+    while i < len(toks) and toks[i] in ("builtin", "command"):
+        i += 1
+        while i < len(toks) and toks[i].startswith("-"):
+            i += 1
+    return toks[i:]
+
+
 def _pipefail_disabled(command: str) -> bool:
     """True if the command turns ``pipefail`` off via ``set`` or ``shopt``.
 
@@ -362,9 +379,12 @@ def _pipefail_disabled(command: str) -> bool:
     - ``shopt -u -o pipefail``: ``-o`` selects ``set -o`` option names and ``-u``
       unsets them, so this unsets pipefail (flags may be combined, e.g. ``-uo``).
       ``shopt -s -o pipefail`` enables it and does not count.
+
+    A leading ``builtin``/``command`` wrapper is unwrapped first, so
+    ``command set +o pipefail`` is recognized too.
     """
     for segment in _split_shell_segments(command):
-        toks = _tokenize(segment)
+        toks = _strip_builtin_wrappers(_tokenize(segment))
         if not toks:
             continue
         name = os.path.basename(toks[0])

@@ -227,6 +227,23 @@ def test_pipefail_disabled_via_shopt_is_not_a_verification():
     assert _warn(cmd, True, passed=True, force_verification=True) is not None
 
 
+def test_pipefail_disabled_through_a_builtin_wrapper_is_not_a_verification():
+    # builtin/command wrappers run set/shopt, so they must be unwrapped before
+    # detecting a pipefail change; otherwise a wrapped disable slips through and a
+    # failing pipeline could be recorded as a passed verification.
+    assert filters._pipefail_disabled("command set +o pipefail") is True
+    assert filters._pipefail_disabled("builtin set +o pipefail") is True
+    assert filters._pipefail_disabled("command -p set +o pipefail") is True
+    assert filters._pipefail_disabled("builtin shopt -u -o pipefail") is True
+    assert filters._pipefail_disabled("command set -o pipefail") is False  # enables
+    cmd = "command set +o pipefail && false | true"
+    c = filters.classify_command(
+        cmd, exit_code=0, use_shell=True, pipefail=True, force_verification=True
+    )
+    assert c.is_verification is False and c.tool is None
+    assert _warn(cmd, True, passed=True, force_verification=True) is not None
+
+
 def test_exotic_shell_constructs_are_never_attributed_to_a_tool():
     # Substitutions, backticks, process substitution, subshells, braces, and
     # heredocs must never let a tool name be mistaken for the command that ran, so

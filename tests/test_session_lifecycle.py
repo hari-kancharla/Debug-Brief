@@ -143,7 +143,7 @@ def test_modified_files_captured_on_end(git_paths):
 def test_no_active_status(nogit_paths):
     manager = SessionManager(nogit_paths)
     status = manager.build_status()
-    assert status == {"active": False}
+    assert status == {"active": False, "background_lock": False}
 
 
 def test_end_format_both_writes_md_and_json(nogit_paths):

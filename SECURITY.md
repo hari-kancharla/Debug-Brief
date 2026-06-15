@@ -50,8 +50,10 @@ DebugBrief captures a single foreground command and holds the active-command
 lease until that command's process tree exits. If a captured command backgrounds
 a long-lived process (for example `debugbrief run --shell "my-server &"`), that
 descendant keeps the lease held until it exits, so a later `run` may report that
-a command is still running. Capture, and the lease, are designed for foreground
-commands; start long-running daemons outside DebugBrief.
+a command is still running. When that happens, `debugbrief status` and
+`debugbrief recover` detect and explain the held lock rather than reporting the
+project as idle. Capture, and the lease, are designed for foreground commands;
+start long-running daemons outside DebugBrief.
 
 ## Redaction is best effort
 

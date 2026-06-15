@@ -219,6 +219,27 @@ def test_clean_exit_keeps_a_descendant_that_inherited_the_lease(manager, tmp_pat
     assert manager._command_is_active() is False
 
 
+def test_recover_and_status_report_a_background_held_lock(manager):
+    # After a command's lease metadata is cleared, a backgrounded descendant can
+    # still hold the inherited command lock. recover and status must explain this
+    # lock-only state rather than looking healthy, since run/end/cancel stay
+    # blocked until the descendant exits. Simulate the descendant by holding the
+    # command lock with no active_command.json present.
+    import fcntl
+
+    manager.start("t")
+    fd = manager._open_command_lock()
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        assert manager.build_status().get("background_lock") is True
+        assert manager.recover()["lease"] == "held_by_background"
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    # Once the descendant releases the lock, status no longer flags it.
+    assert manager.build_status().get("background_lock") is False
+
+
 def test_recover_creates_no_state_when_nothing_exists(manager):
     # recover must stay read-only on a fresh project: it must not create
     # .debugbrief/ (which the repo lock would otherwise do under the umask).

@@ -794,6 +794,13 @@ class SessionManager:
                         result["lease"] = "unclearable"
                     else:
                         result["lease"] = "cleared_stale"
+            elif self._command_is_active():
+                # No lease metadata, but the command lock is still held: a finished
+                # command backgrounded a process that inherited the lock and has
+                # not exited. New commands stay blocked until it does, so report it
+                # rather than letting recover look healthy. The lock cannot be
+                # cleared here without killing that descendant.
+                result["lease"] = "held_by_background"
 
             if self.has_active():
                 try:
@@ -829,11 +836,25 @@ class SessionManager:
         return result
 
     # Status ------------------------------------------------------------------
+    def _background_lock_held(self) -> bool:
+        """True if the command lock is held but no lease metadata exists.
+
+        A finished command can leave a backgrounded descendant holding the
+        inherited lock with the lease already cleared. run/end/cancel stay blocked
+        until it exits, so status and recover surface this rather than looking
+        idle.
+        """
+        return (
+            not os.path.lexists(self.paths.active_command_file)
+            and self._command_is_active()
+        )
+
     def build_status(self) -> Dict[str, Any]:
         """Return a structured status payload for the CLI to render."""
         pointer = self._read_active_pointer()
+        background_lock = self._background_lock_held()
         if pointer is None:
-            return {"active": False}
+            return {"active": False, "background_lock": background_lock}
 
         session_id = pointer.get("session_id", "")
         path = self.paths.session_file(session_id)
@@ -844,6 +865,7 @@ class SessionManager:
                 "session_id": session_id,
                 "title": pointer.get("title"),
                 "reason": "Session file is missing.",
+                "background_lock": background_lock,
             }
 
         session = self.load_session_file(session_id)
@@ -864,6 +886,7 @@ class SessionManager:
             "detached_head": session.git.detached_head,
             "is_repo": session.git.is_repo,
             "warnings": list(session.warnings),
+            "background_lock": background_lock,
         }
 
     # Internal helpers --------------------------------------------------------

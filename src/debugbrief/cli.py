@@ -634,6 +634,13 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     return 0
 
 
+_BACKGROUND_LOCK_NOTE = (
+    "Note: a process started by an earlier command is still holding the command "
+    "lock (it was backgrounded and has not exited). New commands, end, and cancel "
+    "stay blocked until it exits."
+)
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     manager = _manager()
     status = manager.build_status()
@@ -641,6 +648,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     if not status.get("active"):
         print("No active DebugBrief session.")
         print('Start one with: debugbrief start "<title>"')
+        if status.get("background_lock"):
+            print("")
+            print(_BACKGROUND_LOCK_NOTE)
         return 0
 
     if status.get("interrupted"):
@@ -676,6 +686,9 @@ def cmd_status(args: argparse.Namespace) -> int:
         print("  git:       not a Git repository")
     for warning in status.get("warnings", []):
         print(f"  warning:   {warning}")
+    if status.get("background_lock"):
+        print("")
+        print(_BACKGROUND_LOCK_NOTE)
     print("")
     print("End with: debugbrief end --mode pr|handoff|incident")
     return 0
@@ -740,6 +753,12 @@ def cmd_recover(args: argparse.Namespace) -> int:
         print(
             "A stale command lease could not be removed (it may be a directory). "
             "Remove .debugbrief/active_command.json manually."
+        )
+    elif lease == "held_by_background":
+        print(
+            "A process started by an earlier command is still holding the command "
+            "lock (it was backgrounded and has not exited). New commands, end, and "
+            "cancel stay blocked until it exits; there is no stale lease to clear."
         )
     action = result["action"]
     if action == "healthy":

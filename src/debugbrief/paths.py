@@ -190,8 +190,11 @@ def ensure_local_ignore(paths: ProjectPaths) -> Tuple[bool, List[str]]:
     entry = f"{DEBUGBRIEF_DIRNAME}/"
 
     # Refuse a symlinked or special exclude file: reading it could block on a
-    # FIFO and appending could write through a symlink to an external file.
-    if exclude_file.exists() and not is_regular_file(exclude_file):
+    # FIFO and appending could write through a symlink to an external file. Use
+    # lexists, not exists: a dangling symlink reports exists() False, but the
+    # later write_text would still follow it and create a file outside the repo,
+    # so the entry must be checked regardless of whether its target exists.
+    if os.path.lexists(exclude_file) and not is_regular_file(exclude_file):
         warnings.append(
             "Could not update .git/info/exclude (it is not a regular file). "
             ".debugbrief/ may not be ignored automatically; add it to your ignore "

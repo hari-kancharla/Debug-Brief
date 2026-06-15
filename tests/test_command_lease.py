@@ -201,6 +201,24 @@ def test_inherited_flock_survives_an_abrupt_parent_fd_close(tmp_path):
         child.wait(timeout=10)
 
 
+def test_clean_exit_keeps_a_descendant_that_inherited_the_lease(manager, tmp_path):
+    # A process the command backgrounds inherits the command-lock fd. Because
+    # inherited fds share one flock, the clean-exit release must close the
+    # parent's fd without an explicit LOCK_UN, or it would free the descendant's
+    # lock too. Simulate the descendant with os.dup (a shared open description).
+    manager.start("t")
+    with manager.command_lease("x", str(tmp_path)):
+        descendant_fd = os.dup(manager._command_lock_fd)
+    try:
+        # The lease context exited cleanly and closed the parent's fd, but the
+        # inherited copy still holds the lock, so the lease is not free yet.
+        assert manager._command_is_active() is True
+    finally:
+        os.close(descendant_fd)
+    # Once the descendant releases (exits), the lease is free again.
+    assert manager._command_is_active() is False
+
+
 def test_recover_creates_no_state_when_nothing_exists(manager):
     # recover must stay read-only on a fresh project: it must not create
     # .debugbrief/ (which the repo lock would otherwise do under the umask).

@@ -374,8 +374,13 @@ class SessionManager:
             if clean_exit:
                 with contextlib.suppress(Exception), self._repo_lock():
                     self._clear_command_lease_if(command_id)
-            with contextlib.suppress(OSError):
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            # Release by closing, not by an explicit LOCK_UN. A process the
+            # command backgrounded may have inherited this fd, and inherited fds
+            # share one flock, so an explicit unlock here would release the
+            # descendant's lock too and let a later run or end start while the
+            # process tree is still alive. Closing drops only this reference, so
+            # the lease stays held until the last inheriting descendant exits,
+            # matching the process-tree behavior documented in SECURITY.md.
             os.close(lock_fd)
 
     # Active-pointer handling -------------------------------------------------

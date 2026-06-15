@@ -418,13 +418,20 @@ def _has_shell_negation(command: str) -> bool:
     """True if a stage is prefixed with ``!``, which inverts its exit status.
 
     ``! pytest`` exits 0 exactly when pytest fails, so the exit code cannot be
-    trusted as the check's pass/fail. A ``!`` only counts as negation when it is
-    the first token of a stage (``! pytest``, ``cd x && ! pytest``); a ``!``
-    inside an argument or quotes does not.
+    trusted as the check's pass/fail. A ``!`` counts as negation when it is the
+    first word of a stage, including after the ``time`` reserved word
+    (``time ! pytest``); a ``!`` inside an argument or quotes does not.
     """
     for segment in _split_shell_segments(command):
         toks = _tokenize(segment)
-        if toks and toks[0] == "!":
+        i = 0
+        # `time` (with its options) is a pipeline prefix, so a `!` after it still
+        # negates the pipeline.
+        if i < len(toks) and toks[i] == "time":
+            i += 1
+            while i < len(toks) and toks[i].startswith("-"):
+                i += 1
+        if i < len(toks) and toks[i] == "!":
             return True
     return False
 

@@ -259,14 +259,21 @@ def test_shell_comments_are_ignored_when_scanning_for_operators():
 def test_shell_negation_is_never_a_verification():
     # `! cmd` inverts the exit status, so exit 0 means the command failed; --verify
     # must not record a pass. Covers simple, pipeline, and setup-prefixed forms.
-    for cmd in ("! pytest", "! pytest | tee out", "cd x && ! pytest"):
+    for cmd in (
+        "! pytest",
+        "! pytest | tee out",
+        "cd x && ! pytest",
+        "time ! pytest",  # the time reserved word does not hide the negation
+        "time -p ! pytest",
+    ):
         c = filters.classify_command(
             cmd, exit_code=0, use_shell=True, pipefail=True, force_verification=True
         )
         assert c.is_verification is False and c.tool is None, cmd
         assert _warn(cmd, True, passed=True, force_verification=True) is not None, cmd
-    # A '!' inside an argument or quotes is not negation.
+    # A '!' inside an argument or quotes is not negation; plain `time` is fine.
     assert filters._has_shell_negation("pytest -k '!slow'") is False
+    assert filters._has_shell_negation("time pytest") is False
 
 
 def test_pipe_both_operator_is_a_reliable_pipeline():

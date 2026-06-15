@@ -91,6 +91,16 @@ def test_symlinked_or_special_config_is_ignored_without_blocking(tmp_path):
     assert "not a regular file" in (parse_error(tmp_path) or "")
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink")
+def test_dangling_config_symlink_is_reported_consistently(tmp_path):
+    # A dangling symlink reports exists() false (the link is followed), but the
+    # entry is still there and _read ignores it. parse_error must use lexists so
+    # doctor flags it rather than calling the config absent.
+    (tmp_path / ".debugbrief.toml").symlink_to(tmp_path / "no-such-target.toml")
+    assert load_config(tmp_path) == {}  # ignored, not followed
+    assert "not a regular file" in (parse_error(tmp_path) or "")
+
+
 def test_invalid_utf8_is_ignored_not_crashed(tmp_path):
     # Reading non-UTF-8 raises UnicodeDecodeError before tomllib; it must be
     # handled, not crash run/redo/preview/end (load_config) or doctor (parse_error).

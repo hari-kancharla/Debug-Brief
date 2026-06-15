@@ -14,6 +14,7 @@ command. Only top-level keys are read:
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -48,7 +49,10 @@ def parse_error(project_root: Path) -> Optional[str]:
     the kind of failure but never quotes its contents, which could hold secrets.
     """
     path = Path(project_root) / CONFIG_FILENAME
-    if not path.exists():
+    # lexists, not exists: exists() follows the link and reports false for a
+    # dangling symlink, which would let doctor call the config absent while _read
+    # (which uses lstat) refuses it. Check the entry itself so the report matches.
+    if not os.path.lexists(path):
         return None
     if not is_regular_file(path):
         # A symlinked config would be followed and a FIFO would block the read.

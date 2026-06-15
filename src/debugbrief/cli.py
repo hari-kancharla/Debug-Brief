@@ -32,7 +32,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from . import __version__
+from . import __version__, git_utils
 from .command_runner import DEFAULT_TIMEOUT_SECONDS, RunResult, run_command
 from .config import load_config
 from .doctor import FAIL, run_doctor
@@ -508,6 +508,23 @@ def cmd_redo(args: argparse.Namespace) -> int:
         events = session.command_events() if session else []
         if not events:
             eprint("No commands have been captured in this session yet.")
+            return 1
+        # Refuse to re-execute a command from session state tracked by Git: a
+        # cloned repository could ship a seeded .debugbrief session whose last
+        # command would otherwise run here. State DebugBrief writes is kept out of
+        # the index (ensure_local_ignore), so this only trips on repo-supplied
+        # state.
+        if session is not None and git_utils.is_tracked(
+            paths.project_root, paths.session_file(session.session_id)
+        ):
+            eprint(
+                "The active session is stored in a file tracked by Git, so it may "
+                "have come from the repository rather than your own runs. "
+                "DebugBrief will not re-run a command from repository-supplied "
+                "state. Remove it from the index "
+                "(git rm --cached -r .debugbrief) and run the command yourself: "
+                "debugbrief run -- <command>"
+            )
             return 1
         last = CommandData.from_dict(events[-1].data)
         if PLACEHOLDER in last.command:

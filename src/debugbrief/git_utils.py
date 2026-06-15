@@ -108,6 +108,19 @@ def is_inside_repo(cwd: Path) -> bool:
     return ok and out.strip() == "true"
 
 
+def is_tracked(cwd: Path, path: Path) -> bool:
+    """True if ``path`` is tracked in the Git index of the repo at ``cwd``.
+
+    Best-effort and conservative: returns False outside a repo, when git is
+    unavailable, or for an untracked path. Used to refuse trusting state that may
+    have been committed by a repository, so a stored command is never re-executed
+    from repository-supplied state (a cloned repo could otherwise ship a seeded
+    ``.debugbrief`` session whose last command runs on ``redo``).
+    """
+    ok, _, _ = _run_git(["ls-files", "--error-unmatch", "--", str(path)], cwd)
+    return ok
+
+
 def current_sha(cwd: Path) -> Optional[str]:
     """Return the full HEAD SHA, or None (e.g. a repo with no commits yet)."""
     ok, out, _ = _run_git(["rev-parse", "HEAD"], cwd)

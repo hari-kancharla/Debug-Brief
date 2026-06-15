@@ -12,19 +12,29 @@ done, it writes a report built only from what actually happened: what you tried,
 what failed, what then passed, and which files changed in between. It never
 invents a root cause and never claims a test result you did not get.
 
-It is local-first and dependency-free: standard library plus native `git`, no
-network, no AI, no telemetry. Unix-like systems only.
+It is local-first: standard library plus native `git`, with one conditional
+dependency (`tomli` on Python < 3.11, for reading `.debugbrief.toml`; 3.11+ uses
+the standard-library `tomllib`). No network, no AI, no telemetry. Unix-like
+systems only.
 
 See a real generated report: [examples/sample-pr.md](https://github.com/harihkk/Debug-Brief/blob/main/examples/sample-pr.md).
 
 ## Install
 
+DebugBrief is a Python CLI; the simplest installs put it on your PATH in its own
+isolated environment:
+
 ```bash
-pip install debugbrief
+pipx install debugbrief
+# or
+uv tool install debugbrief
 ```
 
-Or from a clone: `pip install -e .`. Needs Python 3.9+ and native `git` on a
-Unix-like system (Linux, macOS, BSD).
+Plain `pip install debugbrief` (or `pip install -e .` from a clone) works too.
+DebugBrief itself needs Python 3.9+ and native `git` on a Unix-like system
+(Linux and macOS are tested; BSD should work). Native Windows/PowerShell is not
+supported. The project you debug does **not** need to be Python: only DebugBrief
+runs on Python.
 
 ## Quickstart
 
@@ -56,6 +66,27 @@ The resulting report leads with a derived one-liner like:
 
 > Failing check `python -m pytest -q test_calc.py` passed after 2 attempts over
 > 2s, changes touched calc.py.
+
+## Works with any language
+
+DebugBrief wraps whatever command you run, so the project being debugged can be
+in any language. A recognized test/build/lint/typecheck runner is classified
+automatically; any other command is still captured, and you mark it a check with
+`--verify`:
+
+```bash
+debugbrief run -- npm test
+debugbrief run -- go test ./...
+debugbrief run -- cargo test
+debugbrief run -- ./gradlew test          # or: mvn test
+debugbrief run -- dotnet test
+debugbrief run -- make check
+debugbrief run --verify -- ./scripts/integration.sh   # custom check
+```
+
+A compound shell command (`run --shell "a && b | c"`) is recorded conservatively
+as a single command, not attributed to one tool; run a check on its own, or
+declare the whole command with `--verify`, to have it counted as a verification.
 
 ## How it works
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import stat
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -127,6 +128,64 @@ def atomic_write_json(path: Path, data: Any) -> None:
 def read_json(path: Path) -> Any:
     """Read and parse JSON from ``path``."""
     with open(path, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def is_regular_file(path: Any) -> bool:
+    """True only if ``path`` is an existing regular file.
+
+    Uses ``lstat`` so a symlink is detected, never followed. A symlink, FIFO,
+    socket, device, directory, or missing path all return False. This is the
+    security check for state files; ``Path.is_file()`` must not be used because it
+    follows symlinks.
+    """
+    try:
+        return stat.S_ISREG(os.lstat(os.fspath(path)).st_mode)
+    except OSError:
+        return False
+
+
+class UnsafeStateFile(OSError):
+    """Raised when a state file is not a regular file (symlink, FIFO, ...)."""
+
+
+def _open_regular(path: Any, mode: str) -> "Any":
+    """Open ``path`` read-only, refusing anything but a regular file.
+
+    Opens with ``O_NOFOLLOW`` (a symlink raises) and ``O_NONBLOCK`` (a FIFO does
+    not block), then confirms with ``fstat`` that the opened descriptor is a
+    regular file. The post-open ``fstat`` closes the race a separate ``lstat``
+    leaves, so a path swapped to a symlink or FIFO after a caller's check is
+    still caught. Raises :class:`UnsafeStateFile` for a non-regular target and
+    ``OSError`` for other filesystem problems.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(os.fspath(path), flags)
+    handle = os.fdopen(fd, mode, encoding=None if "b" in mode else "utf-8")
+    if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+        handle.close()
+        raise UnsafeStateFile(f"{path} is not a regular file")
+    return handle
+
+
+def open_regular_text(path: Any) -> "Any":
+    """Open a regular file read-only as UTF-8 text (see :func:`_open_regular`)."""
+    return _open_regular(path, "r")
+
+
+def open_regular_binary(path: Any) -> "Any":
+    """Open a regular file read-only in binary mode (see :func:`_open_regular`)."""
+    return _open_regular(path, "rb")
+
+
+def read_json_safe(path: Any) -> Any:
+    """Read and parse JSON from a path that must be a regular file.
+
+    Like :func:`read_json` but never follows a symlink and never blocks on a
+    special file (see :func:`open_regular_text`). Raises :class:`UnsafeStateFile`
+    for a non-regular target, ``OSError`` for I/O, or ``ValueError`` for bad JSON.
+    """
+    with open_regular_text(path) as handle:
         return json.load(handle)
 
 

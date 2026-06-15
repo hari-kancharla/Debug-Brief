@@ -123,62 +123,246 @@ def test_classify_anchors_to_executable_not_arguments():
     assert filters.classify_command("uv run --env-file pytest python app.py", 0).tool is None
 
 
-def test_shell_pipeline_honesty():
-    cmd = "pytest -q | tee out.txt"
-    # With pipefail (bash) the exit status is reliable, so the pipeline is
-    # classified normally: exit 0 means the whole pipeline passed.
-    cp = filters.classify_command(cmd, exit_code=0, use_shell=True, pipefail=True)
-    assert cp.tool == "pytest" and cp.is_verification is True
-    # A failing stage under pipefail is correctly a failure, not a pass.
-    cf = filters.classify_command(cmd, exit_code=1, use_shell=True, pipefail=True)
-    assert cf.is_verification is False
-    assert filters.shell_pipeline_suppressed_check(cmd, True, pipefail=True) is False
-    # Without pipefail the exit status is only the last stage's, so a recognized
-    # check in a pipeline is NOT treated as a verification and the runner warns.
-    cu = filters.classify_command(cmd, exit_code=0, use_shell=True, pipefail=False)
-    assert cu.is_verification is False and cu.tool is None and cu.is_test is False
-    assert filters.shell_pipeline_suppressed_check(cmd, True, pipefail=False) is True
-    # Without --shell the "|" is a literal argument, not a pipeline.
-    assert filters.classify_command(cmd, 0).tool == "pytest"
-    # "||" is logical-or, and a quoted "|" is not a pipe.
-    assert filters.shell_pipeline_suppressed_check("pytest || echo done", True, False) is False
-    assert filters.shell_pipeline_suppressed_check("pytest -k 'a | b'", True, False) is False
+def test_every_recognized_test_pattern_classifies_by_exit_code():
+    # Cross-language coverage: every recognized test runner is a test, named with
+    # its tool, verified on exit 0 and a failed check on nonzero.
+    for pattern, tool in filters._TEST_PATTERNS:
+        cmd = " ".join(pattern)
+        passed = filters.classify_command(cmd, exit_code=0)
+        assert passed.is_test and passed.tool == tool and passed.is_verification, cmd
+        failed = filters.classify_command(cmd, exit_code=1)
+        assert failed.is_test and failed.tool == tool, cmd
+        assert failed.is_verification is False, cmd
 
 
-def test_setup_prefixed_pipeline_is_still_warned():
-    # The check is not the first token, but a pipeline without pipefail still
-    # suppresses it -- so the warning must fire rather than drop it silently.
-    for cmd in ("cd packages/api && pytest | tee out", "set -o pipefail; pytest | tee out"):
-        assert filters.shell_pipeline_suppressed_check(cmd, True, pipefail=False) is True
-    # A pipeline with no recognized check anywhere does not warn.
-    assert filters.shell_pipeline_suppressed_check("cd pkg && echo hi | tee out", True, False) is False
+def test_every_recognized_build_pattern_classifies_by_exit_code():
+    # Build/lint/typecheck runners verify on exit 0 and fail on nonzero too.
+    for pattern, tool, _category in filters._BUILD_PATTERNS:
+        cmd = " ".join(pattern)
+        passed = filters.classify_command(cmd, exit_code=0)
+        assert passed.tool == tool and passed.is_test is False and passed.is_verification, cmd
+        failed = filters.classify_command(cmd, exit_code=1)
+        assert failed.tool == tool and failed.is_verification is False, cmd
 
 
-def test_setup_prefixed_pipeline_is_classified_when_reliable():
-    # Under pipefail the whole pipeline's exit is trustworthy, so a check that
-    # follows setup is classified, not dropped: exit 0 means every stage passed.
-    cmd = "cd packages/api && pytest | tee out"
-    c = filters.classify_command(cmd, exit_code=0, use_shell=True, pipefail=True)
+def test_unknown_check_is_classified_only_through_verify():
+    # An unrecognized command is captured but not a verification unless declared.
+    assert filters.classify_command("./scripts/it.sh", exit_code=0).tool is None
+    declared = filters.classify_command("./scripts/it.sh", exit_code=0, force_verification=True)
+    assert declared.tool == "custom" and declared.is_verification is True
+    failed = filters.classify_command("./scripts/it.sh", exit_code=1, force_verification=True)
+    assert failed.tool == "custom" and failed.is_verification is False
+
+
+def _warn(cmd, pipefail, passed, force_verification=False):
+    return filters.shell_command_warning(
+        cmd, True, pipefail, passed=passed, force_verification=force_verification
+    )
+
+
+def test_simple_shell_check_classified_normally():
+    # One stage: the exit code is the check's own, so pass/fail is honest.
+    c = filters.classify_command("pytest -q", exit_code=0, use_shell=True, pipefail=True)
     assert c.tool == "pytest" and c.is_test is True and c.is_verification is True
-    # A failure anywhere in the reliable pipeline is not a passed verification.
-    cf = filters.classify_command(cmd, exit_code=1, use_shell=True, pipefail=True)
-    assert cf.is_verification is False
-    # Without pipefail the same pipeline stays unclassified (and is warned about).
-    cu = filters.classify_command(cmd, exit_code=0, use_shell=True, pipefail=False)
-    assert cu.tool is None and cu.is_verification is False
+    cf = filters.classify_command("pytest -q", exit_code=1, use_shell=True, pipefail=True)
+    assert cf.tool == "pytest" and cf.is_test is True and cf.is_verification is False
+    assert _warn("pytest -q", True, passed=True) is None
 
 
-def test_failure_masking_operators_are_not_classified_as_passes():
-    # `|| true` and `; echo` let the command exit 0 even when the check failed, so
-    # the check must NOT be auto-classified as a passed verification.
-    for cmd in ("pytest || true", "pytest; echo done", "pytest & echo bg"):
+def test_compound_command_is_never_attributed_to_an_internal_tool():
+    # Even a clean, reliable pipeline is recorded as a generic command, not as the
+    # tool inside it: DebugBrief does not parse shell grammar to decide which stage
+    # the exit code belongs to. The user runs the check on its own, or uses
+    # --verify, to get a recorded verification.
+    for cmd in ("pytest -q | tee out.txt", "cd packages/api && pytest | tee out",
+                "pytest && ruff check ."):
         c = filters.classify_command(cmd, exit_code=0, use_shell=True, pipefail=True)
+        assert c.tool is None and c.is_test is False and c.is_verification is False, cmd
+        assert _warn(cmd, True, passed=True) is not None, cmd
+    # Without --shell the "|" is a literal argument, a single command, so the
+    # normal first-token classification still applies.
+    assert filters.classify_command("pytest -q | tee out.txt", 0).tool == "pytest"
+
+
+def test_compound_failure_is_not_attributed_to_a_tool():
+    # The command failed but which stage failed is unknown: pytest may never have
+    # run (cd failed) or may have passed (&& false, | false). Never blame pytest.
+    for cmd in ("cd missing && pytest", "pytest && false", "pytest | false"):
+        c = filters.classify_command(cmd, exit_code=1, use_shell=True, pipefail=True)
+        assert c.tool is None and c.is_test is False and c.is_verification is False, cmd
+        w = _warn(cmd, True, passed=False)
+        assert w is not None and "cannot determine which stage" in w, cmd
+
+
+def test_masking_and_unreliable_compounds_warn_and_do_not_verify():
+    # Masking operators and unreliable pipelines never produce a verification; a
+    # compound that contains a check is recorded generically with an explanation.
+    cases = [
+        ("pytest || true", True),                     # || masks a failure
+        ("pytest; echo done", True),                  # ; discards pytest's exit
+        ("pytest & echo bg", True),                   # & backgrounds pytest
+        ("pytest | tee out", False),                  # pipe without pipefail
+        ("set +o pipefail; pytest | tee out", True),  # pipefail disabled in command
+    ]
+    for cmd, pipefail in cases:
+        c = filters.classify_command(cmd, exit_code=0, use_shell=True, pipefail=pipefail)
         assert c.is_verification is False and c.tool is None, cmd
-    # --verify on an unreliable pipeline is still never a verification.
+        assert _warn(cmd, pipefail, passed=True) is not None, cmd
+
+
+def test_pipefail_disabled_via_shopt_is_not_a_verification():
+    # `shopt -u -o pipefail` disables pipefail exactly like `set +o pipefail`
+    # (-o selects set -o options, -u unsets them; flags may be combined). A
+    # pipeline after it cannot be trusted, so --verify must not record a pass when
+    # a stage failed but the overall exit is 0. `shopt -s -o pipefail` enables it
+    # and must not be mistaken for disabling.
+    assert filters._pipefail_disabled("shopt -u -o pipefail") is True
+    assert filters._pipefail_disabled("shopt -uo pipefail") is True
+    assert filters._pipefail_disabled("shopt -s -o pipefail") is False
+    cmd = "shopt -u -o pipefail && false | true"
     c = filters.classify_command(
-        "pytest | tee out", exit_code=0, use_shell=True, pipefail=False, force_verification=True
+        cmd, exit_code=0, use_shell=True, pipefail=True, force_verification=True
     )
     assert c.is_verification is False and c.tool is None
+    assert _warn(cmd, True, passed=True, force_verification=True) is not None
+
+
+def test_pipefail_disabled_through_a_builtin_wrapper_is_not_a_verification():
+    # builtin/command wrappers run set/shopt, so they must be unwrapped before
+    # detecting a pipefail change; otherwise a wrapped disable slips through and a
+    # failing pipeline could be recorded as a passed verification.
+    assert filters._pipefail_disabled("command set +o pipefail") is True
+    assert filters._pipefail_disabled("builtin set +o pipefail") is True
+    assert filters._pipefail_disabled("command -p set +o pipefail") is True
+    assert filters._pipefail_disabled("builtin shopt -u -o pipefail") is True
+    assert filters._pipefail_disabled("command set -o pipefail") is False  # enables
+    cmd = "command set +o pipefail && false | true"
+    c = filters.classify_command(
+        cmd, exit_code=0, use_shell=True, pipefail=True, force_verification=True
+    )
+    assert c.is_verification is False and c.tool is None
+    assert _warn(cmd, True, passed=True, force_verification=True) is not None
+
+
+def test_exotic_shell_constructs_are_never_attributed_to_a_tool():
+    # Substitutions, backticks, process substitution, subshells, braces, and
+    # heredocs must never let a tool name be mistaken for the command that ran, so
+    # none of these is classified as pytest. DebugBrief does not parse shell.
+    constructs = [
+        "echo $(pytest)",
+        "echo `pytest`",
+        "cat <(pytest)",
+        "(pytest)",
+        "{ pytest; }",
+        "pytest <<EOF\nbody\nEOF",
+    ]
+    for cmd in constructs:
+        for ec in (0, 1):
+            c = filters.classify_command(cmd, exit_code=ec, use_shell=True, pipefail=True)
+            assert c.tool != "pytest" and c.is_verification is False, (cmd, ec)
+
+
+def test_verify_declares_reliable_compound_but_never_an_unreliable_pipe():
+    # --verify makes a whole reliable compound a single custom check...
+    cmd = "cd pkg && ./scripts/it.sh"
+    c = filters.classify_command(
+        cmd, exit_code=0, use_shell=True, pipefail=True, force_verification=True
+    )
+    assert c.tool == "custom" and c.is_verification is True
+    assert _warn(cmd, True, passed=True, force_verification=True) is None
+    # ...but never trusts a pipeline without pipefail, even with --verify.
+    cu = filters.classify_command(
+        "pytest | tee out", exit_code=0, use_shell=True, pipefail=False, force_verification=True
+    )
+    assert cu.is_verification is False and cu.tool is None
+
+
+def test_shell_comments_are_ignored_when_scanning_for_operators():
+    # Operators inside a trailing # comment are not real: the command is just the
+    # part before the comment, so a recognized check still classifies.
+    for cmd in ("pytest # compare a && b", "pytest # output | tee", "pytest  #note"):
+        c = filters.classify_command(cmd, exit_code=0, use_shell=True, pipefail=True)
+        assert c.tool == "pytest" and c.is_verification is True, cmd
+        assert _warn(cmd, True, passed=True) is None, cmd
+    # A '#' inside quotes is data, not a comment.
+    assert filters._is_shell_pipeline("pytest -k 'a # b'") is False
+    # A genuine compound with a trailing comment is still compound.
+    assert filters._is_compound_shell("cd x && pytest # done") is True
+
+
+def test_shell_negation_is_never_a_verification():
+    # `! cmd` inverts the exit status, so exit 0 means the command failed; --verify
+    # must not record a pass. Covers simple, pipeline, and setup-prefixed forms.
+    for cmd in (
+        "! pytest",
+        "! pytest | tee out",
+        "cd x && ! pytest",
+        "time ! pytest",  # the time reserved word does not hide the negation
+        "time -p ! pytest",
+    ):
+        c = filters.classify_command(
+            cmd, exit_code=0, use_shell=True, pipefail=True, force_verification=True
+        )
+        assert c.is_verification is False and c.tool is None, cmd
+        assert _warn(cmd, True, passed=True, force_verification=True) is not None, cmd
+    # A '!' inside an argument or quotes is not negation; plain `time` is fine.
+    assert filters._has_shell_negation("pytest -k '!slow'") is False
+    assert filters._has_shell_negation("time pytest") is False
+
+
+def test_pipe_both_operator_is_a_reliable_pipeline():
+    # `|&` pipes stdout and stderr; it is a pipeline operator, not a background &.
+    # Under pipefail with --verify the declared check is therefore counted.
+    cmd = "pytest |& tee out"
+    c = filters.classify_command(
+        cmd, exit_code=0, use_shell=True, pipefail=True, force_verification=True
+    )
+    assert c.tool == "custom" and c.is_verification is True
+    assert _warn(cmd, True, passed=True, force_verification=True) is None
+
+
+def test_verify_on_an_unreliable_compound_warns_that_it_was_ignored():
+    # When --verify cannot be honored (unreliable exit code), say so, even when no
+    # built-in tool is recognized, so the user is not left thinking it counted.
+    for cmd, pipefail in (("make all || true", True), ("pytest | tee out", False)):
+        w = _warn(cmd, pipefail, passed=True, force_verification=True)
+        assert w is not None and "declared with --verify" in w, cmd
+
+
+def test_quoted_and_escaped_pipes_are_not_pipelines():
+    # A "|" inside quotes or escaped with a backslash is data, not an operator, so
+    # the command is a single stage and classifies normally.
+    for cmd in ("pytest -k 'a | b'", "pytest -k a\\|b"):
+        assert filters._is_shell_pipeline(cmd) is False, cmd
+        c = filters.classify_command(cmd, exit_code=0, use_shell=True, pipefail=False)
+        assert c.tool == "pytest" and c.is_verification is True, cmd
+        assert _warn(cmd, False, passed=True) is None, cmd
+    # "||" is logical-or (a masking operator), not a pipe.
+    assert filters._is_shell_pipeline("pytest || echo done") is False
+
+
+def test_trailing_background_operator_is_compound_not_a_pass():
+    # `pytest &` backgrounds the job and bash returns 0 immediately, so it must
+    # not be recorded as a passed pytest even though it is the only segment.
+    for cmd in ("pytest &", "pytest -q &"):
+        c = filters.classify_command(cmd, exit_code=0, use_shell=True, pipefail=True)
+        assert c.tool is None and c.is_verification is False, cmd
+        assert _warn(cmd, True, passed=True) is not None, cmd
+
+
+def test_descriptor_redirections_are_simple_commands():
+    # The `&` in a redirection is part of one command, not a stage separator, so a
+    # recognized check with a redirection still classifies normally.
+    for cmd in ("pytest 2>&1", "pytest &>out.log", "pytest <&0", "pytest >out 2>&1"):
+        c = filters.classify_command(cmd, exit_code=0, use_shell=True, pipefail=True)
+        assert c.tool == "pytest" and c.is_verification is True, cmd
+        assert _warn(cmd, True, passed=True) is None, cmd
+    # A redirection inside a reliable compound does not make it unreliable.
+    c = filters.classify_command(
+        "cd pkg && pytest 2>&1", exit_code=0, use_shell=True, pipefail=True,
+        force_verification=True,
+    )
+    assert c.tool == "custom" and c.is_verification is True
 
 
 def test_classify_unknown_command():

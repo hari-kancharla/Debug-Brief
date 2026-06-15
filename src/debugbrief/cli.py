@@ -32,12 +32,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from . import __version__
+from . import __version__, git_utils
 from .command_runner import DEFAULT_TIMEOUT_SECONDS, RunResult, run_command
 from .config import load_config
 from .doctor import FAIL, run_doctor
 from .models import COMMAND_STATUS_PASSED, CommandData
-from .paths import ensure_local_ignore, resolve_project_paths
+from .paths import UnsafeStateDirectory, ensure_local_ignore, resolve_project_paths
 from .redaction import PLACEHOLDER
 from .reporters import VALID_MODES, build_context, render_report
 from .reports_index import first_title, infer_mode, latest_report
@@ -74,13 +74,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_start = subparsers.add_parser("start", help="Start a new debugging session.")
     p_start.add_argument("title", help="A short, descriptive session title.")
+    # Experimental shell-history capture is not available in v1. Keep the flag so
+    # `start --shell` still prints a helpful message, but hide it from normal help.
     p_start.add_argument(
         "--shell",
         action="store_true",
-        help=(
-            "EXPERIMENTAL: spawn an interactive subshell to capture shell "
-            "history. Not available in v1 (see README)."
-        ),
+        help=argparse.SUPPRESS,
     )
     p_start.set_defaults(func=cmd_start)
 
@@ -105,8 +104,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--shell",
         action="store_true",
         help=(
-            "Run the command through the system shell (enables pipes, "
-            "redirection, &&). Default parses with shlex and runs without a shell."
+            "Run the command through the shell (enables pipes, redirection, &&). "
+            "Uses bash with pipefail when bash is available. A compound command is "
+            "recorded as one command, not attributed to an internal tool; declare "
+            "it a check with --verify. Default parses with shlex, no shell."
         ),
     )
     p_run.add_argument(
@@ -426,18 +427,22 @@ def cmd_run(args: argparse.Namespace) -> int:
     # commands behave the same as typing them directly (important in monorepos
     # and subdirectories). State still lives at the repo root.
     invocation_cwd = Path.cwd()
-    eprint(f"$ {command_str}")
-    result = run_command(
-        command=command_str,
-        cwd=invocation_cwd,
-        use_shell=args.shell,
-        timeout_seconds=args.timeout,
-        redact=not args.no_redact,
-        force_verification=args.verify,
-    )
-    result.command_data.invocation_cwd = str(invocation_cwd)
-    with _deferred_sigint():
-        manager.record_command(result)
+    # Hold the active-command lease for the command's lifetime so end/cancel and a
+    # second run cannot run concurrently with it.
+    with manager.command_lease(command_str, str(invocation_cwd)) as command_id:
+        eprint(f"$ {command_str}")
+        result = run_command(
+            command=command_str,
+            cwd=invocation_cwd,
+            use_shell=args.shell,
+            timeout_seconds=args.timeout,
+            redact=not args.no_redact,
+            force_verification=args.verify,
+            pass_fds=manager.command_pass_fds,
+        )
+        result.command_data.invocation_cwd = str(invocation_cwd)
+        with _deferred_sigint():
+            manager.record_command(result, command_id=command_id)
     _print_command_outcome(result, args.timeout)
     return result.propagated_exit_code
 
@@ -484,41 +489,89 @@ def cmd_redo(args: argparse.Namespace) -> int:
             "Run a command first: debugbrief run -- <command>"
         )
         return 1
-
-    command_events = session.command_events()
-    if not command_events:
+    events = session.command_events()
+    if not events:
         eprint(
             "No commands have been captured in this session yet. "
             "Run one first: debugbrief run -- <command>"
         )
         return 1
 
-    last = CommandData.from_dict(command_events[-1].data)
-    if PLACEHOLDER in last.command:
-        eprint(
-            f"The last stored command contains {PLACEHOLDER}, a redaction "
-            "placeholder, not the real text, so it cannot be re-run. "
-            "Run the command again yourself: debugbrief run -- <command>"
+    # Acquire the lease first, then select the last command under it: once the
+    # lease is held no other command can complete, so "the last command" cannot
+    # change between selection and execution. The seed preview/cwd are just lease
+    # metadata; the command actually run is the one re-read inside the lease.
+    seed = CommandData.from_dict(events[-1].data)
+    seed_cwd = seed.invocation_cwd or str(Path.cwd())
+    with manager.command_lease(seed.command, seed_cwd) as command_id:
+        session = manager.load_active()
+        events = session.command_events() if session else []
+        if not events:
+            eprint("No commands have been captured in this session yet.")
+            return 1
+        # Refuse to re-execute a command from session state tracked by Git: a
+        # cloned repository could ship a seeded .debugbrief session whose last
+        # command would otherwise run here. State DebugBrief writes is kept out of
+        # the index (ensure_local_ignore), so this only trips on repo-supplied
+        # state.
+        if session is not None and git_utils.is_tracked(
+            paths.project_root, paths.session_file(session.session_id)
+        ):
+            eprint(
+                "The active session is stored in a file tracked by Git, so it may "
+                "have come from the repository rather than your own runs. "
+                "DebugBrief will not re-run a command from repository-supplied "
+                "state. Remove it from the index "
+                "(git rm --cached -r .debugbrief) and run the command yourself: "
+                "debugbrief run -- <command>"
+            )
+            return 1
+        last = CommandData.from_dict(events[-1].data)
+        if PLACEHOLDER in last.command:
+            eprint(
+                f"The last stored command contains {PLACEHOLDER}, a redaction "
+                "placeholder, not the real text, so it cannot be re-run. "
+                "Run the command again yourself: debugbrief run -- <command>"
+            )
+            return 1
+
+        # A redo of a command originally declared with --verify stays a declared
+        # check without retyping the flag; an explicit --verify also works.
+        inherit_verify = last.classification.tool == "custom"
+
+        # Re-run from the directory the original command ran in, so a redo behaves
+        # like the original even when invoked elsewhere (important in monorepos).
+        if last.invocation_cwd:
+            invocation_cwd = Path(last.invocation_cwd)
+            if not invocation_cwd.is_dir():
+                eprint(
+                    f"The original command ran in {last.invocation_cwd}, which no "
+                    "longer exists, so redo did not run it. Re-run it yourself from "
+                    "a valid directory: debugbrief run -- <command>"
+                )
+                return 1
+        else:
+            # Older session data did not record the directory; fall back to the
+            # current one and say so, so the change of directory is never silent.
+            invocation_cwd = Path.cwd()
+            eprint(
+                "  warning:   the original command's directory was not recorded; "
+                "re-running in the current directory."
+            )
+
+        eprint(f"$ {last.command}  (redo)")
+        result = run_command(
+            command=last.command,
+            cwd=invocation_cwd,
+            use_shell=last.used_shell,
+            timeout_seconds=args.timeout,
+            redact=not args.no_redact,
+            force_verification=args.verify or inherit_verify,
+            pass_fds=manager.command_pass_fds,
         )
-        return 1
-
-    # A redo of a command originally declared with --verify stays a declared
-    # check without retyping the flag; an explicit --verify also works.
-    inherit_verify = last.classification.tool == "custom"
-
-    invocation_cwd = Path.cwd()
-    eprint(f"$ {last.command}  (redo)")
-    result = run_command(
-        command=last.command,
-        cwd=invocation_cwd,
-        use_shell=last.used_shell,
-        timeout_seconds=args.timeout,
-        redact=not args.no_redact,
-        force_verification=args.verify or inherit_verify,
-    )
-    result.command_data.invocation_cwd = str(invocation_cwd)
-    with _deferred_sigint():
-        manager.record_command(result)
+        result.command_data.invocation_cwd = str(invocation_cwd)
+        with _deferred_sigint():
+            manager.record_command(result, command_id=command_id)
     _print_command_outcome(result, args.timeout)
     return result.propagated_exit_code
 
@@ -581,6 +634,13 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     return 0
 
 
+_BACKGROUND_LOCK_NOTE = (
+    "Note: a process started by an earlier command is still holding the command "
+    "lock (it was backgrounded and has not exited). New commands, end, and cancel "
+    "stay blocked until it exits."
+)
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     manager = _manager()
     status = manager.build_status()
@@ -588,6 +648,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     if not status.get("active"):
         print("No active DebugBrief session.")
         print('Start one with: debugbrief start "<title>"')
+        if status.get("background_lock"):
+            print("")
+            print(_BACKGROUND_LOCK_NOTE)
         return 0
 
     if status.get("interrupted"):
@@ -600,9 +663,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(f"  reason:    {reason}")
         print("")
         print("Recovery:")
-        print("  - Inspect .debugbrief/active_session.json and the sessions/ folder.")
-        print("  - Remove .debugbrief/active_session.json to clear the active pointer,")
-        print("    then start a fresh session.")
+        print("  - Run 'debugbrief recover' to repair the pointer safely")
+        print("    (it never deletes session data), then start a fresh session.")
         return 0
 
     print(f"Active session: {status.get('title')}")
@@ -624,6 +686,9 @@ def cmd_status(args: argparse.Namespace) -> int:
         print("  git:       not a Git repository")
     for warning in status.get("warnings", []):
         print(f"  warning:   {warning}")
+    if status.get("background_lock"):
+        print("")
+        print(_BACKGROUND_LOCK_NOTE)
     print("")
     print("End with: debugbrief end --mode pr|handoff|incident")
     return 0
@@ -676,6 +741,25 @@ def cmd_init(args: argparse.Namespace) -> int:
 def cmd_recover(args: argparse.Namespace) -> int:
     manager = _manager()
     result = manager.recover()
+    lease = result.get("lease", "none")
+    if lease == "live":
+        print("A captured command is still running; its lease was left untouched.")
+    elif lease == "cleared_stale":
+        print(
+            "Cleared a stale command lease (its process had exited); the session "
+            "was preserved."
+        )
+    elif lease == "unclearable":
+        print(
+            "A stale command lease could not be removed (it may be a directory). "
+            "Remove .debugbrief/active_command.json manually."
+        )
+    elif lease == "held_by_background":
+        print(
+            "A process started by an earlier command is still holding the command "
+            "lock (it was backgrounded and has not exited). New commands, end, and "
+            "cancel stay blocked until it exits; there is no stale lease to clear."
+        )
     action = result["action"]
     if action == "healthy":
         print(f"Active session is healthy, nothing to recover: {result['detail']}")
@@ -710,6 +794,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 def cmd_last(args: argparse.Namespace) -> int:
     paths = resolve_project_paths()
+    paths.assert_state_dirs_safe()  # refuse a symlinked .debugbrief before reading
     report_path = latest_report(paths.reports_dir)
     if report_path is None:
         eprint(
@@ -730,6 +815,7 @@ def cmd_last(args: argparse.Namespace) -> int:
 
 def cmd_open(args: argparse.Namespace) -> int:
     paths = resolve_project_paths()
+    paths.assert_state_dirs_safe()  # refuse a symlinked .debugbrief before reading
 
     target: Optional[Path]
     if args.path:
@@ -1035,7 +1121,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     try:
         code = args.func(args)
-    except SessionError as exc:
+    except (SessionError, UnsafeStateDirectory) as exc:
         eprint(f"error: {exc}")
         return 1
     except BrokenPipeError:

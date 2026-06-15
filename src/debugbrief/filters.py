@@ -229,16 +229,59 @@ def _match_build(tokens: List[str]) -> Optional[Tuple[str, str]]:
     return None
 
 
+def _strip_shell_comment(command: str) -> str:
+    """Drop a top-level shell comment (``#`` to end of line), quote/backslash-aware.
+
+    A ``#`` starts a comment only at the start of a word (start of string or
+    after unquoted whitespace), matching the shell, so ``pytest # a && b`` is just
+    ``pytest`` and the operators in the comment do not make it look compound. A
+    ``#`` inside quotes, escaped, or mid-word (``a#b``) is left alone.
+    """
+    in_single = in_double = False
+    out: List[str] = []
+    i, n = 0, len(command)
+    while i < n:
+        ch = command[i]
+        if ch == "\\" and not in_single:
+            out.append(ch)
+            if i + 1 < n:
+                out.append(command[i + 1])
+            i += 2
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif (
+            ch == "#"
+            and not in_single
+            and not in_double
+            and (i == 0 or command[i - 1] in " \t")
+        ):
+            newline = command.find("\n", i)
+            if newline == -1:
+                break  # comment runs to end of string
+            i = newline  # keep the newline (a separator) and resume after it
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _is_shell_pipeline(command: str) -> bool:
     """True if ``command`` contains a top-level shell pipe (``|``, not ``||``).
 
     Quote-aware so a ``|`` inside a quoted string does not count. Conservative:
     it does not parse the full shell grammar, only enough to spot a pipeline.
     """
+    command = _strip_shell_comment(command)
     in_single = in_double = False
     i, n = 0, len(command)
     while i < n:
         ch = command[i]
+        if ch == "\\" and not in_single:
+            i += 2  # backslash escapes the next char, so an escaped | is literal
+            continue
         if ch == "'" and not in_double:
             in_single = not in_single
         elif ch == '"' and not in_single:
@@ -260,10 +303,18 @@ def _split_shell_segments(command: str) -> List[str]:
     inside a quoted string does not split. Lets a recognized check be found even
     when it does not sit at the very first token (``cd pkg && pytest | tee``).
     """
+    command = _strip_shell_comment(command)
     segments: List[str] = []
     current: List[str] = []
     in_single = in_double = False
-    for ch in command:
+    i, n = 0, len(command)
+    while i < n:
+        ch = command[i]
+        if ch == "\\" and not in_single and i + 1 < n:
+            current.append(ch)  # keep an escaped operator as literal text
+            current.append(command[i + 1])
+            i += 2
+            continue
         if ch == "'" and not in_double:
             in_single = not in_single
             current.append(ch)
@@ -277,33 +328,163 @@ def _split_shell_segments(command: str) -> List[str]:
             current = []
         else:
             current.append(ch)
+        i += 1
     segment = "".join(current).strip()
     if segment:
         segments.append(segment)
     return segments
 
 
-def _segment_check(command: str) -> Optional[Tuple[bool, str]]:
-    """Return ``(is_test, tool)`` for the first recognized check across segments.
+def _contains_recognized_check(command: str) -> bool:
+    """True if any segment of the command is a recognized test/build check.
 
     Scans each shell segment, not just the first token, so a check that follows
-    setup (``cd pkg && pytest | tee``) is found. Returns ``None`` if no segment is
-    a recognized test or build/lint/typecheck command.
+    setup (``cd pkg && pytest | tee``) is recognized. Used only to decide whether
+    to explain why a compound command was not attributed to a tool; a compound is
+    never classified as that tool.
     """
     for segment in _split_shell_segments(command):
         toks = _tokenize(segment)
-        test_tool = _match_test(toks)
-        if test_tool is not None:
-            return True, test_tool
-        build_match = _match_build(toks)
-        if build_match is not None:
-            return False, build_match[0]
-    return None
+        if _match_test(toks) is not None or _match_build(toks) is not None:
+            return True
+    return False
 
 
-def _contains_recognized_check(command: str) -> bool:
-    """True if any segment of the command is a recognized test/build check."""
-    return _segment_check(command) is not None
+def _strip_builtin_wrappers(toks: List[str]) -> List[str]:
+    """Drop leading ``builtin``/``command`` wrappers so the real command is first.
+
+    ``builtin set +o pipefail`` and ``command set +o pipefail`` both run ``set``;
+    the wrapper would otherwise hide the option-changing command from detection.
+    ``command`` accepts options (e.g. ``-p``); ``builtin`` does not, but skipping a
+    leading dash-option after either is harmless because the result is only
+    inspected for ``set``/``shopt``.
+    """
+    i = 0
+    while i < len(toks) and toks[i] in ("builtin", "command"):
+        i += 1
+        while i < len(toks) and toks[i].startswith("-"):
+            i += 1
+    return toks[i:]
+
+
+def _pipefail_disabled(command: str) -> bool:
+    """True if the command turns ``pipefail`` off via ``set`` or ``shopt``.
+
+    The runner enables pipefail for shell commands, but a command can disable it
+    again, which makes a later pipeline's exit status unreliable, so reliability
+    must account for it. Two forms disable it:
+
+    - ``set +o pipefail`` (also ``set +eo pipefail``): the ``+``-prefixed form,
+      not ``set -o pipefail`` which enables it;
+    - ``shopt -u -o pipefail``: ``-o`` selects ``set -o`` option names and ``-u``
+      unsets them, so this unsets pipefail (flags may be combined, e.g. ``-uo``).
+      ``shopt -s -o pipefail`` enables it and does not count.
+
+    A leading ``builtin``/``command`` wrapper is unwrapped first, so
+    ``command set +o pipefail`` is recognized too.
+    """
+    for segment in _split_shell_segments(command):
+        toks = _strip_builtin_wrappers(_tokenize(segment))
+        if not toks:
+            continue
+        name = os.path.basename(toks[0])
+        if name == "set":
+            for i in range(1, len(toks)):
+                prev = toks[i - 1]
+                if toks[i] == "pipefail" and prev.startswith("+") and prev.endswith("o"):
+                    return True
+        elif name == "shopt":
+            flags = "".join(t[1:] for t in toks[1:] if t.startswith("-"))
+            args = [t for t in toks[1:] if not t.startswith("-")]
+            if "u" in flags and "o" in flags and "pipefail" in args:
+                return True
+    return False
+
+
+def _amp_is_redirection(command: str, i: int) -> bool:
+    """True if the ``&`` at index ``i`` is part of a descriptor redirection.
+
+    Covers ``&>file`` (the next char is ``>``) and ``2>&1`` / ``>&2`` / ``<&0``
+    (the ``&`` follows ``>`` or ``<``). These belong to one command, so the ``&``
+    is neither a stage separator nor a background operator.
+    """
+    prev = command[i - 1] if i > 0 else ""
+    nxt = command[i + 1] if i + 1 < len(command) else ""
+    return prev in (">", "<") or nxt == ">"
+
+
+def _is_compound_shell(command: str) -> bool:
+    """True if the command joins more than one shell stage.
+
+    Scans for a top-level ``|`` (pipe or ``||``), ``&&``, a lone ``&``
+    (background), ``;``, or newline, rather than counting segments, so a trailing
+    operator (``pytest &``) is detected. A ``&`` that is part of a redirection
+    (``2>&1``, ``&>log``) does not count. Quote- and backslash-aware, and a
+    trailing shell comment is ignored.
+    """
+    command = _strip_shell_comment(command)
+    in_single = in_double = False
+    i, n = 0, len(command)
+    while i < n:
+        ch = command[i]
+        if ch == "\\" and not in_single:
+            i += 2
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif not in_single and not in_double:
+            if ch in (";", "\n", "|"):
+                return True
+            if ch == "&":
+                if i + 1 < n and command[i + 1] == "&":
+                    return True  # "&&" and-list
+                if not _amp_is_redirection(command, i):
+                    return True  # a lone "&" backgrounds a stage
+        i += 1
+    return False
+
+
+def _has_shell_negation(command: str) -> bool:
+    """True if a stage is prefixed with ``!``, which inverts its exit status.
+
+    ``! pytest`` exits 0 exactly when pytest fails, so the exit code cannot be
+    trusted as the check's pass/fail. A ``!`` counts as negation when it is the
+    first word of a stage, including after the ``time`` reserved word
+    (``time ! pytest``); a ``!`` inside an argument or quotes does not.
+    """
+    for segment in _split_shell_segments(command):
+        toks = _tokenize(segment)
+        i = 0
+        # `time` (with its options) is a pipeline prefix, so a `!` after it still
+        # negates the pipeline.
+        if i < len(toks) and toks[i] == "time":
+            i += 1
+            while i < len(toks) and toks[i].startswith("-"):
+                i += 1
+        if i < len(toks) and toks[i] == "!":
+            return True
+    return False
+
+
+def _reliable_shell(command: str, pipefail: bool) -> bool:
+    """True if the overall exit code reliably reflects every stage.
+
+    Reliable means no shell negation (``!`` inverts the status), no
+    failure-masking operator (``||``, ``;``, ``&``, newline can let the command
+    exit 0 despite a failing stage), and, when a pipeline is present, ``pipefail``
+    in effect and not disabled. Under these conditions an exit of 0 proves every
+    stage, the check included, passed; a nonzero exit proves some stage failed,
+    though not necessarily which one.
+    """
+    if _has_shell_negation(command):
+        return False
+    if _has_failure_masking_operator(command):
+        return False
+    if _is_shell_pipeline(command):
+        return pipefail and not _pipefail_disabled(command)
+    return True
 
 
 def _has_failure_masking_operator(command: str) -> bool:
@@ -313,13 +494,18 @@ def _has_failure_masking_operator(command: str) -> bool:
     ``;`` and a newline run the next stage regardless of the previous one; ``||``
     runs its right side only when the left failed; a lone ``&`` backgrounds a
     stage. ``&&`` and a ``|`` pipe (trustworthy under pipefail) instead propagate
-    failure, so they are not masking. Quote-aware so an operator inside a quoted
-    string does not count.
+    failure, so they are not masking, and a ``&`` that is part of a redirection
+    (``2>&1``, ``&>log``) is not an operator at all. Quote- and backslash-aware,
+    and a trailing shell comment is ignored.
     """
+    command = _strip_shell_comment(command)
     in_single = in_double = False
     i, n = 0, len(command)
     while i < n:
         ch = command[i]
+        if ch == "\\" and not in_single:
+            i += 2  # an escaped operator is literal, not failure-masking
+            continue
         if ch == "'" and not in_double:
             in_single = not in_single
         elif ch == '"' and not in_single:
@@ -333,28 +519,63 @@ def _has_failure_masking_operator(command: str) -> bool:
                 if i + 1 < n and command[i + 1] == "&":
                     i += 2  # "&&" propagates failure; not masking
                     continue
+                if i > 0 and command[i - 1] == "|":
+                    i += 1  # part of "|&" (pipe both streams): governed by the pipe
+                    continue
+                if _amp_is_redirection(command, i):
+                    i += 1  # redirection "&" (2>&1, &>log): not masking
+                    continue
                 return True  # a lone "&" backgrounds the preceding stage
         i += 1
     return False
 
 
-def shell_pipeline_suppressed_check(
-    command: str, use_shell: bool, pipefail: bool = False
-) -> bool:
-    """True when an unreliable pipeline kept a would-be check from classifying.
+def shell_command_warning(
+    command: str,
+    use_shell: bool,
+    pipefail: bool,
+    passed: bool,
+    force_verification: bool = False,
+) -> Optional[str]:
+    """Explain why a recognized check in a shell command was not counted, or None.
 
-    Only when ``pipefail`` is unavailable is a pipeline's exit status untrustworthy
-    (it reflects only the last stage). The runner uses this to warn that a
-    recognized check inside such a pipeline is not treated as a verification. With
-    pipefail the exit status is reliable and the check classifies normally.
-
-    The check is looked for in every segment, not just the first token, so a
-    setup-prefixed pipeline (``cd pkg && pytest | tee``) is recognized and warned
-    about rather than dropped silently.
+    Mirrors :func:`_classify_shell_command`: it returns a message only when a
+    command that contains a recognized check was recorded generically (not as a
+    verification), so the user is never left guessing. Simple commands and cleanly
+    classified compounds return None.
     """
-    if pipefail or not (use_shell and _is_shell_pipeline(command)):
-        return False
-    return _contains_recognized_check(command)
+    if not use_shell:
+        return None
+    if force_verification and _has_shell_negation(command):
+        # Covers a simple negated command too (which is otherwise not compound).
+        return (
+            "This command negates its exit status with '!', which inverts "
+            "pass/fail, so --verify did not record a verification."
+        )
+    if not _is_compound_shell(command):
+        return None
+    if force_verification and _reliable_shell(command, pipefail):
+        return None  # classified as a declared whole-command custom check
+    if force_verification:
+        # --verify was given but the compound's exit code cannot be trusted, so it
+        # was not counted. Say so even when no built-in tool is recognized.
+        return (
+            "This command was declared with --verify, but its exit code cannot be "
+            "trusted (an unreliable pipeline without pipefail, or a failure-masking "
+            "operator like ||, ;, or &), so it was not recorded as a verification."
+        )
+    if not _contains_recognized_check(command):
+        return None  # nothing looked like a check, so nothing to explain
+    if not passed:
+        return (
+            "Compound shell command failed; DebugBrief cannot determine which "
+            "stage failed, so it is recorded as a command, not a failed check."
+        )
+    return (
+        "DebugBrief records a compound shell command as a single command and does "
+        "not attribute the result to an individual tool. Run the check on its own, "
+        "or pass --verify to record the whole command as a check."
+    )
 
 
 def status_from_outcome(
@@ -400,14 +621,13 @@ def classify_command(
     no pattern matched; a recognized runner always wins. The honesty rule is
     unchanged: ``is_verification`` is True only on a real exit 0.
 
-    A shell command (``use_shell``) is classified from its segments only when its
-    exit code reliably reflects the check: no failure-masking operator (``||``,
-    ``;``, ``&``, newline) and, if it is a pipeline, ``pipefail`` in effect. Then
-    a recognized check in any ``&&``/pipe-joined stage is classified, because an
-    exit of 0 implies every stage (the check included) passed. Otherwise the shell
-    command is not auto-classified, so a failing check can never be recorded as
-    passed; ``--verify`` still declares a custom check from the exit code, except
-    for an unreliable pipeline, which is never a verification.
+    A simple shell command (one stage) is classified like a non-shell command. A
+    compound shell command (anything joined by ``|``, ``&&``, ``||``, ``;``,
+    ``&`` or a newline) is never attributed to an internal tool: the exit code
+    does not say which stage produced it. The only verification a compound can
+    yield is a user-declared whole-command check (``--verify``), and only when the
+    exit code is reliable: no failure-masking operator, and ``pipefail`` for a
+    pipeline. Everything else is recorded as a generic command.
     """
     status = status_from_outcome(
         exit_code, timed_out, errored, interrupted, broken_pipe
@@ -464,37 +684,43 @@ def _classify_shell_command(
 ) -> CommandClassification:
     """Classify a command run through the shell, trusting the exit code only when
     it reliably reflects a recognized check (see :func:`classify_command`)."""
-    unreliable_pipe = _is_shell_pipeline(command) and not pipefail
-
-    if not unreliable_pipe and not _has_failure_masking_operator(command):
-        found = _segment_check(command)
-        if found is not None:
-            is_test, tool = found
-            return CommandClassification(
-                is_test=is_test,
-                is_verification=passed,
-                tool=tool,
-                status=status,
-            )
-
-    # An unreliable pipeline (its exit status is only the last stage's) is never a
-    # verification, even with --verify, so a failed check piped into a passing
-    # command cannot be recorded as passed. --verify still declares any other
-    # shell command a custom check from its exit code.
-    if force_verification and not unreliable_pipe:
-        return CommandClassification(
-            is_test=False,
-            is_verification=passed,
-            tool="custom",
-            status=status,
-        )
-
-    return CommandClassification(
-        is_test=False,
-        is_verification=False,
-        tool=None,
-        status=status,
+    generic = CommandClassification(
+        is_test=False, is_verification=False, tool=None, status=status
     )
+
+    # A simple command (one stage) is classified directly: the exit code is its
+    # own, so a recognized check passes or fails honestly.
+    if not _is_compound_shell(command):
+        toks = _tokenize(command)
+        test_tool = _match_test(toks)
+        if test_tool is not None:
+            return CommandClassification(
+                is_test=True, is_verification=passed, tool=test_tool, status=status
+            )
+        build_match = _match_build(toks)
+        if build_match is not None:
+            return CommandClassification(
+                is_test=False, is_verification=passed, tool=build_match[0], status=status
+            )
+        # --verify declares an unrecognized command a custom check, but not when
+        # its exit code is inverted by a leading "!" (see _reliable_shell).
+        if force_verification and _reliable_shell(command, pipefail):
+            return CommandClassification(
+                is_test=False, is_verification=passed, tool="custom", status=status
+            )
+        return generic
+
+    # Compound command: never attribute the result to an internal tool, because
+    # the exit code does not say which stage produced it (pytest may not have run,
+    # or may have passed while another stage failed). The only verification a
+    # compound can yield is a user-declared whole-command check via --verify, and
+    # only when the exit code is reliable (no failure-masking operator, and a
+    # pipeline has pipefail). Everything else is a generic command.
+    if force_verification and _reliable_shell(command, pipefail):
+        return CommandClassification(
+            is_test=False, is_verification=passed, tool="custom", status=status
+        )
+    return generic
 
 
 def is_noise_command(command: str) -> bool:

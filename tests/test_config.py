@@ -1,15 +1,25 @@
-"""Tests for optional .debugbrief.toml project configuration."""
+"""Tests for optional .debugbrief.toml project configuration.
+
+Parsing uses the standard-library tomllib on 3.11+ and the tomli backport on
+3.9/3.10; both are the same parser, so behavior is identical across the matrix.
+"""
 
 from __future__ import annotations
 
-from debugbrief.config import _coerce, _parse_flat, load_config
+import os
+import sys
+
+import pytest
+
+from debugbrief.config import load_config, parse_error
+
+
+def _write(tmp_path, text):
+    (tmp_path / ".debugbrief.toml").write_text(text, encoding="utf-8")
 
 
 def test_load_config_reads_supported_keys(tmp_path):
-    (tmp_path / ".debugbrief.toml").write_text(
-        'default_mode = "handoff"\ntimeout_seconds = 600\ndetail = "compact"\n',
-        encoding="utf-8",
-    )
+    _write(tmp_path, 'default_mode = "handoff"\ntimeout_seconds = 600\ndetail = "compact"\n')
     assert load_config(tmp_path) == {
         "default_mode": "handoff",
         "timeout_seconds": 600,
@@ -17,56 +27,84 @@ def test_load_config_reads_supported_keys(tmp_path):
     }
 
 
-def test_load_config_ignores_invalid_and_unknown_keys(tmp_path):
-    (tmp_path / ".debugbrief.toml").write_text(
-        'default_mode = "bogus"\ntimeout_seconds = -5\nunknown = "x"\n',
-        encoding="utf-8",
-    )
+def test_inline_comments_and_integer_underscores(tmp_path):
+    _write(tmp_path, 'timeout_seconds = 1_200  # twenty minutes\ndefault_mode = "pr" # mode\n')
+    assert load_config(tmp_path) == {"timeout_seconds": 1200, "default_mode": "pr"}
+
+
+def test_keys_inside_a_section_are_not_top_level(tmp_path):
+    # A supported key under a [section] is not top-level in TOML, so it must not
+    # alter DebugBrief's settings even though the file is otherwise valid.
+    _write(tmp_path, 'detail = "compact"\n[tool.other]\ntimeout_seconds = 1\n')
+    assert load_config(tmp_path) == {"detail": "compact"}
+
+
+def test_invalid_values_are_ignored(tmp_path):
+    _write(tmp_path, 'default_mode = "bogus"\ntimeout_seconds = -5\ndetail = 3\nunknown = "x"\n')
     assert load_config(tmp_path) == {}
 
 
-def test_load_config_missing_file_is_empty(tmp_path):
+def test_boolean_is_not_accepted_as_timeout(tmp_path):
+    # TOML true parses as a bool, which must not satisfy the integer timeout.
+    _write(tmp_path, "timeout_seconds = true\n")
     assert load_config(tmp_path) == {}
 
 
-def test_partly_malformed_config_reads_recognized_keys_consistently(tmp_path):
-    # A valid line plus an unparseable line: the recognized key is read and the
-    # bad line is skipped, the same way on every supported Python (on 3.11+ a
-    # TOML syntax error falls back to the same lenient parser used on 3.9/3.10).
-    (tmp_path / ".debugbrief.toml").write_text(
-        'default_mode = "incident"\nthis :: is not valid toml [[[\n', encoding="utf-8"
-    )
-    assert load_config(tmp_path) == {"default_mode": "incident"}
-
-
-def test_load_config_malformed_file_is_ignored(tmp_path):
-    (tmp_path / ".debugbrief.toml").write_text("this is = not [valid toml", encoding="utf-8")
-    # Never raises; a malformed config cannot break a command.
-    assert isinstance(load_config(tmp_path), dict)
-
-
-def test_flat_parser_reads_scalars_and_skips_sections():
-    # Exercises the Python < 3.11 fallback path directly.
-    cfg = _coerce(
-        _parse_flat('default_mode = "pr"\ntimeout_seconds = 120\n[ignored]\nx = 1\n')
-    )
-    assert cfg == {"default_mode": "pr", "timeout_seconds": 120}
-
-
-def test_flat_parser_does_not_hoist_a_supported_key_out_of_a_section():
-    # A supported key that lives inside a section is NOT top-level in TOML, so the
-    # lenient fallback must not read it. (An unknown key would be dropped by
-    # _coerce regardless; a *recognized* key like timeout_seconds is the case that
-    # actually mattered.) Parsing stops at the first table header.
-    parsed = _parse_flat("[tool.other]\ntimeout_seconds = 1\n")
-    assert "timeout_seconds" not in parsed
-    assert _coerce(parsed) == {}
-
-
-def test_malformed_config_with_sectioned_key_does_not_alter_settings(tmp_path):
-    # End to end: a malformed file (so 3.11+ also takes the lenient path) whose
-    # only "timeout_seconds" sits under [tool.other] must not change the timeout.
-    (tmp_path / ".debugbrief.toml").write_text(
-        "[tool.other]\ntimeout_seconds = 1\ngarbage {{{ not toml\n", encoding="utf-8"
-    )
+def test_malformed_toml_is_ignored_as_a_whole(tmp_path):
+    # A valid key followed by a syntax error: the entire file is rejected, not
+    # partially applied, so the valid line is NOT silently used.
+    _write(tmp_path, 'default_mode = "incident"\nthis :: is not valid toml [[[\n')
     assert load_config(tmp_path) == {}
+
+
+def test_duplicate_keys_make_the_file_malformed(tmp_path):
+    # Duplicate keys are a TOML error, so the whole file is ignored.
+    _write(tmp_path, 'timeout_seconds = 100\ntimeout_seconds = 200\n')
+    assert load_config(tmp_path) == {}
+
+
+def test_missing_file_is_empty(tmp_path):
+    assert load_config(tmp_path) == {}
+
+
+def test_parse_error_reports_malformed_without_exposing_contents(tmp_path):
+    secret = "token = sk-supersecretvalue1234 [[[ broken"
+    _write(tmp_path, secret)
+    msg = parse_error(tmp_path)
+    assert msg is not None
+    assert ".debugbrief.toml" in msg
+    assert "sk-supersecretvalue1234" not in msg  # never quote file contents
+
+
+def test_parse_error_is_none_for_valid_or_absent(tmp_path):
+    assert parse_error(tmp_path) is None  # absent
+    _write(tmp_path, 'default_mode = "pr"\n')
+    assert parse_error(tmp_path) is None  # valid
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink/FIFO")
+def test_symlinked_or_special_config_is_ignored_without_blocking(tmp_path):
+    # load_config runs on every command; a FIFO at .debugbrief.toml must not block
+    # it, and a symlink must not be followed. Both are ignored, and doctor flags it.
+    os.mkfifo(tmp_path / ".debugbrief.toml")
+    assert load_config(tmp_path) == {}  # returns immediately, does not block
+    assert "not a regular file" in (parse_error(tmp_path) or "")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink")
+def test_dangling_config_symlink_is_reported_consistently(tmp_path):
+    # A dangling symlink reports exists() false (the link is followed), but the
+    # entry is still there and _read ignores it. parse_error must use lexists so
+    # doctor flags it rather than calling the config absent.
+    (tmp_path / ".debugbrief.toml").symlink_to(tmp_path / "no-such-target.toml")
+    assert load_config(tmp_path) == {}  # ignored, not followed
+    assert "not a regular file" in (parse_error(tmp_path) or "")
+
+
+def test_invalid_utf8_is_ignored_not_crashed(tmp_path):
+    # Reading non-UTF-8 raises UnicodeDecodeError before tomllib; it must be
+    # handled, not crash run/redo/preview/end (load_config) or doctor (parse_error).
+    (tmp_path / ".debugbrief.toml").write_bytes(b"\xff\xfe not valid utf-8")
+    assert load_config(tmp_path) == {}
+    msg = parse_error(tmp_path)
+    assert msg is not None and ".debugbrief.toml" in msg

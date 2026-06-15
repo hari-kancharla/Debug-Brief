@@ -17,9 +17,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from . import git_utils
-from .paths import DEBUGBRIEF_DIRNAME, ProjectPaths, ensure_local_ignore
-from .utils import is_supported_platform, read_json
+from . import config, git_utils
+from .paths import (
+    DEBUGBRIEF_DIRNAME,
+    ProjectPaths,
+    UnsafeStateDirectory,
+    ensure_local_ignore,
+    is_valid_session_id,
+)
+from .utils import is_regular_file, is_supported_platform, read_json_safe
 
 PASS = "PASS"
 WARN = "WARN"
@@ -59,6 +65,8 @@ def _exclude_has_entry(paths: ProjectPaths) -> Optional[bool]:
     exclude = paths.repo_root / ".git" / "info" / "exclude"
     if not exclude.exists():
         return False
+    if not is_regular_file(exclude):
+        return False  # do not follow a symlink or block on a FIFO here
     try:
         lines = {
             line.strip() for line in exclude.read_text(encoding="utf-8").splitlines()
@@ -70,6 +78,23 @@ def _exclude_has_entry(paths: ProjectPaths) -> Optional[bool]:
 
 def run_doctor(paths: ProjectPaths, fix: bool = False) -> DoctorReport:
     checks: List[CheckResult] = []
+
+    # Reject a symlinked or non-directory state path up-front. If unsafe, report
+    # the failure and stop: the remaining checks read .debugbrief, and continuing
+    # would follow the very symlink we are refusing.
+    try:
+        paths.assert_state_dirs_safe()
+    except UnsafeStateDirectory as exc:
+        checks.append(CheckResult(FAIL, "State directory", str(exc)))
+        checks.append(
+            CheckResult(
+                FAIL,
+                "Remaining checks",
+                "skipped; refusing to read through an unsafe .debugbrief path.",
+            )
+        )
+        exit_code, summary = _overall(checks)
+        return DoctorReport(checks=checks, exit_code=exit_code, summary=summary)
 
     # Optional safe fixes applied up-front so subsequent checks reflect them.
     fix_notes: List[str] = []
@@ -210,7 +235,22 @@ def run_doctor(paths: ProjectPaths, fix: bool = False) -> DoctorReport:
             )
         )
 
-    # 14. Experimental shell mode
+    # 14. Optional project config (.debugbrief.toml)
+    cfg_error = config.parse_error(paths.project_root)
+    if cfg_error is None:
+        checks.append(
+            CheckResult(PASS, "Project config", ".debugbrief.toml is valid or absent")
+        )
+    else:
+        checks.append(
+            CheckResult(
+                WARN,
+                "Project config",
+                f"{cfg_error}; its defaults are not applied. Fix the TOML to use it.",
+            )
+        )
+
+    # 15. Experimental shell mode
     checks.append(
         CheckResult(
             PASS,
@@ -238,12 +278,22 @@ def _active_session_checks(
         )
         return
 
-    # 9. exists
+    # 9. exists and is a regular file (never follow a symlink / block on a FIFO)
+    if not is_regular_file(pointer_path):
+        checks.append(
+            CheckResult(
+                FAIL,
+                "Active session",
+                "active_session.json is not a regular file (symlink or special); "
+                "remove it to recover.",
+            )
+        )
+        return
     checks.append(CheckResult(PASS, "Active session", "active_session.json exists"))
 
-    # 10. valid JSON
+    # 10. valid JSON (read through the safe reader)
     try:
-        pointer = read_json(pointer_path)
+        pointer = read_json_safe(pointer_path)
     except (ValueError, OSError) as exc:
         checks.append(
             CheckResult(
@@ -253,18 +303,20 @@ def _active_session_checks(
             )
         )
         return
-    if not isinstance(pointer, dict) or "session_id" not in pointer:
+    if not isinstance(pointer, dict) or not is_valid_session_id(pointer.get("session_id")):
+        # Reject a missing or non-UUID session id, so a traversal value such as
+        # "../../outside" can never build a path that escapes sessions/.
         checks.append(
             CheckResult(
                 FAIL,
                 "Active session JSON",
-                "active_session.json is malformed (missing session_id).",
+                "active_session.json is malformed (missing or invalid session_id).",
             )
         )
         return
     checks.append(CheckResult(PASS, "Active session JSON", "valid"))
 
-    session_id = pointer.get("session_id", "")
+    session_id = pointer["session_id"]
     session_file = paths.session_file(session_id)
 
     # 12. interrupted?
@@ -278,9 +330,18 @@ def _active_session_checks(
             )
         )
         return
+    if not is_regular_file(session_file):
+        checks.append(
+            CheckResult(
+                FAIL,
+                "Session integrity",
+                "session file is not a regular file (symlink or special).",
+            )
+        )
+        return
 
     try:
-        session_data = read_json(session_file)
+        session_data = read_json_safe(session_file)
     except (ValueError, OSError) as exc:
         checks.append(
             CheckResult(

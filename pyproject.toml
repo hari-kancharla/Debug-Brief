@@ -29,9 +29,12 @@ classifiers = [
     "Topic :: Software Development",
 ]
 
-# DebugBrief intentionally has ZERO runtime dependencies.
-# It uses only the Python standard library and native `git`.
-dependencies = []
+# DebugBrief uses only the Python standard library and native `git`, with one
+# conditional compatibility dependency: the `tomli` TOML parser on Python < 3.11,
+# where the standard-library `tomllib` is not yet available (3.11+ needs nothing).
+dependencies = [
+    "tomli>=2.0.1; python_version < '3.11'",
+]
 
 [project.urls]
 Homepage = "https://github.com/harihkk/Debug-Brief"
@@ -40,8 +43,8 @@ Changelog = "https://github.com/harihkk/Debug-Brief/blob/main/CHANGELOG.md"
 Issues = "https://github.com/harihkk/Debug-Brief/issues"
 
 [project.optional-dependencies]
-# Development and CI tooling only. These never become runtime dependencies;
-# DebugBrief itself uses only the standard library and native git.
+# Development and CI tooling only. These are never runtime dependencies;
+# DebugBrief's only runtime dependency is the conditional `tomli` below 3.11.
 dev = ["pytest>=7.0", "ruff>=0.6", "mypy>=1.8", "build>=1.0"]
 
 [project.scripts]

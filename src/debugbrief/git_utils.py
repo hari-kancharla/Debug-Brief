@@ -9,11 +9,14 @@ directory is not a repo, or a command errors, callers get conservative defaults
 from __future__ import annotations
 
 import hashlib
+import os
+import stat
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from .models import GitState
+from .utils import open_regular_binary
 
 _GIT_TIMEOUT_SECONDS = 15
 
@@ -103,6 +106,19 @@ def find_repo_root(cwd: Path) -> Optional[str]:
 def is_inside_repo(cwd: Path) -> bool:
     ok, out, _ = _run_git(["rev-parse", "--is-inside-work-tree"], cwd)
     return ok and out.strip() == "true"
+
+
+def is_tracked(cwd: Path, path: Path) -> bool:
+    """True if ``path`` is tracked in the Git index of the repo at ``cwd``.
+
+    Best-effort and conservative: returns False outside a repo, when git is
+    unavailable, or for an untracked path. Used to refuse trusting state that may
+    have been committed by a repository, so a stored command is never re-executed
+    from repository-supplied state (a cloned repo could otherwise ship a seeded
+    ``.debugbrief`` session whose last command runs on ``redo``).
+    """
+    ok, _, _ = _run_git(["ls-files", "--error-unmatch", "--", str(path)], cwd)
+    return ok
 
 
 def current_sha(cwd: Path) -> Optional[str]:
@@ -257,21 +273,50 @@ def _leading_int(text: str) -> int:
 
 
 def _file_fingerprint(cwd: Path, path: str, deleted: bool) -> str:
-    """A content fingerprint for a working-tree file (sentinel if gone).
+    """A content fingerprint for a working-tree path (sentinel if not a file).
 
-    Hashes the file in fixed-size chunks rather than reading it whole, so a
-    large dirty file (a build artifact, a dataset, a log) cannot spike memory
-    when the baseline is captured at session start or compared at session end.
+    Uses ``lstat`` to inspect the path before opening it, so a session never
+    blocks or follows a link to capture a baseline:
+
+    - regular file: hashed in fixed-size chunks (bounded memory on a huge file);
+    - symlink: the link target string is hashed, never followed (the target may
+      be outside the repo, missing, or itself a blocking special file);
+    - FIFO, socket, or device: a stable type sentinel, never opened (opening a
+      FIFO would block waiting for a writer);
+    - unreadable regular file: a sentinel from safe stat metadata, so a later
+      change is still noticed without raising.
+
+    The regular-file branch opens with ``O_NOFOLLOW``/``O_NONBLOCK`` and verifies
+    the descriptor with ``fstat``, so a file swapped to a symlink or FIFO between
+    the ``lstat`` and the open is not followed and cannot block.
     """
     if deleted:
         return "<deleted>"
+    full = Path(cwd) / path
+    try:
+        info = os.lstat(full)
+    except OSError:
+        return "<unreadable>"
+
+    mode = info.st_mode
+    if stat.S_ISLNK(mode):
+        try:
+            target = os.readlink(full)
+        except OSError:
+            return "<unreadable-symlink>"
+        return "symlink:" + hashlib.sha256(os.fsencode(target)).hexdigest()
+    if not stat.S_ISREG(mode):
+        # FIFO/socket/device/other: identify by type without opening it.
+        return f"<special:{stat.S_IFMT(mode)}>"
+
     digest = hashlib.sha256()
     try:
-        with open(Path(cwd) / path, "rb") as handle:
+        with open_regular_binary(full) as handle:
             for chunk in iter(lambda: handle.read(65536), b""):
                 digest.update(chunk)
     except OSError:
-        return "<unreadable>"
+        # Unreadable, or swapped to a non-regular file after the lstat above.
+        return f"<unreadable:{info.st_size}:{int(info.st_mtime)}>"
     return digest.hexdigest()
 
 

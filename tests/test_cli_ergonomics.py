@@ -84,6 +84,9 @@ def test_redo_refuses_redacted_command(paths, capsys):
     assert "cannot be re-run" in capsys.readouterr().err
     # No new command event was recorded.
     assert len(_active_session(paths).command_events()) == 1
+    # redo acquired the lease then returned early; the lease must be cleared, not
+    # left behind to look like a crashed command.
+    assert not paths.active_command_file.exists()
 
 
 def test_redo_keeps_original_shell_mode(paths):
@@ -93,6 +96,58 @@ def test_redo_keeps_original_shell_mode(paths):
     events = _active_session(paths).command_events()
     assert len(events) == 2
     assert events[1].data["used_shell"] is True
+
+
+def test_redo_runs_in_original_directory(paths, tmp_path, monkeypatch, capsys):
+    # In a monorepo a command captured in one package must re-run there, even when
+    # `redo` is invoked from a different directory.
+    dir_a = tmp_path / "pkg_a"
+    dir_b = tmp_path / "pkg_b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    monkeypatch.chdir(dir_a)
+    assert cli.main(["run", "--", PY, "-c", "import os; print(os.getcwd())"]) == 0
+    run_cwd = _active_session(paths).command_events()[-1].data["invocation_cwd"]
+    capsys.readouterr()
+
+    monkeypatch.chdir(dir_b)
+    assert cli.main(["redo"]) == 0
+    out = capsys.readouterr().out
+    assert run_cwd in out  # the rerun printed the ORIGINAL directory, not dir_b
+    assert _active_session(paths).command_events()[-1].data["invocation_cwd"] == run_cwd
+
+
+def test_redo_fails_when_original_directory_is_gone(paths, tmp_path, monkeypatch, capsys):
+    import shutil
+
+    work = tmp_path / "transient"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    assert cli.main(["run", "--", PY, "-c", "print('hi')"]) == 0
+    capsys.readouterr()
+
+    monkeypatch.chdir(tmp_path)
+    shutil.rmtree(work)
+    rc = cli.main(["redo"])
+    assert rc == 1
+    assert "no longer exists" in capsys.readouterr().err
+    # The command was not re-run, so no new event was recorded.
+    assert len(_active_session(paths).command_events()) == 1
+
+
+def test_redo_warns_when_directory_not_recorded(paths, capsys):
+    # Older session data may predate invocation_cwd; redo falls back to the current
+    # directory and says so rather than failing or guessing silently.
+    assert cli.main(["run", "--", PY, "-c", "print('hi')"]) == 0
+    sm = SessionManager(paths)
+    session = sm.load_active()
+    session.events[-1].data["invocation_cwd"] = None
+    sm.save_session(session)
+    capsys.readouterr()
+
+    rc = cli.main(["redo"])
+    assert rc == 0
+    assert "directory was not recorded" in capsys.readouterr().err
 
 
 # end ------------------------------------------------------------------------

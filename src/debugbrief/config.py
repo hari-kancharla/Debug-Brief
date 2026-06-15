@@ -1,11 +1,11 @@
 """Optional per-project configuration from ``.debugbrief.toml``.
 
-Zero-dependency and best effort. Parsed with the standard-library ``tomllib`` on
-Python 3.11+, falling back to a tiny flat-key parser (also used on older
-versions) when ``tomllib`` reports a syntax error, so behavior is the same on
-every supported Python: recognized keys are read and lines that cannot be parsed
-are skipped. A missing or unreadable file never raises, so configuration can
-never break a command. Supported keys:
+Parsed with the standard-library ``tomllib`` on Python 3.11+, and with the
+``tomli`` backport on Python 3.9/3.10 (DebugBrief's one conditional runtime
+dependency). Behavior is therefore identical on every supported Python: a
+malformed file is ignored as a whole rather than partially applied, and a
+missing or unreadable file never raises, so configuration can never break a
+command. Only top-level keys are read:
 
     default_mode    = "pr" | "handoff" | "incident"   # default for end/preview
     timeout_seconds = <positive integer>              # default for run/redo
@@ -14,8 +14,17 @@ never break a command. Supported keys:
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+
+from .utils import is_regular_file, open_regular_text
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - exercised on Python 3.9/3.10 via the tomli backport
+    import tomli as tomllib  # type: ignore[import-not-found]
 
 CONFIG_FILENAME = ".debugbrief.toml"
 
@@ -24,73 +33,74 @@ _VALID_DETAIL = ("full", "compact")
 
 
 def load_config(project_root: Path) -> Dict[str, Any]:
-    """Return the validated config defaults for ``project_root`` (empty if none)."""
-    path = Path(project_root) / CONFIG_FILENAME
-    try:
-        if not path.is_file():
-            return {}
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return {}
-    return _coerce(_parse(text))
+    """Return the validated config defaults for ``project_root``.
 
-
-def _parse(text: str) -> Dict[str, Any]:
-    try:
-        import tomllib  # type: ignore[import-not-found]  # Python 3.11+
-    except ModuleNotFoundError:
-        return _parse_flat(text)
-    try:
-        return tomllib.loads(text)
-    except Exception:
-        # A TOML syntax error falls back to the lenient flat parser, so behavior
-        # is the same on every supported Python (recognized key = value lines are
-        # read, unparseable lines are skipped) rather than differing by version.
-        return _parse_flat(text)
-
-
-def _parse_flat(text: str) -> Dict[str, Any]:
-    """Fallback for Python < 3.11: top-level ``key = value`` scalars only.
-
-    Handles quoted strings, integers, and booleans. Comments are skipped. A
-    ``[section]`` / ``[[array]]`` header stops parsing entirely: in TOML every
-    key after the first table header belongs to that section, so no later key is
-    top-level. Stopping there keeps a sectioned key (``[tool.other]`` then
-    ``timeout_seconds = 1``) from being hoisted to the top level and silently
-    applied, which would otherwise diverge from how ``tomllib`` scopes it.
+    Empty when the file is missing, unreadable, or malformed; a malformed file is
+    never partially applied.
     """
-    result: Dict[str, Any] = {}
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("["):
-            break
-        key, sep, value = line.partition("=")
-        key = key.strip()
-        value = value.strip()
-        if not sep or not key or not value:
-            continue
-        result[key] = _scalar(value)
-    return result
+    data = _read(project_root)
+    return _coerce(data) if data is not None else {}
 
 
-def _scalar(value: str) -> Any:
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-        return value[1:-1]
-    low = value.lower()
-    if low in ("true", "false"):
-        return low == "true"
-    if value.lstrip("-").isdigit():
-        try:
-            return int(value)
-        except ValueError:
-            return value
-    return value
+def parse_error(project_root: Path) -> Optional[str]:
+    """Return a short reason if ``.debugbrief.toml`` exists but cannot be parsed.
+
+    Used by ``doctor`` to flag a malformed config. The message names the file and
+    the kind of failure but never quotes its contents, which could hold secrets.
+    """
+    path = Path(project_root) / CONFIG_FILENAME
+    # lexists, not exists: exists() follows the link and reports false for a
+    # dangling symlink, which would let doctor call the config absent while _read
+    # (which uses lstat) refuses it. Check the entry itself so the report matches.
+    if not os.path.lexists(path):
+        return None
+    if not is_regular_file(path):
+        # A symlinked config would be followed and a FIFO would block the read.
+        return f"{CONFIG_FILENAME} is not a regular file (symlink or special) and was ignored"
+    try:
+        with open_regular_text(path) as handle:
+            text = handle.read()
+    except OSError:
+        return None
+    except UnicodeError:
+        # Invalid UTF-8 surfaces while reading, before tomllib sees it.
+        return f"{CONFIG_FILENAME} is not valid UTF-8 and was ignored"
+    try:
+        tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return f"{CONFIG_FILENAME} is not valid TOML and was ignored"
+    except (UnicodeError, ValueError):
+        return f"{CONFIG_FILENAME} could not be parsed and was ignored"
+    return None
+
+
+def _read(project_root: Path) -> Optional[Dict[str, Any]]:
+    """Parse ``.debugbrief.toml`` into a dict, or None if absent/unsafe/unreadable/bad."""
+    path = Path(project_root) / CONFIG_FILENAME
+    # is_regular_file (lstat) is the gate: a symlinked config is not followed and
+    # a FIFO does not block load_config, which runs on every command.
+    if not is_regular_file(path):
+        return None
+    try:
+        with open_regular_text(path) as handle:
+            text = handle.read()
+    except (OSError, UnicodeError):
+        # Unreadable or not valid UTF-8 (raised while reading): ignore.
+        return None
+    try:
+        parsed = tomllib.loads(text)
+    except (tomllib.TOMLDecodeError, UnicodeError, ValueError):
+        # Malformed: ignore the whole file rather than apply part of it.
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _coerce(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Keep only recognized keys with valid values; ignore everything else."""
+    """Keep only recognized top-level keys with valid values; ignore the rest.
+
+    Keys nested under a ``[section]`` are not top-level, so ``data.get`` never
+    returns them: a sectioned ``timeout_seconds`` cannot alter the real timeout.
+    """
     out: Dict[str, Any] = {}
     if not isinstance(data, dict):
         return out

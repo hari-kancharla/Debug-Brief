@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
+
+import pytest
 
 from debugbrief import git_utils
 
@@ -43,6 +46,40 @@ def test_working_tree_fingerprints_hash_large_files_correctly(tmp_path):
     fps = git_utils.working_tree_fingerprints(tmp_path)
     # Chunked hashing must produce the same digest as hashing the whole file.
     assert fps.get("big.bin") == hashlib.sha256(data).hexdigest()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="FIFO semantics are POSIX-only")
+def test_fingerprint_special_file_does_not_open_or_block(tmp_path):
+    _init_repo(tmp_path)
+    os.mkfifo(tmp_path / "pipe")
+    # Opening a FIFO blocks waiting for a writer; the fingerprint must instead
+    # return a type sentinel after lstat, never opening it.
+    fp = git_utils._file_fingerprint(tmp_path, "pipe", deleted=False)
+    assert fp.startswith("<special:")
+    # Capturing the whole working tree at session start must also return (a hang
+    # here would fail the test by timing out), and never hash the FIFO's bytes.
+    fps = git_utils.working_tree_fingerprints(tmp_path)
+    assert isinstance(fps, dict)
+    if "pipe" in fps:
+        assert fps["pipe"].startswith("<special:")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="symlink semantics are POSIX-only")
+def test_fingerprint_symlink_hashes_target_string_not_contents(tmp_path):
+    _init_repo(tmp_path)
+    (tmp_path / "real.txt").write_text("secret-contents\n", encoding="utf-8")
+    (tmp_path / "link").symlink_to("real.txt")
+    fp = git_utils._file_fingerprint(tmp_path, "link", deleted=False)
+    assert fp.startswith("symlink:")
+    # Editing the TARGET FILE must not change the link's fingerprint: the link
+    # target string is hashed, not the contents it points to (which could be
+    # outside the repo or a blocking special file).
+    (tmp_path / "real.txt").write_text("changed-contents\n", encoding="utf-8")
+    assert git_utils._file_fingerprint(tmp_path, "link", deleted=False) == fp
+    # Repointing the link to a different target does change it.
+    (tmp_path / "link").unlink()
+    (tmp_path / "link").symlink_to("other.txt")
+    assert git_utils._file_fingerprint(tmp_path, "link", deleted=False) != fp
 
 
 def test_session_changes_reports_edits_after_a_clean_start(tmp_path):

@@ -21,12 +21,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   brief: the summary, changed files, and verification stay visible while the
   metadata and timeline fold into a collapsible section. The default stays full.
 - An optional `.debugbrief.toml` at the project root sets defaults for the report
-  mode, the run timeout, and the report detail. An explicit flag always wins;
-  recognized keys are read and lines that cannot be parsed are skipped, the same
-  way on every supported Python. Standard library only, no dependencies.
+  mode, the run timeout, and the report detail. An explicit flag always wins. It
+  is parsed with the standard-library `tomllib` on Python 3.11+ and the `tomli`
+  backport on 3.9/3.10 (DebugBrief's one conditional dependency, `tomli>=2.0.1`,
+  installed only below 3.11). A malformed file is ignored as a whole rather than
+  partially applied, and `debugbrief doctor` flags it. Only top-level keys are
+  read, so a key nested under a `[section]` never alters a setting.
 
 ### Fixed
 
+- A captured command now holds an exclusive lease for its whole lifetime, so
+  there is no window where a command is running yet the session can be finalized.
+  A second `run`/`redo` is refused while one is active, and `end`/`cancel` refuse
+  until it finishes. The lease is an OS-held lock (released automatically on
+  crash) plus readable `active_command.json` metadata; `recover` clears a stale
+  lease, preserving the session and noting the lost command. Each command has a
+  unique id, so a retried persistence cannot record it twice.
+- `redo` now re-runs the command in the directory it was originally captured in,
+  not wherever `redo` was invoked, which matters in monorepos. It fails without
+  running if that directory is gone, and falls back to the current directory with
+  a warning for older sessions that did not record it.
+- Dirty-file fingerprinting inspects a path with `lstat` before opening it, so
+  starting or ending a session never blocks on a FIFO or follows a symlink: a
+  special file gets a type sentinel, a symlink hashes its target string, and an
+  unreadable file falls back to stat metadata.
+- DebugBrief refuses to follow a symlinked `.debugbrief/` (or its `sessions/` /
+  `reports/`) or a symlinked lock file, failing with a clear message and using
+  `O_NOFOLLOW` on the lock where supported, so state cannot be redirected outside
+  the project.
 - A timeout now terminates the command's process group, not just the immediate
   process. The command runs in its own process group (`start_new_session`) and a
   timeout signals the group (SIGTERM then SIGKILL), so a command that spawned
@@ -101,13 +123,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pytest pytest`, `uv run --env-file .env pytest`), so an option's value is never
   read as the command and a non-test cannot pose as a passed test.
 - Shell commands (`run --shell`) run through bash with `pipefail` set, so a
-  pipeline's exit status reflects its first failing stage rather than only the
-  last. A recognized check in a pipeline (`run --shell "pytest | tee out"`), or
-  one that follows setup (`cd pkg && pytest | tee out`), is therefore honest: it
-  counts as a passed verification only when every stage, the check included,
-  succeeded. A command whose exit code cannot be trusted for the check, an
-  unreliable pipeline (no bash for `pipefail`) or one using `||`, `;`, or
-  backgrounding, is recorded as a command but not counted as a verification.
+  pipeline exits nonzero if any stage fails, not only its last. A compound shell
+  command (joined by `|`, `&&`, `||`, `;`, `&`, or a newline) is recorded as a
+  single command and is never attributed to an internal tool, because an exit
+  code cannot say which stage produced it: a failing `cd missing && pytest` is no
+  longer recorded as a failed pytest, and a passing `pytest && ruff check .` is
+  not recorded as only pytest. Run a check on its own, or declare the whole
+  command with `--verify` (honored only when the exit code is reliable), to
+  record a verification.
 - The session title and warning messages are redacted before reaching disk, the
   same as command output. Auto-start redacts the full command before truncating
   it, so a secret cannot survive truncation into the title.

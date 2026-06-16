@@ -21,6 +21,23 @@ from .utils import open_regular_binary
 
 _GIT_TIMEOUT_SECONDS = 15
 
+# Environment variables that redirect git's repository, work-tree, or index
+# selection. They are stripped from every invocation so git always discovers the
+# repository from cwd. An inherited or stale GIT_DIR otherwise "turns off the
+# repository discovery" (per git's docs): rev-parse then reports "not a git
+# repository" inside a real worktree, which would make the redo provenance check
+# treat tracked, repository-supplied state as untracked and fail open.
+_GIT_DISCOVERY_ENV = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+)
+
 # Generated/cache artifact names that should never appear in a change summary.
 _ARTIFACT_DIR_NAMES = frozenset(
     {
@@ -71,6 +88,8 @@ def _run_git_rc(args: List[str], cwd: Path) -> Tuple[Optional[int], str, str]:
     env = dict(os.environ)
     env["LC_ALL"] = "C"
     env["LANG"] = "C"
+    for var in _GIT_DISCOVERY_ENV:
+        env.pop(var, None)
     try:
         completed = subprocess.run(
             ["git", *args],

@@ -229,6 +229,20 @@ def test_tracked_state_distinguishes_committed_from_untracked(tmp_path):
     assert git_utils.is_tracked(tmp_path, untracked) is False
 
 
+def test_tracked_state_ignores_inherited_git_dir(tmp_path, monkeypatch):
+    # A stale/inherited GIT_DIR turns off git's repository discovery, so rev-parse
+    # reports "not a git repository" even inside a real worktree. The provenance
+    # check must still discover the repo from cwd and see the tracked file (fail
+    # closed), not classify it UNTRACKED and let redo run repository state.
+    _init_repo(tmp_path)
+    state = tmp_path / "s.json"
+    state.write_text("{}", encoding="utf-8")
+    _git(["add", "-f", "s.json"], tmp_path)
+    _git(["commit", "-q", "-m", "seed"], tmp_path)
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "nonexistent-git-dir"))
+    assert git_utils.tracked_state(tmp_path, state) is git_utils.TrackedState.TRACKED
+
+
 def _fake_git_rc(mapping):
     """Build a fake _run_git_rc that responds per git subcommand (args[0])."""
 

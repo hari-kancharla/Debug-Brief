@@ -362,8 +362,11 @@ def test_both_provenance_passes_force_a_stable_locale(tmp_path, monkeypatch):
 
 
 def test_tracked_state_fails_closed_when_provenance_is_unknowable(monkeypatch, tmp_path):
-    # Each case where git cannot give a definitive answer must classify as
-    # UNKNOWN, never UNTRACKED, so the redo guard fails closed.
+    # With a repository present on disk but git unable to give a definitive
+    # answer, each case must classify as UNKNOWN, never UNTRACKED, so the redo
+    # guard fails closed. (A .git is present here; the no-repo case where git is
+    # simply absent is covered separately and is UNTRACKED.)
+    monkeypatch.setattr(git_utils, "_has_dotgit_ancestor", lambda p: True)
     TS = git_utils.TrackedState
     cases = {
         "git missing": {"rev-parse": (None, "", "git executable not found")},
@@ -384,6 +387,26 @@ def test_tracked_state_fails_closed_when_provenance_is_unknowable(monkeypatch, t
     for label, mapping in cases.items():
         monkeypatch.setattr(git_utils, "_run_git_rc", _fake_git_rc(mapping))
         assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNKNOWN, label
+
+
+def test_tracked_state_untracked_when_git_is_absent_in_a_plain_directory(monkeypatch, tmp_path):
+    # On a machine without git, a plain non-git project has no repository that
+    # could have supplied the session, so redo must still work (UNTRACKED) rather
+    # than be refused. Provenance is only unknowable when a repository context
+    # actually exists.
+    TS = git_utils.TrackedState
+    monkeypatch.setattr(git_utils, "_git_selection_env_present", lambda: False)
+    monkeypatch.setattr(
+        git_utils,
+        "_run_git_rc",
+        _fake_git_rc({"rev-parse": (None, "", "git executable not found")}),
+    )
+    # No .git on disk: nothing could have supplied committed state.
+    monkeypatch.setattr(git_utils, "_has_dotgit_ancestor", lambda p: False)
+    assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNTRACKED
+    # A .git is present but git cannot read it: provenance unknowable, fail closed.
+    monkeypatch.setattr(git_utils, "_has_dotgit_ancestor", lambda p: True)
+    assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNKNOWN
 
 
 def test_tracked_state_classifies_definitive_outcomes(monkeypatch, tmp_path):

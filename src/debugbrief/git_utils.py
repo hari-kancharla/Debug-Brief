@@ -238,51 +238,46 @@ def _has_dotgit_ancestor(start: Path) -> bool:
 def _classify_tracked(cwd: Path, path: Path, *, sanitized: bool) -> TrackedState:
     """Classify ``path`` under one git environment (see :func:`tracked_state`)."""
     # First decide whether we are inside a working tree, which also tells us
-    # whether git works at all here. A clean "not a repository" is safe (a plain
-    # directory cannot carry repository-supplied state); any other inability is
-    # unknown and must fail closed.
+    # whether git works at all here.
     rc, out, err = _run_git_rc(
         ["rev-parse", "--is-inside-work-tree"],
         cwd,
         stable_locale=True,
         discover_from_cwd=sanitized,
     )
-    if rc is None:
-        return TrackedState.UNKNOWN
-    if rc != 0:
-        # A plain directory with no .git anywhere up the tree is genuinely
-        # repository-free and safe. Git reports the same "not a git repository"
-        # message for a present-but-corrupt .git (e.g. a missing HEAD) and for a
-        # set-but-unusable env selection (e.g. GIT_DIR pointing at a missing
-        # repo), where a tracked .debugbrief can still be on disk and provenance
-        # is unknowable. So only trust the message as a plain directory when no
-        # .git exists and, on the inherited pass, no git selection env is set. The
-        # sanitized pass has stripped that env, so for it a missing .git genuinely
-        # means no repository.
-        env_selected = not sanitized and _git_selection_env_present()
-        if (
-            _is_not_a_repository(err)
-            and not _has_dotgit_ancestor(cwd)
-            and not env_selected
-        ):
-            return TrackedState.UNTRACKED
-        return TrackedState.UNKNOWN
-    if out.strip() != "true":
-        # Inside a bare repo or a .git directory: not a working tree, so there is
-        # no checked-out, committable state path to worry about.
-        return TrackedState.UNTRACKED
-
-    rc, _, err = _run_git_rc(
-        ["ls-files", "--error-unmatch", "--", str(path)],
-        cwd,
-        stable_locale=True,
-        discover_from_cwd=sanitized,
-    )
     if rc == 0:
-        return TrackedState.TRACKED
-    if rc == 1 and "did not match" in err.lower():
+        if out.strip() != "true":
+            # Inside a bare repo or a .git directory: not a working tree, so there
+            # is no checked-out, committable state path to worry about.
+            return TrackedState.UNTRACKED
+        rc, _, err = _run_git_rc(
+            ["ls-files", "--error-unmatch", "--", str(path)],
+            cwd,
+            stable_locale=True,
+            discover_from_cwd=sanitized,
+        )
+        if rc == 0:
+            return TrackedState.TRACKED
+        if rc == 1 and "did not match" in err.lower():
+            return TrackedState.UNTRACKED
+        # rc is None (git vanished mid-check), exit 128, or unexpected output.
+        return TrackedState.UNKNOWN
+
+    # Git could not establish a repository here: it could not run at all (rc is
+    # None: not installed, timed out) or it failed (rc != 0). A genuinely
+    # repository-free directory is safe regardless of why, because nothing could
+    # have supplied committed state: there is no .git on disk and, on the
+    # inherited pass, no git selection env asserting a repository. The sanitized
+    # pass has stripped that env, so for it a missing .git already means no repo.
+    env_selected = not sanitized and _git_selection_env_present()
+    if _has_dotgit_ancestor(cwd) or env_selected:
+        # A repository context exists but could not be read: a present-but-broken
+        # .git (e.g. a missing HEAD), dubious ownership, or a set-but-unusable
+        # selection env. A tracked session may exist, so provenance is unknowable.
+        return TrackedState.UNKNOWN
+    if rc is None or _is_not_a_repository(err):
         return TrackedState.UNTRACKED
-    # rc is None (git vanished mid-check), exit 128, or any unexpected result.
+    # git ran and failed for another reason without a discoverable repository.
     return TrackedState.UNKNOWN
 
 

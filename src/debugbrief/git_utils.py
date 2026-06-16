@@ -40,6 +40,26 @@ _GIT_DISCOVERY_ENV = (
     "GIT_DISCOVERY_ACROSS_FILESYSTEM",
 )
 
+# The subset of the above that selects a specific repository, work tree, or
+# index. When any is set, the environment asserts a git context, so an inherited
+# provenance pass that still cannot establish the repository is treated as
+# unknown (a broken env-selected repo) rather than a plain directory. The
+# discovery-only modifiers (a ceiling, the cross-filesystem flag) are excluded:
+# they limit discovery but do not assert that a repository exists here.
+_GIT_SELECTION_ENV = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+)
+
+
+def _git_selection_env_present() -> bool:
+    """True if the environment selects a specific git repository/work tree/index."""
+    return any(os.environ.get(var) for var in _GIT_SELECTION_ENV)
+
+
 # Generated/cache artifact names that should never appear in a change summary.
 _ARTIFACT_DIR_NAMES = frozenset(
     {
@@ -232,10 +252,19 @@ def _classify_tracked(cwd: Path, path: Path, *, sanitized: bool) -> TrackedState
     if rc != 0:
         # A plain directory with no .git anywhere up the tree is genuinely
         # repository-free and safe. Git reports the same "not a git repository"
-        # message for a present-but-corrupt .git (e.g. a missing HEAD), where a
-        # tracked .debugbrief can still be on disk and provenance is unknowable,
-        # so only trust the message when no .git exists.
-        if _is_not_a_repository(err) and not _has_dotgit_ancestor(cwd):
+        # message for a present-but-corrupt .git (e.g. a missing HEAD) and for a
+        # set-but-unusable env selection (e.g. GIT_DIR pointing at a missing
+        # repo), where a tracked .debugbrief can still be on disk and provenance
+        # is unknowable. So only trust the message as a plain directory when no
+        # .git exists and, on the inherited pass, no git selection env is set. The
+        # sanitized pass has stripped that env, so for it a missing .git genuinely
+        # means no repository.
+        env_selected = not sanitized and _git_selection_env_present()
+        if (
+            _is_not_a_repository(err)
+            and not _has_dotgit_ancestor(cwd)
+            and not env_selected
+        ):
             return TrackedState.UNTRACKED
         return TrackedState.UNKNOWN
     if out.strip() != "true":

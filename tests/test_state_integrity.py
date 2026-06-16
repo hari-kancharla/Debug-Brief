@@ -280,6 +280,21 @@ def test_tracked_state_sees_an_env_selected_worktree_as_tracked(tmp_path, monkey
     assert git_utils.tracked_state(checkout, state) is git_utils.TrackedState.TRACKED
 
 
+def test_tracked_state_unknown_for_a_broken_env_selected_repo(tmp_path, monkeypatch):
+    # A work tree selected only via GIT_DIR/GIT_WORK_TREE (no .git on disk) whose
+    # git dir is missing makes rev-parse report "not a git repository", the same
+    # message as a plain directory. But the selection env asserts a repo that we
+    # cannot read, so provenance is unknowable and redo must fail closed, not
+    # treat the checkout as a plain untracked directory.
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    state = checkout / "s.json"
+    state.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "missing-repo.git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(checkout))
+    assert git_utils.tracked_state(checkout, state) is git_utils.TrackedState.UNKNOWN
+
+
 def _fake_git_rc(mapping):
     """Build a fake _run_git_rc that responds per git subcommand (args[0])."""
 
@@ -374,9 +389,10 @@ def test_tracked_state_fails_closed_when_provenance_is_unknowable(monkeypatch, t
 def test_tracked_state_classifies_definitive_outcomes(monkeypatch, tmp_path):
     TS = git_utils.TrackedState
     # A plain directory that is not a repository carries no committable state.
-    # (No .git exists up-tree, confirmed here so the test does not depend on the
-    # filesystem above tmp_path.)
+    # (No .git exists up-tree and no git selection env is set, confirmed here so
+    # the test does not depend on the filesystem above tmp_path or a leaked env.)
     monkeypatch.setattr(git_utils, "_has_dotgit_ancestor", lambda p: False)
+    monkeypatch.setattr(git_utils, "_git_selection_env_present", lambda: False)
     monkeypatch.setattr(
         git_utils,
         "_run_git_rc",

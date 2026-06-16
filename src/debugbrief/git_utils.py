@@ -165,9 +165,35 @@ def _is_not_a_repository(stderr: str) -> bool:
 
     Distinguished from other fatal exit-128 errors (dubious ownership, a corrupt
     repository) which leave provenance unknowable. Relies on the forced ``C``
-    locale in :func:`_run_git_rc` to keep this message in English.
+    locale in :func:`_run_git_rc` to keep this message in English. Note git emits
+    this same message for a present-but-broken ``.git`` (e.g. a missing ``HEAD``),
+    so callers must also confirm no ``.git`` exists before trusting it as a plain
+    directory (see :func:`_has_dotgit_ancestor`).
     """
     return "not a git repository" in stderr.lower()
+
+
+def _has_dotgit_ancestor(start: Path) -> bool:
+    """True if a ``.git`` entry exists at ``start`` or any ancestor directory.
+
+    Used only to tell a genuinely repository-free directory (safe to treat as
+    untracked) apart from a present-but-corrupt ``.git`` that makes git report
+    "not a git repository" while a tracked, repository-supplied session can still
+    be on disk (provenance unknowable). A conservative lexical walk: it does not
+    replicate git's full discovery rules, and any uncertainty fails closed by
+    reporting that a ``.git`` may be present.
+    """
+    current = Path(os.path.abspath(start))
+    while True:
+        try:
+            if os.path.lexists(current / ".git"):
+                return True
+        except OSError:
+            return True
+        parent = current.parent
+        if parent == current:
+            return False
+        current = parent
 
 
 def tracked_state(cwd: Path, path: Path) -> TrackedState:
@@ -190,7 +216,14 @@ def tracked_state(cwd: Path, path: Path) -> TrackedState:
     if rc is None:
         return TrackedState.UNKNOWN
     if rc != 0:
-        return TrackedState.UNTRACKED if _is_not_a_repository(err) else TrackedState.UNKNOWN
+        # A plain directory with no .git anywhere up the tree is genuinely
+        # repository-free and safe. Git reports the same "not a git repository"
+        # message for a present-but-corrupt .git (e.g. a missing HEAD), where a
+        # tracked .debugbrief can still be on disk and provenance is unknowable,
+        # so only trust the message when no .git exists.
+        if _is_not_a_repository(err) and not _has_dotgit_ancestor(cwd):
+            return TrackedState.UNTRACKED
+        return TrackedState.UNKNOWN
     if out.strip() != "true":
         # Inside a bare repo or a .git directory: not a working tree, so there is
         # no checked-out, committable state path to worry about.

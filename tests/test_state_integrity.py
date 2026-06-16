@@ -229,6 +229,20 @@ def test_tracked_state_distinguishes_committed_from_untracked(tmp_path):
     assert git_utils.is_tracked(tmp_path, untracked) is False
 
 
+def test_tracked_state_treats_a_corrupt_repo_as_unknown(tmp_path):
+    # A present-but-corrupt .git (here, a missing HEAD) makes git report "not a
+    # git repository", the same message as a plain directory. But a tracked
+    # .debugbrief can still be on disk, so provenance is unknowable and redo must
+    # fail closed (UNKNOWN), not treat the broken repo as an untracked directory.
+    _init_repo(tmp_path)
+    state = tmp_path / "s.json"
+    state.write_text("{}", encoding="utf-8")
+    _git(["add", "-f", "s.json"], tmp_path)
+    _git(["commit", "-q", "-m", "seed"], tmp_path)
+    (tmp_path / ".git" / "HEAD").unlink()
+    assert git_utils.tracked_state(tmp_path, state) is git_utils.TrackedState.UNKNOWN
+
+
 def test_tracked_state_ignores_inherited_git_dir(tmp_path, monkeypatch):
     # A stale/inherited GIT_DIR turns off git's repository discovery, so rev-parse
     # reports "not a git repository" even inside a real worktree. The provenance
@@ -280,6 +294,9 @@ def test_tracked_state_fails_closed_when_provenance_is_unknowable(monkeypatch, t
 def test_tracked_state_classifies_definitive_outcomes(monkeypatch, tmp_path):
     TS = git_utils.TrackedState
     # A plain directory that is not a repository carries no committable state.
+    # (No .git exists up-tree, confirmed here so the test does not depend on the
+    # filesystem above tmp_path.)
+    monkeypatch.setattr(git_utils, "_has_dotgit_ancestor", lambda p: False)
     monkeypatch.setattr(
         git_utils,
         "_run_git_rc",

@@ -212,7 +212,7 @@ def test_a_null_nested_object_degrades_to_defaults(project):
 
 
 # Blocker 2: a Git-tracked command is never re-executed by redo ---------------
-def test_is_tracked_distinguishes_committed_from_untracked(tmp_path):
+def test_tracked_state_distinguishes_committed_from_untracked(tmp_path):
     _init_repo(tmp_path)
     tracked = tmp_path / "a.txt"
     tracked.write_text("x", encoding="utf-8")
@@ -221,10 +221,74 @@ def test_is_tracked_distinguishes_committed_from_untracked(tmp_path):
     untracked = tmp_path / "b.txt"
     untracked.write_text("y", encoding="utf-8")
 
+    TS = git_utils.TrackedState
+    assert git_utils.tracked_state(tmp_path, tracked) is TS.TRACKED
+    assert git_utils.tracked_state(tmp_path, untracked) is TS.UNTRACKED
+    # The boolean view stays consistent with the tracked case only.
     assert git_utils.is_tracked(tmp_path, tracked) is True
     assert git_utils.is_tracked(tmp_path, untracked) is False
-    # Outside a repo, conservatively False.
-    assert git_utils.is_tracked(tmp_path / "nope", tmp_path / "nope" / "c") is False
+
+
+def _fake_git_rc(mapping):
+    """Build a fake _run_git_rc that responds per git subcommand (args[0])."""
+
+    def runner(args, cwd):
+        return mapping[args[0]]
+
+    return runner
+
+
+def test_tracked_state_fails_closed_when_provenance_is_unknowable(monkeypatch, tmp_path):
+    # Each case where git cannot give a definitive answer must classify as
+    # UNKNOWN, never UNTRACKED, so the redo guard fails closed.
+    TS = git_utils.TrackedState
+    cases = {
+        "git missing": {"rev-parse": (None, "", "git executable not found")},
+        "rev-parse timeout": {"rev-parse": (None, "", "git command timed out")},
+        "dubious ownership": {
+            "rev-parse": (128, "", "fatal: detected dubious ownership in repository at '/r'")
+        },
+        "corrupt repo": {"rev-parse": (128, "", "fatal: not a valid object name")},
+        "ls-files timeout": {
+            "rev-parse": (0, "true\n", ""),
+            "ls-files": (None, "", "git command timed out"),
+        },
+        "ls-files fatal": {
+            "rev-parse": (0, "true\n", ""),
+            "ls-files": (128, "", "fatal: unable to read index"),
+        },
+    }
+    for label, mapping in cases.items():
+        monkeypatch.setattr(git_utils, "_run_git_rc", _fake_git_rc(mapping))
+        assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNKNOWN, label
+
+
+def test_tracked_state_classifies_definitive_outcomes(monkeypatch, tmp_path):
+    TS = git_utils.TrackedState
+    # A plain directory that is not a repository carries no committable state.
+    monkeypatch.setattr(
+        git_utils,
+        "_run_git_rc",
+        _fake_git_rc({"rev-parse": (128, "", "fatal: not a git repository (or any parent)")}),
+    )
+    assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNTRACKED
+    # A confirmed no-match from ls-files is untracked.
+    monkeypatch.setattr(
+        git_utils,
+        "_run_git_rc",
+        _fake_git_rc(
+            {
+                "rev-parse": (0, "true\n", ""),
+                "ls-files": (1, "", "error: pathspec 's' did not match any file(s) known to git"),
+            }
+        ),
+    )
+    assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNTRACKED
+    # A bare repo / inside .git is not a working tree, so no checked-out state.
+    monkeypatch.setattr(
+        git_utils, "_run_git_rc", _fake_git_rc({"rev-parse": (0, "false\n", "")})
+    )
+    assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNTRACKED
 
 
 def test_redo_refuses_a_command_from_git_tracked_state(tmp_path, monkeypatch, capsys):
@@ -274,6 +338,60 @@ def test_redo_runs_normally_for_untracked_state(tmp_path, monkeypatch, capsys):
     # redo re-runs `true`, which exits 0; the point is it is not refused.
     assert cli.main(["redo"]) == 0
     err = capsys.readouterr().err
+    assert "tracked by Git" not in err
+
+
+def test_redo_refuses_and_does_not_run_when_provenance_is_unknown(
+    tmp_path, monkeypatch, capsys
+):
+    # When git cannot confirm the session is untracked (git missing, a timeout, a
+    # safe.directory rejection, ...), redo must refuse, must not execute the
+    # stored command, and must leave the lease clean for the next command.
+    _init_repo(tmp_path)
+    paths = ProjectPaths(
+        project_root=tmp_path, is_git_repo=True, repo_root=str(tmp_path)
+    )
+    mgr = SessionManager(paths)
+    session = mgr.start("local")
+    now = now_iso8601()
+    command = CommandData(
+        command="true", started_at=now, ended_at=now, duration_seconds=0.0, exit_code=0
+    )
+    session.events.append(Event.command(command, now))
+    mgr.save_session(session)
+    monkeypatch.setattr(cli, "resolve_project_paths", lambda: paths)
+    monkeypatch.setattr(
+        git_utils, "tracked_state", lambda *a, **k: git_utils.TrackedState.UNKNOWN
+    )
+    ran = []
+    monkeypatch.setattr(cli, "run_command", lambda *a, **k: ran.append(a))
+
+    assert cli.main(["redo"]) == 1
+    err = capsys.readouterr().err
+    assert "could not confirm" in err
+    assert ran == []  # the stored command was never executed
+    # The lease is released, so a later command is not wrongly blocked.
+    assert not os.path.lexists(paths.active_command_file)
+    assert mgr._command_is_active() is False
+
+
+def test_redo_runs_in_a_non_git_project(tmp_path, monkeypatch, capsys):
+    # A project that is not a Git repository has no repository-supplied state to
+    # distrust, so redo proceeds (tracked_state is UNTRACKED for a non-repo).
+    paths = ProjectPaths(project_root=tmp_path, is_git_repo=False, repo_root=None)
+    mgr = SessionManager(paths)
+    session = mgr.start("local")
+    now = now_iso8601()
+    command = CommandData(
+        command="true", started_at=now, ended_at=now, duration_seconds=0.0, exit_code=0
+    )
+    session.events.append(Event.command(command, now))
+    mgr.save_session(session)
+    monkeypatch.setattr(cli, "resolve_project_paths", lambda: paths)
+
+    assert cli.main(["redo"]) == 0
+    err = capsys.readouterr().err
+    assert "could not confirm" not in err
     assert "tracked by Git" not in err
 
 

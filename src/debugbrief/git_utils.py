@@ -12,6 +12,7 @@ import hashlib
 import os
 import stat
 import subprocess
+from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -58,12 +59,18 @@ def _is_generated_artifact(path: str) -> bool:
     return False
 
 
-def _run_git(args: List[str], cwd: Path) -> Tuple[bool, str, str]:
-    """Run ``git <args>`` in ``cwd``.
+def _run_git_rc(args: List[str], cwd: Path) -> Tuple[Optional[int], str, str]:
+    """Run ``git <args>`` in ``cwd``, returning (returncode, stdout, stderr).
 
-    Returns (success, stdout, stderr). ``success`` is True only when git is
-    available and exits 0.
+    ``returncode`` is ``None`` when git could not be run at all (not installed,
+    timed out, or another OS error), which a caller must treat as an unknown
+    result rather than a definitive answer. A forced ``C`` locale keeps git's
+    diagnostic messages in English so callers can reliably classify them; path
+    output is requested with ``-z`` elsewhere, so it is unaffected by the locale.
     """
+    env = dict(os.environ)
+    env["LC_ALL"] = "C"
+    env["LANG"] = "C"
     try:
         completed = subprocess.run(
             ["git", *args],
@@ -77,15 +84,26 @@ def _run_git(args: List[str], cwd: Path) -> Tuple[bool, str, str]:
             encoding="utf-8",
             errors="replace",
             timeout=_GIT_TIMEOUT_SECONDS,
+            env=env,
         )
     except FileNotFoundError:
         # git is not installed / not on PATH.
-        return False, "", "git executable not found"
+        return None, "", "git executable not found"
     except subprocess.TimeoutExpired:
-        return False, "", "git command timed out"
+        return None, "", "git command timed out"
     except OSError as exc:  # pragma: no cover - defensive
-        return False, "", str(exc)
-    return completed.returncode == 0, completed.stdout, completed.stderr
+        return None, "", str(exc)
+    return completed.returncode, completed.stdout, completed.stderr
+
+
+def _run_git(args: List[str], cwd: Path) -> Tuple[bool, str, str]:
+    """Run ``git <args>`` in ``cwd``.
+
+    Returns (success, stdout, stderr). ``success`` is True only when git is
+    available and exits 0.
+    """
+    rc, out, err = _run_git_rc(args, cwd)
+    return rc == 0, out, err
 
 
 def is_git_available() -> bool:
@@ -108,17 +126,74 @@ def is_inside_repo(cwd: Path) -> bool:
     return ok and out.strip() == "true"
 
 
-def is_tracked(cwd: Path, path: Path) -> bool:
-    """True if ``path`` is tracked in the Git index of the repo at ``cwd``.
+class TrackedState(Enum):
+    """Whether a path is committed to Git, as far as we could determine.
 
-    Best-effort and conservative: returns False outside a repo, when git is
-    unavailable, or for an untracked path. Used to refuse trusting state that may
-    have been committed by a repository, so a stored command is never re-executed
-    from repository-supplied state (a cloned repo could otherwise ship a seeded
-    ``.debugbrief`` session whose last command runs on ``redo``).
+    Distinguishing ``UNKNOWN`` from ``UNTRACKED`` is a security requirement: the
+    provenance check that guards ``redo`` must fail closed. Collapsing "could not
+    check" into "not tracked" would let a repository-supplied command run in
+    exactly the cases where git is unavailable, times out, or rejects the
+    repository (e.g. ``safe.directory`` ownership) and provenance is unknowable.
     """
-    ok, _, _ = _run_git(["ls-files", "--error-unmatch", "--", str(path)], cwd)
-    return ok
+
+    TRACKED = "tracked"
+    UNTRACKED = "untracked"
+    UNKNOWN = "unknown"
+
+
+def _is_not_a_repository(stderr: str) -> bool:
+    """True if git's error means "this is simply not a Git repository".
+
+    Distinguished from other fatal exit-128 errors (dubious ownership, a corrupt
+    repository) which leave provenance unknowable. Relies on the forced ``C``
+    locale in :func:`_run_git_rc` to keep this message in English.
+    """
+    return "not a git repository" in stderr.lower()
+
+
+def tracked_state(cwd: Path, path: Path) -> TrackedState:
+    """Classify whether ``path`` is tracked in Git, failing closed when unsure.
+
+    Returns:
+    - ``UNTRACKED`` when ``cwd`` is not a Git repository at all, or it is and the
+      path is confirmed absent from the index (``git ls-files`` exits 1 cleanly);
+    - ``TRACKED`` when the path is in the index (``git ls-files`` exits 0);
+    - ``UNKNOWN`` whenever provenance cannot be established: git is missing, times
+      out, or fails for any reason other than a clean "not a repository" or
+      "no match" (a fatal exit such as ``safe.directory`` ownership, a corrupt
+      repository, a permission error, or unexpected output).
+    """
+    # First decide whether we are inside a working tree, which also tells us
+    # whether git works at all here. A clean "not a repository" is safe (a plain
+    # directory cannot carry repository-supplied state); any other inability is
+    # unknown and must fail closed.
+    rc, out, err = _run_git_rc(["rev-parse", "--is-inside-work-tree"], cwd)
+    if rc is None:
+        return TrackedState.UNKNOWN
+    if rc != 0:
+        return TrackedState.UNTRACKED if _is_not_a_repository(err) else TrackedState.UNKNOWN
+    if out.strip() != "true":
+        # Inside a bare repo or a .git directory: not a working tree, so there is
+        # no checked-out, committable state path to worry about.
+        return TrackedState.UNTRACKED
+
+    rc, _, err = _run_git_rc(["ls-files", "--error-unmatch", "--", str(path)], cwd)
+    if rc == 0:
+        return TrackedState.TRACKED
+    if rc == 1 and "did not match" in err.lower():
+        return TrackedState.UNTRACKED
+    # rc is None (git vanished mid-check), exit 128, or any unexpected result.
+    return TrackedState.UNKNOWN
+
+
+def is_tracked(cwd: Path, path: Path) -> bool:
+    """True only if ``path`` is confirmed tracked in Git (see :func:`tracked_state`).
+
+    Thin boolean view for callers that only care about the tracked case. Security
+    decisions that must fail closed should use :func:`tracked_state` directly so
+    an ``UNKNOWN`` result is not silently treated as untracked.
+    """
+    return tracked_state(cwd, path) is TrackedState.TRACKED
 
 
 def current_sha(cwd: Path) -> Optional[str]:

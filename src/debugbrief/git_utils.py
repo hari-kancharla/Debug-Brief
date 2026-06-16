@@ -22,11 +22,13 @@ from .utils import open_regular_binary
 _GIT_TIMEOUT_SECONDS = 15
 
 # Environment variables that redirect git's repository, work-tree, or index
-# selection. They are stripped from every invocation so git always discovers the
-# repository from cwd. An inherited or stale GIT_DIR otherwise "turns off the
-# repository discovery" (per git's docs): rev-parse then reports "not a git
-# repository" inside a real worktree, which would make the redo provenance check
-# treat tracked, repository-supplied state as untracked and fail open.
+# selection. They are stripped only from the redo provenance query (see
+# tracked_state) so that query always discovers the repository from cwd: an
+# inherited or stale GIT_DIR otherwise "turns off the repository discovery" (per
+# git's docs), so rev-parse reports "not a git repository" inside a real worktree
+# and the check would treat tracked, repository-supplied state as untracked and
+# fail open. Report snapshots deliberately keep these variables so they stay
+# aligned with a caller's legitimate env-selected work tree or index.
 _GIT_DISCOVERY_ENV = (
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -76,20 +78,30 @@ def _is_generated_artifact(path: str) -> bool:
     return False
 
 
-def _run_git_rc(args: List[str], cwd: Path) -> Tuple[Optional[int], str, str]:
+def _run_git_rc(
+    args: List[str], cwd: Path, *, sanitized: bool = False
+) -> Tuple[Optional[int], str, str]:
     """Run ``git <args>`` in ``cwd``, returning (returncode, stdout, stderr).
 
     ``returncode`` is ``None`` when git could not be run at all (not installed,
     timed out, or another OS error), which a caller must treat as an unknown
-    result rather than a definitive answer. A forced ``C`` locale keeps git's
-    diagnostic messages in English so callers can reliably classify them; path
-    output is requested with ``-z`` elsewhere, so it is unaffected by the locale.
+    result rather than a definitive answer.
+
+    With ``sanitized`` (the redo provenance query) git runs under a forced ``C``
+    locale, so its diagnostics stay English and classifiable, and with the
+    repository/work-tree/index selection variables stripped, so discovery starts
+    from ``cwd``. Every other caller inherits the caller's environment unchanged,
+    so a report snapshot stays aligned with a legitimate env-selected work tree
+    or index. Path output is requested with ``-z`` elsewhere, so it is unaffected
+    by the forced locale.
     """
-    env = dict(os.environ)
-    env["LC_ALL"] = "C"
-    env["LANG"] = "C"
-    for var in _GIT_DISCOVERY_ENV:
-        env.pop(var, None)
+    env: Optional[Dict[str, str]] = None
+    if sanitized:
+        env = dict(os.environ)
+        env["LC_ALL"] = "C"
+        env["LANG"] = "C"
+        for var in _GIT_DISCOVERY_ENV:
+            env.pop(var, None)
     try:
         completed = subprocess.run(
             ["git", *args],
@@ -212,7 +224,9 @@ def tracked_state(cwd: Path, path: Path) -> TrackedState:
     # whether git works at all here. A clean "not a repository" is safe (a plain
     # directory cannot carry repository-supplied state); any other inability is
     # unknown and must fail closed.
-    rc, out, err = _run_git_rc(["rev-parse", "--is-inside-work-tree"], cwd)
+    rc, out, err = _run_git_rc(
+        ["rev-parse", "--is-inside-work-tree"], cwd, sanitized=True
+    )
     if rc is None:
         return TrackedState.UNKNOWN
     if rc != 0:
@@ -229,7 +243,9 @@ def tracked_state(cwd: Path, path: Path) -> TrackedState:
         # no checked-out, committable state path to worry about.
         return TrackedState.UNTRACKED
 
-    rc, _, err = _run_git_rc(["ls-files", "--error-unmatch", "--", str(path)], cwd)
+    rc, _, err = _run_git_rc(
+        ["ls-files", "--error-unmatch", "--", str(path)], cwd, sanitized=True
+    )
     if rc == 0:
         return TrackedState.TRACKED
     if rc == 1 and "did not match" in err.lower():

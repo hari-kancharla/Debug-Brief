@@ -260,10 +260,39 @@ def test_tracked_state_ignores_inherited_git_dir(tmp_path, monkeypatch):
 def _fake_git_rc(mapping):
     """Build a fake _run_git_rc that responds per git subcommand (args[0])."""
 
-    def runner(args, cwd):
+    def runner(args, cwd, **kwargs):
         return mapping[args[0]]
 
     return runner
+
+
+def test_only_provenance_git_calls_sanitize_the_environment(monkeypatch):
+    # The env sanitization must apply only to the redo provenance query, so a
+    # report snapshot still honors a caller's legitimate env-selected work tree
+    # or index. A normal call inherits the environment (env=None); a provenance
+    # call strips GIT_DIR and forces the C locale.
+    envs = []
+
+    class _Done:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        envs.append(kwargs.get("env"))
+        return _Done()
+
+    monkeypatch.setattr(git_utils.subprocess, "run", fake_run)
+    monkeypatch.setenv("GIT_DIR", "/somewhere.git")
+
+    git_utils._run_git(["rev-parse", "HEAD"], Path("/x"))
+    assert envs[-1] is None  # snapshot call inherits the caller's git env
+
+    git_utils._run_git_rc(["rev-parse", "--is-inside-work-tree"], Path("/x"), sanitized=True)
+    env = envs[-1]
+    assert env is not None
+    assert "GIT_DIR" not in env
+    assert env["LC_ALL"] == "C"
 
 
 def test_tracked_state_fails_closed_when_provenance_is_unknowable(monkeypatch, tmp_path):

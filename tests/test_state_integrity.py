@@ -409,6 +409,26 @@ def test_tracked_state_untracked_when_git_is_absent_in_a_plain_directory(monkeyp
     assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNKNOWN
 
 
+def test_tracked_state_ignores_inherited_unknown_without_a_selection_env(monkeypatch, tmp_path):
+    # Without a git selection env (only a discovery limiter like
+    # GIT_CEILING_DIRECTORIES, or nothing), the sanitized cwd-discovery view is
+    # authoritative: an inherited-pass UNKNOWN must not override a definitive
+    # UNTRACKED, or redo is wrongly refused for ordinary local state.
+    TS = git_utils.TrackedState
+
+    def fake_classify(cwd, path, *, sanitized):
+        return TS.UNTRACKED if sanitized else TS.UNKNOWN
+
+    monkeypatch.setattr(git_utils, "_classify_tracked", fake_classify)
+
+    monkeypatch.setattr(git_utils, "_git_selection_env_present", lambda: False)
+    assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNTRACKED
+    # With a real selector set, the inherited view IS consulted and the most
+    # restrictive result wins.
+    monkeypatch.setattr(git_utils, "_git_selection_env_present", lambda: True)
+    assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNKNOWN
+
+
 def test_tracked_state_classifies_definitive_outcomes(monkeypatch, tmp_path):
     TS = git_utils.TrackedState
     # A plain directory that is not a repository carries no committable state.

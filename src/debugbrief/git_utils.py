@@ -41,17 +41,17 @@ _GIT_DISCOVERY_ENV = (
 )
 
 # The subset of the above that selects a specific repository, work tree, or
-# index. When any is set, the environment asserts a git context, so an inherited
-# provenance pass that still cannot establish the repository is treated as
-# unknown (a broken env-selected repo) rather than a plain directory. The
-# discovery-only modifiers (a ceiling, the cross-filesystem flag) are excluded:
-# they limit discovery but do not assert that a repository exists here.
+# index, so the inherited provenance pass could see different tracking than plain
+# cwd discovery. When any is set, the inherited pass is consulted, and a set but
+# unusable selection is treated as unknown rather than a plain directory.
+# Object-storage variables and the discovery-only limiters (a ceiling, the
+# cross-filesystem flag) are excluded: they do not change which paths are
+# tracked, only where objects live or how far the upward search walks.
 _GIT_SELECTION_ENV = (
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_COMMON_DIR",
     "GIT_INDEX_FILE",
-    "GIT_OBJECT_DIRECTORY",
 )
 
 
@@ -293,23 +293,28 @@ def tracked_state(cwd: Path, path: Path) -> TrackedState:
       "no match" (a fatal exit such as ``safe.directory`` ownership, a corrupt
       repository, a permission error, or unexpected output).
 
-    Two views are combined to stay fail closed under either kind of git
-    environment. The sanitized view ignores the caller's git env and discovers
-    the repository from ``cwd``, so a stale or inherited ``GIT_DIR`` pointing
-    elsewhere cannot hide a tracked file in the real repository. The inherited
-    view honors the caller's env, so a legitimately env-selected work tree (for
-    example ``GIT_DIR`` with ``GIT_WORK_TREE`` and no ``.git`` marker on disk) is
-    still recognized as tracked. The most restrictive result wins: ``TRACKED`` if
-    either view sees the path tracked, otherwise ``UNKNOWN`` if either is unsure,
-    otherwise ``UNTRACKED`` only when both confirm it.
+    The sanitized view ignores the caller's git env and discovers the repository
+    from ``cwd``, so a stale or inherited ``GIT_DIR`` pointing elsewhere cannot
+    hide a tracked file in the real repository. It is authoritative unless the
+    environment actually selects a different repository, work tree, or index
+    (``_GIT_SELECTION_ENV``). When such a selector is set, an inherited view that
+    honors the caller's env is also consulted, so a legitimately env-selected
+    work tree (``GIT_DIR`` with ``GIT_WORK_TREE`` and no ``.git`` marker) is still
+    recognized as tracked, and the most restrictive result wins: ``TRACKED`` if
+    either view sees the path tracked, otherwise ``UNKNOWN`` if either is unsure.
+
+    A discovery-only limiter such as ``GIT_CEILING_DIRECTORIES`` is deliberately
+    not a selector: it only restricts the upward search and is stripped for the
+    sanitized view, so it must not let an inherited no-repo result override a
+    definitive sanitized classification of ordinary local state.
     """
-    views = (
-        _classify_tracked(cwd, path, sanitized=True),
-        _classify_tracked(cwd, path, sanitized=False),
-    )
-    if TrackedState.TRACKED in views:
+    sanitized = _classify_tracked(cwd, path, sanitized=True)
+    if not _git_selection_env_present():
+        return sanitized
+    inherited = _classify_tracked(cwd, path, sanitized=False)
+    if TrackedState.TRACKED in (sanitized, inherited):
         return TrackedState.TRACKED
-    if TrackedState.UNKNOWN in views:
+    if TrackedState.UNKNOWN in (sanitized, inherited):
         return TrackedState.UNKNOWN
     return TrackedState.UNTRACKED
 

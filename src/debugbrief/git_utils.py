@@ -79,7 +79,11 @@ def _is_generated_artifact(path: str) -> bool:
 
 
 def _run_git_rc(
-    args: List[str], cwd: Path, *, sanitized: bool = False
+    args: List[str],
+    cwd: Path,
+    *,
+    stable_locale: bool = False,
+    discover_from_cwd: bool = False,
 ) -> Tuple[Optional[int], str, str]:
     """Run ``git <args>`` in ``cwd``, returning (returncode, stdout, stderr).
 
@@ -87,21 +91,24 @@ def _run_git_rc(
     timed out, or another OS error), which a caller must treat as an unknown
     result rather than a definitive answer.
 
-    With ``sanitized`` (the redo provenance query) git runs under a forced ``C``
-    locale, so its diagnostics stay English and classifiable, and with the
-    repository/work-tree/index selection variables stripped, so discovery starts
-    from ``cwd``. Every other caller inherits the caller's environment unchanged,
-    so a report snapshot stays aligned with a legitimate env-selected work tree
-    or index. Path output is requested with ``-z`` elsewhere, so it is unaffected
-    by the forced locale.
+    ``stable_locale`` forces a ``C`` locale so git's diagnostics stay English and
+    classifiable; both redo provenance passes need it because they recognize an
+    untracked path by git's "did not match" message. ``discover_from_cwd``
+    additionally strips the repository/work-tree/index selection variables so
+    discovery starts from ``cwd`` (it implies a stable locale); only the sanitized
+    provenance pass uses it. Every other caller inherits the caller's environment
+    unchanged, so a report snapshot stays aligned with a legitimate env-selected
+    work tree or index. Path output is requested with ``-z`` elsewhere, so it is
+    unaffected by the forced locale.
     """
     env: Optional[Dict[str, str]] = None
-    if sanitized:
+    if stable_locale or discover_from_cwd:
         env = dict(os.environ)
         env["LC_ALL"] = "C"
         env["LANG"] = "C"
-        for var in _GIT_DISCOVERY_ENV:
-            env.pop(var, None)
+        if discover_from_cwd:
+            for var in _GIT_DISCOVERY_ENV:
+                env.pop(var, None)
     try:
         completed = subprocess.run(
             ["git", *args],
@@ -215,7 +222,10 @@ def _classify_tracked(cwd: Path, path: Path, *, sanitized: bool) -> TrackedState
     # directory cannot carry repository-supplied state); any other inability is
     # unknown and must fail closed.
     rc, out, err = _run_git_rc(
-        ["rev-parse", "--is-inside-work-tree"], cwd, sanitized=sanitized
+        ["rev-parse", "--is-inside-work-tree"],
+        cwd,
+        stable_locale=True,
+        discover_from_cwd=sanitized,
     )
     if rc is None:
         return TrackedState.UNKNOWN
@@ -234,7 +244,10 @@ def _classify_tracked(cwd: Path, path: Path, *, sanitized: bool) -> TrackedState
         return TrackedState.UNTRACKED
 
     rc, _, err = _run_git_rc(
-        ["ls-files", "--error-unmatch", "--", str(path)], cwd, sanitized=sanitized
+        ["ls-files", "--error-unmatch", "--", str(path)],
+        cwd,
+        stable_locale=True,
+        discover_from_cwd=sanitized,
     )
     if rc == 0:
         return TrackedState.TRACKED

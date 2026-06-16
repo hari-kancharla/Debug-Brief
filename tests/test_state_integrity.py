@@ -289,11 +289,10 @@ def _fake_git_rc(mapping):
     return runner
 
 
-def test_only_provenance_git_calls_sanitize_the_environment(monkeypatch):
-    # The env sanitization must apply only to the redo provenance query, so a
-    # report snapshot still honors a caller's legitimate env-selected work tree
-    # or index. A normal call inherits the environment (env=None); a provenance
-    # call strips GIT_DIR and forces the C locale.
+def test_run_git_rc_environment_modes(monkeypatch):
+    # Three modes: a plain snapshot call inherits the caller's environment; a
+    # stable-locale call forces C but keeps the caller's repo selection; a
+    # discover-from-cwd call forces C and strips the repo-selection variables.
     envs = []
 
     class _Done:
@@ -311,11 +310,40 @@ def test_only_provenance_git_calls_sanitize_the_environment(monkeypatch):
     git_utils._run_git(["rev-parse", "HEAD"], Path("/x"))
     assert envs[-1] is None  # snapshot call inherits the caller's git env
 
-    git_utils._run_git_rc(["rev-parse", "--is-inside-work-tree"], Path("/x"), sanitized=True)
-    env = envs[-1]
-    assert env is not None
-    assert "GIT_DIR" not in env
-    assert env["LC_ALL"] == "C"
+    git_utils._run_git_rc(["status"], Path("/x"), stable_locale=True)
+    assert envs[-1]["LC_ALL"] == "C" and "GIT_DIR" in envs[-1]
+
+    git_utils._run_git_rc(["status"], Path("/x"), discover_from_cwd=True)
+    assert envs[-1]["LC_ALL"] == "C" and "GIT_DIR" not in envs[-1]
+
+
+def test_both_provenance_passes_force_a_stable_locale(tmp_path, monkeypatch):
+    # Both provenance passes must force a C locale so git's "did not match" /
+    # "not a git repository" messages stay English and classifiable. Otherwise a
+    # non-English locale makes the inherited pass UNKNOWN and tracked_state
+    # wrongly refuses redo for an untracked session. Only the sanitized pass also
+    # strips the repo-selection env so it discovers from cwd.
+    envs = []
+
+    class _Done:
+        returncode = 0
+        stdout = "true"  # rev-parse: in a work tree; ls-files: exit 0 -> TRACKED
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        envs.append(kwargs.get("env"))
+        return _Done()
+
+    monkeypatch.setattr(git_utils.subprocess, "run", fake_run)
+    monkeypatch.setenv("GIT_DIR", "/somewhere.git")
+
+    assert git_utils.tracked_state(tmp_path, tmp_path / "s") is git_utils.TrackedState.TRACKED
+    # Every provenance git call forces the C locale.
+    assert envs and all(e is not None and e["LC_ALL"] == "C" for e in envs)
+    # The sanitized pass (2 calls) strips GIT_DIR; the inherited pass (2) keeps it
+    # so a legitimate env-selected work tree is still honored.
+    assert sum(1 for e in envs if "GIT_DIR" not in e) == 2
+    assert sum(1 for e in envs if "GIT_DIR" in e) == 2
 
 
 def test_tracked_state_fails_closed_when_provenance_is_unknowable(monkeypatch, tmp_path):

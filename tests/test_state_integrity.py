@@ -257,6 +257,29 @@ def test_tracked_state_ignores_inherited_git_dir(tmp_path, monkeypatch):
     assert git_utils.tracked_state(tmp_path, state) is git_utils.TrackedState.TRACKED
 
 
+def test_tracked_state_sees_an_env_selected_worktree_as_tracked(tmp_path, monkeypatch):
+    # A legitimate env-selected worktree: the repository lives at a separate
+    # gitdir and the checkout has no .git marker, so selection is purely via
+    # GIT_DIR/GIT_WORK_TREE. The sanitized cwd-discovery view sees no repo here,
+    # but the caller-env view finds the tracked file, so the combined result must
+    # be TRACKED (fail closed), not UNTRACKED.
+    gitdir = tmp_path / "repo.git"
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _init_repo(checkout)
+    state = checkout / "s.json"
+    state.write_text("{}", encoding="utf-8")
+    _git(["add", "-f", "s.json"], checkout)
+    _git(["commit", "-q", "-m", "seed"], checkout)
+    # Relocate the gitdir out of the checkout so only the env selects the repo.
+    (checkout / ".git").rename(gitdir)
+    assert not (checkout / ".git").exists()
+    monkeypatch.setenv("GIT_DIR", str(gitdir))
+    monkeypatch.setenv("GIT_WORK_TREE", str(checkout))
+
+    assert git_utils.tracked_state(checkout, state) is git_utils.TrackedState.TRACKED
+
+
 def _fake_git_rc(mapping):
     """Build a fake _run_git_rc that responds per git subcommand (args[0])."""
 

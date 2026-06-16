@@ -208,24 +208,14 @@ def _has_dotgit_ancestor(start: Path) -> bool:
         current = parent
 
 
-def tracked_state(cwd: Path, path: Path) -> TrackedState:
-    """Classify whether ``path`` is tracked in Git, failing closed when unsure.
-
-    Returns:
-    - ``UNTRACKED`` when ``cwd`` is not a Git repository at all, or it is and the
-      path is confirmed absent from the index (``git ls-files`` exits 1 cleanly);
-    - ``TRACKED`` when the path is in the index (``git ls-files`` exits 0);
-    - ``UNKNOWN`` whenever provenance cannot be established: git is missing, times
-      out, or fails for any reason other than a clean "not a repository" or
-      "no match" (a fatal exit such as ``safe.directory`` ownership, a corrupt
-      repository, a permission error, or unexpected output).
-    """
+def _classify_tracked(cwd: Path, path: Path, *, sanitized: bool) -> TrackedState:
+    """Classify ``path`` under one git environment (see :func:`tracked_state`)."""
     # First decide whether we are inside a working tree, which also tells us
     # whether git works at all here. A clean "not a repository" is safe (a plain
     # directory cannot carry repository-supplied state); any other inability is
     # unknown and must fail closed.
     rc, out, err = _run_git_rc(
-        ["rev-parse", "--is-inside-work-tree"], cwd, sanitized=True
+        ["rev-parse", "--is-inside-work-tree"], cwd, sanitized=sanitized
     )
     if rc is None:
         return TrackedState.UNKNOWN
@@ -244,7 +234,7 @@ def tracked_state(cwd: Path, path: Path) -> TrackedState:
         return TrackedState.UNTRACKED
 
     rc, _, err = _run_git_rc(
-        ["ls-files", "--error-unmatch", "--", str(path)], cwd, sanitized=True
+        ["ls-files", "--error-unmatch", "--", str(path)], cwd, sanitized=sanitized
     )
     if rc == 0:
         return TrackedState.TRACKED
@@ -252,6 +242,39 @@ def tracked_state(cwd: Path, path: Path) -> TrackedState:
         return TrackedState.UNTRACKED
     # rc is None (git vanished mid-check), exit 128, or any unexpected result.
     return TrackedState.UNKNOWN
+
+
+def tracked_state(cwd: Path, path: Path) -> TrackedState:
+    """Classify whether ``path`` is tracked in Git, failing closed when unsure.
+
+    Returns:
+    - ``UNTRACKED`` when ``cwd`` is not a Git repository at all, or it is and the
+      path is confirmed absent from the index (``git ls-files`` exits 1 cleanly);
+    - ``TRACKED`` when the path is in the index (``git ls-files`` exits 0);
+    - ``UNKNOWN`` whenever provenance cannot be established: git is missing, times
+      out, or fails for any reason other than a clean "not a repository" or
+      "no match" (a fatal exit such as ``safe.directory`` ownership, a corrupt
+      repository, a permission error, or unexpected output).
+
+    Two views are combined to stay fail closed under either kind of git
+    environment. The sanitized view ignores the caller's git env and discovers
+    the repository from ``cwd``, so a stale or inherited ``GIT_DIR`` pointing
+    elsewhere cannot hide a tracked file in the real repository. The inherited
+    view honors the caller's env, so a legitimately env-selected work tree (for
+    example ``GIT_DIR`` with ``GIT_WORK_TREE`` and no ``.git`` marker on disk) is
+    still recognized as tracked. The most restrictive result wins: ``TRACKED`` if
+    either view sees the path tracked, otherwise ``UNKNOWN`` if either is unsure,
+    otherwise ``UNTRACKED`` only when both confirm it.
+    """
+    views = (
+        _classify_tracked(cwd, path, sanitized=True),
+        _classify_tracked(cwd, path, sanitized=False),
+    )
+    if TrackedState.TRACKED in views:
+        return TrackedState.TRACKED
+    if TrackedState.UNKNOWN in views:
+        return TrackedState.UNKNOWN
+    return TrackedState.UNTRACKED
 
 
 def is_tracked(cwd: Path, path: Path) -> bool:

@@ -2,27 +2,13 @@
 
 [![CI](https://github.com/harihkk/Debug-Brief/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/harihkk/Debug-Brief/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/debugbrief?cacheSeconds=3600)](https://pypi.org/project/debugbrief/)
 
-![A failing test streams live, the fix lands, redo passes, and the generated brief appears](https://raw.githubusercontent.com/harihkk/Debug-Brief/main/docs/demo.gif)
+Record what you do while debugging and turn it into an evidence-backed Markdown report for a pull request, a handoff, or an incident note.
 
-Turn a debugging session into an honest markdown brief for a PR, a handoff, or an
-incident note.
+![A failing test streams live, the fix lands, redo passes, and the generated report appears](https://raw.githubusercontent.com/harihkk/Debug-Brief/main/docs/demo.gif)
 
-You record notes and run commands through DebugBrief while you work. When you are
-done, it writes a report built only from what actually happened: what you tried,
-what failed, what then passed, and which files changed in between. It never
-invents a root cause and never claims a test result you did not get.
-
-It is local-first: standard library plus native `git`, with one conditional
-dependency (`tomli` on Python < 3.11, for reading `.debugbrief.toml`; 3.11+ uses
-the standard-library `tomllib`). No network, no AI, no telemetry. Unix-like
-systems only.
-
-See a real generated report: [examples/sample-pr.md](https://github.com/harihkk/Debug-Brief/blob/main/examples/sample-pr.md).
+DebugBrief captures the notes you write and the commands you run, then builds a report from what actually happened: what you tried, what failed, what passed, and which files changed in between. It does not use AI and does not infer a root cause or report a test result you did not get.
 
 ## Install
-
-DebugBrief is a Python CLI; the simplest installs put it on your PATH in its own
-isolated environment:
 
 ```bash
 pipx install debugbrief
@@ -30,11 +16,7 @@ pipx install debugbrief
 uv tool install debugbrief
 ```
 
-Plain `pip install debugbrief` (or `pip install -e .` from a clone) works too.
-DebugBrief itself needs Python 3.9+ and native `git` on a Unix-like system
-(Linux and macOS are tested; BSD should work). Native Windows/PowerShell is not
-supported. The project you debug does **not** need to be Python: only DebugBrief
-runs on Python.
+Plain `pip install debugbrief` works too. DebugBrief needs Python 3.9 or newer. Native Git is used when available to capture repository metadata and changed files. The project you debug does not need to be Python; only DebugBrief runs on Python.
 
 ## Quickstart
 
@@ -42,119 +24,69 @@ runs on Python.
 debugbrief start "Fix add() returning wrong result"
 debugbrief note "add() subtracts instead of adds; the test expects 5."
 debugbrief run -- python -m pytest -q test_calc.py   # fails
-# ... make your fix ...
-debugbrief redo                                      # same test again: passes
-debugbrief end                                       # writes the pr-style brief
+# make your fix
+debugbrief redo                                      # same test, now passes
+debugbrief end                                       # writes the PR report
 ```
 
-Everything after `--` runs exactly as you typed it, with its output streaming
-live to your terminal; DebugBrief flags (`--timeout`, `--shell`, `--no-redact`)
-go before the `--`. Quoting the whole command also works: `debugbrief run
-"pytest -q"`. `redo` re-runs the last captured command, and `end` defaults to
-the `pr` report mode.
+Everything after `--` runs exactly as you typed it, with its output streaming live to your terminal. DebugBrief flags (`--timeout`, `--shell`, `--no-redact`, `--verify`) go before the `--`. `redo` re-runs the last captured command, and `end` defaults to the `pr` report mode.
 
-Tip: a one-line alias makes the capture prefix disappear in daily use:
+Tip: a one-line alias makes the capture prefix disappear in daily use.
 
 ```bash
 alias db="debugbrief run --"
 db pytest -q
 ```
 
-`run` and `note` auto-start a session if you forget to, so a capture is never
-lost (and `debugbrief cancel` discards a session you did not mean to start).
-The resulting report leads with a derived one-liner like:
+## What you get
 
-> Failing check `python -m pytest -q test_calc.py` passed after 2 attempts over
-> 2s, changes touched calc.py.
+A report built only from recorded evidence. A short excerpt from a real run:
 
-## Works with any language
+```markdown
+## Summary
 
-DebugBrief wraps whatever command you run, so the project being debugged can be
-in any language. A recognized test/build/lint/typecheck runner is classified
-automatically; any other command is still captured, and you mark it a check with
-`--verify`:
+Failing check `python -m pytest -q test_calc.py` passed after 2 attempts over 2s, changes touched calc.py.
 
-```bash
-debugbrief run -- npm test
-debugbrief run -- go test ./...
-debugbrief run -- cargo test
-debugbrief run -- ./gradlew test          # or: mvn test
-debugbrief run -- dotnet test
-debugbrief run -- make check
-debugbrief run --verify -- ./scripts/integration.sh   # custom check
+## Red to green
+
+A check failed at 12:02:09 and `python -m pytest -q test_calc.py` passed at 12:02:10 (window 1s).
+
+Between the failing and passing checks, these files changed (correlation, not proven cause):
+- `calc.py`
 ```
 
-A compound shell command (`run --shell "a && b | c"`) is recorded conservatively
-as a single command, not attributed to one tool; run a check on its own, or
-declare the whole command with `--verify`, to have it counted as a verification.
+Full samples: [PR](https://github.com/harihkk/Debug-Brief/blob/main/examples/sample-pr.md), [handoff](https://github.com/harihkk/Debug-Brief/blob/main/examples/sample-handoff.md), [incident](https://github.com/harihkk/Debug-Brief/blob/main/examples/sample-incident.md).
 
 ## How it works
 
-- `run` executes a command under a pseudo-terminal so its output streams live,
-  records its real exit code, bounded output, duration, and a per-command git
-  snapshot, then returns the command's own exit code.
-- Pass/fail comes only from the exit code. A command counts as "verified" only if
-  a recognized test/build/lint/typecheck command actually exited `0`.
-- Recognized runners include pytest, unittest, tox, vitest, jest, bun test,
-  deno test, node --test, npm/pnpm/yarn test, go test, cargo test, make
-  test/check, dotnet test, ctest, phpunit, mix test, swift test, rspec, and
-  mvn/gradle test. For custom scripts, declare the check yourself:
-  `debugbrief run --verify -- ./scripts/test.sh`.
-- `end` derives the report from those events: the red-to-green window, the
-  reproduce/verify commands, a timeline, the observed error verbatim, and the
-  failed attempts. Empty sections are omitted, never padded.
-- Redaction runs before anything reaches disk and catches common shapes:
-  sensitive `name=value` pairs, bearer and authorization headers, OpenAI/AWS/
-  GitHub style keys, connection-string passwords, and PEM private key blocks,
-  each replaced with `[redacted]`. Best effort by design; `--no-redact` opts
-  out per command.
+- `run` executes a command under a pseudo-terminal so its output streams live, then records the real exit code, a bounded output preview, the duration, and a per-command `git` snapshot.
+- Pass or fail comes only from the exit code. A command counts as verified only when a recognized test, build, lint, or typecheck runner actually exits 0.
+- It works with any language. A recognized runner (pytest, jest, vitest, go test, cargo test, dotnet test, make check, and more) is classified automatically. Any other command is still captured, and you mark it a check with `--verify`.
+- `end` derives the report from those events: the red-to-green window, the reproduce and verify commands, a timeline, the observed error, and the failed attempts. Empty sections are omitted.
+- Secrets are redacted before anything is written to disk. Redaction is best effort; `--no-redact` opts out for a single command.
 
-## Commands
+Full command reference and the complete recognized-runner list: [docs/COMMANDS.md](https://github.com/harihkk/Debug-Brief/blob/main/docs/COMMANDS.md). Security model and redaction details: [SECURITY.md](https://github.com/harihkk/Debug-Brief/blob/main/SECURITY.md).
 
-| Command | What it does |
-| --- | --- |
-| `init` | Set up the project and show the workflow |
-| `start "<title>"` | Start a session |
-| `note <text ...>` | Record a note (quoting optional) |
-| `run -- <command ...>` | Execute and capture a command |
-| `redo` | Re-run the last captured command |
-| `preview [--mode ...]` | Print the report without ending the session |
-| `end [--mode pr\|handoff\|incident] [--detail compact]` | Finalize and write a report (default `pr`) |
-| `cancel [--yes]` | Discard the active session, no report |
-| `status` | Show the active session |
-| `doctor [--fix]` | Health-check the project and state |
-| `recover` | Repair a broken session pointer after a crash |
-| `last` / `open` | Find or open the most recent report |
-| `list` / `show <id>` | Browse recorded sessions |
-
-`debugbrief init` sets up a project in one step (and prints the `db` alias).
-`end --detail compact` writes a shorter PR brief, and an optional
-`.debugbrief.toml` sets default mode, timeout, and detail. Full detail, flags,
-and the report modes: [docs/COMMANDS.md](https://github.com/harihkk/Debug-Brief/blob/main/docs/COMMANDS.md).
-
-Post a brief straight to a PR (GitHub CLI optional):
+Post a report straight to a pull request (GitHub CLI optional):
 
 ```bash
 debugbrief end --stdout | gh pr comment --body-file -
 ```
 
+## Dependencies
+
+DebugBrief uses the Python standard library and native `git`. On Python 3.11 and newer it needs nothing else. On Python 3.9 and 3.10 it uses the small `tomli` package to read an optional `.debugbrief.toml`. DebugBrief itself makes no network requests, uses no AI, and collects no telemetry.
+
+## Supported platforms
+
+Linux and macOS are tested in CI across Python 3.9 through 3.14. Other Unix-like systems may work but are not currently tested. Native Windows and PowerShell are not supported.
+
 ## Limitations
 
-- Unix-like only; no Windows/PowerShell.
-- Capture is explicit via `debugbrief run`. Output streams live while a bounded
-  preview is stored for the report; DebugBrief does not keep a full transcript.
-- Commands run under a pseudo-terminal so output streams live; full-screen TUIs
-  (a `vim` session, `htop`) still are not meaningfully captured, since their
-  cursor-control output is not linear text. Run those directly and record the
-  outcome with `note`. Where no pseudo-terminal is available (a locked-down
-  sandbox), capture falls back to plain pipes.
-- Termination signals the command's process group, so ordinary background
-  children are cleaned up. A child that detaches into its own session (`setsid`)
-  but keeps one of the captured streams open is reported as a warning; one that
-  also closes its inherited output descriptors can outlive the command without
-  being detectable by a standard-library process-group runner.
+- Capture is explicit through `debugbrief run`. Output streams live while a bounded preview is stored for the report, so there is no full transcript.
+- Full-screen TUIs (a `vim` session, `htop`) are not meaningfully captured. Run those directly and record the outcome with `note`.
 - Redaction is conservative and best effort; it does not catch every secret.
-- Git sections need native `git`; outside a repo they are omitted honestly.
+- Git sections need native `git`; outside a repository they are omitted.
 
 ## Development
 
@@ -162,6 +94,8 @@ debugbrief end --stdout | gh pr comment --body-file -
 pip install -e ".[dev]"
 pytest
 ```
+
+See [CONTRIBUTING.md](https://github.com/harihkk/Debug-Brief/blob/main/CONTRIBUTING.md) for the full setup and contribution guidelines.
 
 ## License
 

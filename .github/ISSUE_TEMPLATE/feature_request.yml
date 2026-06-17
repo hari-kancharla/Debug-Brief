@@ -1,0 +1,25 @@
+name: Feature request
+description: Suggest a change or addition.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that DebugBrief does not support today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: What you would like it to do, and how you imagine using it.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you have tried or other approaches you weighed.
+    validations:
+      required: false

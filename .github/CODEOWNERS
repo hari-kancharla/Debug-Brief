@@ -1,0 +1,5 @@
+# Code owners for DebugBrief.
+# The owner is requested for review on pull requests that touch matching paths.
+# A catch-all keeps the whole repository owned while there is a single maintainer.
+
+* @harihkk

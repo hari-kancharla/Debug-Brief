@@ -73,6 +73,35 @@ Post a report straight to a pull request (GitHub CLI optional):
 debugbrief end --stdout | gh pr comment --body-file -
 ```
 
+## Commands
+
+The five you use most:
+
+| Command | What it does |
+| --- | --- |
+| `start "<title>"` | Start a session |
+| `note <text>` | Record an observation |
+| `run -- <command>` | Run and capture a command |
+| `redo` | Re-run the last captured command |
+| `end [--mode pr\|handoff\|incident]` | Finalize and write a report (default `pr`) |
+
+The rest:
+
+| Command | What it does |
+| --- | --- |
+| `init` | Set up the project and show the workflow |
+| `status` | Show the active session |
+| `preview [--mode ...]` | Print the report without ending the session |
+| `cancel [--yes]` | Discard the active session, no report |
+| `doctor [--fix]` | Health-check the project and state |
+| `recover` | Repair a broken session pointer after a crash |
+| `last` | Show the most recent report path |
+| `open` | Open the most recent report |
+| `list` | List recorded sessions |
+| `show <id>` | Show a recorded session |
+
+Full flags and behavior for each: [docs/COMMANDS.md](https://github.com/harihkk/Debug-Brief/blob/main/docs/COMMANDS.md).
+
 ## Dependencies
 
 DebugBrief uses the Python standard library and native `git`. On Python 3.11 and newer it needs nothing else. On Python 3.9 and 3.10 it uses the small `tomli` package to read an optional `.debugbrief.toml`. DebugBrief itself makes no network requests, uses no AI, and collects no telemetry.

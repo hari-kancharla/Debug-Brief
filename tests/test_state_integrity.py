@@ -340,11 +340,11 @@ def test_tracked_state_allows_a_local_session_beside_committed_debugbrief_files(
     assert git_utils.tracked_state(tmp_path, state) is git_utils.TrackedState.UNTRACKED
 
 
-def test_modifier_env_vars_do_not_force_unknown_without_git_dir(tmp_path, monkeypatch):
-    # GIT_WORK_TREE, GIT_COMMON_DIR, and GIT_INDEX_FILE are modifiers: alone (a
-    # stale shell env) they do not establish a repository, so in a plain non-git
-    # directory they must not turn redo's provenance into UNKNOWN. Only GIT_DIR by
-    # itself asserts a repository and escalates an unusable one to UNKNOWN.
+def test_stale_modifier_env_vars_do_not_refuse_redo_in_a_plain_directory(tmp_path, monkeypatch):
+    # A stale modifier env var pointing nowhere (a leftover shell env) must not
+    # make a plain non-git directory look like a repository, so redo's provenance
+    # stays UNTRACKED. GIT_DIR, which names a repository outright, still fails
+    # closed when unreadable.
     TS = git_utils.TrackedState
     for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"):
         monkeypatch.delenv(var, raising=False)
@@ -354,15 +354,37 @@ def test_modifier_env_vars_do_not_force_unknown_without_git_dir(tmp_path, monkey
         "_run_git_rc",
         _fake_git_rc({"rev-parse": (128, "", "fatal: not a git repository (or any parent)")}),
     )
+    nowhere = str(tmp_path / "nonexistent")
     for var in ("GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"):
-        monkeypatch.setenv(var, "/tmp/whatever")
-        assert git_utils._git_repo_selector_present() is False, var
+        monkeypatch.setenv(var, nowhere)
         assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNTRACKED, var
         monkeypatch.delenv(var, raising=False)
-    # GIT_DIR alone asserts a repository and still fails closed when unusable.
-    monkeypatch.setenv("GIT_DIR", "/nonexistent.git")
-    assert git_utils._git_repo_selector_present() is True
+    # GIT_DIR names a repository outright, so it still fails closed when unusable.
+    monkeypatch.setenv("GIT_DIR", nowhere)
     assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNKNOWN
+
+
+def test_git_work_tree_pointing_at_a_real_repo_is_unknown_when_unreadable(tmp_path, monkeypatch):
+    # GIT_WORK_TREE designating a work tree that actually has a .git means a
+    # repository is involved. If the inherited rev-parse cannot read it, redo must
+    # fail closed (UNKNOWN), not treat the checkout as a plain directory. This is
+    # the counterpart to the stale-GIT_WORK_TREE case above; the deciding signal
+    # is whether a real repository exists, not merely that the var is set.
+    TS = git_utils.TrackedState
+    for var in ("GIT_DIR", "GIT_COMMON_DIR", "GIT_INDEX_FILE"):
+        monkeypatch.delenv(var, raising=False)
+    work_tree = tmp_path / "wt"
+    (work_tree / ".git").mkdir(parents=True)  # a real .git at the designated tree
+    monkeypatch.setenv("GIT_WORK_TREE", str(work_tree))
+    # Both passes fail to establish a repo from cwd (which has no .git).
+    monkeypatch.setattr(
+        git_utils,
+        "_run_git_rc",
+        _fake_git_rc({"rev-parse": (128, "", "fatal: not a git repository (or any parent)")}),
+    )
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert git_utils.tracked_state(plain, plain / "s") is TS.UNKNOWN
 
 
 def test_git_index_file_alternate_index_is_honored(tmp_path, monkeypatch):

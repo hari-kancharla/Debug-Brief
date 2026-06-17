@@ -40,30 +40,15 @@ _GIT_DISCOVERY_ENV = (
     "GIT_DISCOVERY_ACROSS_FILESYSTEM",
 )
 
-# Two distinct roles a git environment variable can play, which must not be
-# conflated (doing so caused redo to oscillate between failing open and refusing
-# safe local sessions):
-#
-# 1. Could it make git's view of *which paths are tracked* differ from plain cwd
-#    discovery? If so the inherited pass is worth consulting alongside the
-#    sanitized one, so a session tracked only in the caller's selected repository,
-#    work tree, or index is still caught. Running the inherited pass is harmless
-#    when nothing differs (it just agrees with the sanitized pass).
-# 2. Does it, by itself, assert that a *repository exists*? Only then does a
-#    failed inherited read mean "a repository we cannot read" (UNKNOWN, fail
-#    closed) rather than "a plain directory" (UNTRACKED).
-#
-# Only GIT_DIR asserts a repository. GIT_WORK_TREE, GIT_COMMON_DIR, and
-# GIT_INDEX_FILE are modifiers that take effect only once a git directory is
-# found (git's docs: work-tree/common-dir apply once a git dir is specified,
-# GIT_INDEX_FILE is the index path for non-bare repos only). Shells, hooks, and
-# tools commonly leave them set, so treating one as a standalone repo selector
-# would wrongly refuse redo in a plain non-Git directory. But they can still
-# change tracking once a repo is found, so they belong in the tracking set.
+# Git environment variables that could make git's view of which paths are tracked
+# differ from plain cwd discovery: a different repository, work tree, or index. If
+# any is set, the inherited pass is consulted alongside the sanitized one, so a
+# session tracked only in the caller's selected repository, work tree, or index is
+# still caught. Running the inherited pass is harmless when nothing differs.
 # Object-storage variables and the discovery-only limiters (a ceiling, the
-# cross-filesystem flag) change neither tracking nor repository existence here.
+# cross-filesystem flag) change neither which paths are tracked nor whether a
+# repository exists, so they are excluded.
 _GIT_TRACKING_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")
-_GIT_REPO_SELECTOR_ENV = ("GIT_DIR",)
 
 
 def _git_tracking_env_present() -> bool:
@@ -71,9 +56,35 @@ def _git_tracking_env_present() -> bool:
     return any(os.environ.get(var) for var in _GIT_TRACKING_ENV)
 
 
-def _git_repo_selector_present() -> bool:
-    """True if the environment asserts a specific git repository exists (GIT_DIR)."""
-    return any(os.environ.get(var) for var in _GIT_REPO_SELECTOR_ENV)
+def _repository_plausibly_present(cwd: Path, *, use_env: bool) -> bool:
+    """Whether a git repository is plausibly involved, for the fail-closed branch.
+
+    Decides UNKNOWN (a repository we could not read, so redo fails closed) versus
+    UNTRACKED (genuinely no repository, so redo is safe) when git could not
+    establish a repository from ``cwd``. Keyed on whether a repository actually
+    exists, not merely on which environment variables are set, because no single
+    setting distinguishes a stale variable in a plain directory from one
+    designating a real work tree.
+
+    A ``.git`` at or above ``cwd`` always counts. On the inherited pass
+    (``use_env``) a repository the caller's environment designates also counts:
+    ``GIT_DIR`` names one outright, ``GIT_WORK_TREE`` designates a work tree that
+    itself has a ``.git``, and ``GIT_COMMON_DIR`` points at an existing git common
+    directory. A stale variable that points nowhere does not make a plain
+    directory look like a repository, so a bare ``GIT_WORK_TREE`` stays untracked
+    while one pointing at a real checkout fails closed.
+    """
+    if _has_dotgit_ancestor(cwd):
+        return True
+    if not use_env:
+        return False
+    if os.environ.get("GIT_DIR"):
+        return True
+    work_tree = os.environ.get("GIT_WORK_TREE")
+    if work_tree and _has_dotgit_ancestor(Path(work_tree)):
+        return True
+    common_dir = os.environ.get("GIT_COMMON_DIR")
+    return bool(common_dir and os.path.isdir(common_dir))
 
 
 # Generated/cache artifact names that should never appear in a change summary.
@@ -343,14 +354,12 @@ def _classify_tracked(cwd: Path, path: Path, *, sanitized: bool) -> TrackedState
     # Git could not establish a repository here: it could not run at all (rc is
     # None: not installed, timed out) or it failed (rc != 0). A genuinely
     # repository-free directory is safe regardless of why, because nothing could
-    # have supplied committed state: there is no .git on disk and, on the
-    # inherited pass, no git selection env asserting a repository. The sanitized
-    # pass has stripped that env, so for it a missing .git already means no repo.
-    env_selected = not sanitized and _git_repo_selector_present()
-    if _has_dotgit_ancestor(cwd) or env_selected:
-        # A repository context exists but could not be read: a present-but-broken
-        # .git (e.g. a missing HEAD), dubious ownership, or a set-but-unusable
-        # selection env. A tracked session may exist, so provenance is unknowable.
+    # have supplied committed state. But if a repository is plausibly present and
+    # we simply could not read it (a present-but-broken .git, dubious ownership,
+    # or an env-designated work tree), a tracked session may exist, so provenance
+    # is unknowable and redo must fail closed. The sanitized pass ignores the
+    # caller's env, so for it only a .git on disk counts.
+    if _repository_plausibly_present(cwd, use_env=not sanitized):
         return TrackedState.UNKNOWN
     if rc is None or _is_not_a_repository(err):
         return TrackedState.UNTRACKED
@@ -381,12 +390,13 @@ def tracked_state(cwd: Path, path: Path) -> TrackedState:
     env-selected work tree (``GIT_DIR`` with ``GIT_WORK_TREE`` and no ``.git``
     marker) and a session tracked only in a caller-selected ``GIT_INDEX_FILE``.
 
-    Only ``GIT_DIR`` asserts that a repository exists (``_GIT_REPO_SELECTOR_ENV``);
-    the other tracking variables are modifiers, so a stale one in a plain
-    directory does not turn an inherited no-repo result into ``UNKNOWN`` and
-    wrongly refuse safe local state. A discovery-only limiter such as
-    ``GIT_CEILING_DIRECTORIES`` is neither: it only restricts the upward search
-    and is stripped for the sanitized view.
+    When git cannot establish a repository, whether to fail closed is keyed on
+    whether a repository is actually present (see
+    :func:`_repository_plausibly_present`), not merely on which variables are set,
+    so a stale ``GIT_WORK_TREE`` in a plain directory does not refuse safe local
+    state, while one pointing at a real checkout does. A discovery-only limiter
+    such as ``GIT_CEILING_DIRECTORIES`` only restricts the upward search and is
+    stripped for the sanitized view.
     """
     sanitized = _classify_tracked(cwd, path, sanitized=True)
     if not _git_tracking_env_present():

@@ -1,9 +1,11 @@
 name: Release
 
-# Publishes to PyPI using Trusted Publishing (OIDC), so no API token is stored.
-# Runs only when a GitHub Release is published, and builds from that release's
-# tagged commit. Configure the trusted publisher once on PyPI:
-# https://docs.pypi.org/trusted-publishers/
+# Publishes to PyPI when a GitHub Release is published, building from that
+# release's tagged commit. Authentication uses a PyPI API token stored as the
+# repository secret PYPI_API_TOKEN (Settings, Secrets and variables, Actions).
+# The token is never stored in this file. skip-existing keeps a re-run from
+# failing when a version is already on PyPI. Trusted Publishing (OIDC) is a
+# token-free alternative if you prefer to set it up: https://docs.pypi.org/trusted-publishers/
 
 on:
   release:
@@ -51,14 +53,14 @@ jobs:
     name: Publish to PyPI
     needs: build
     runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write
     steps:
       - name: Download distributions
         uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist/
-      - name: Publish with Trusted Publishing
+      - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true

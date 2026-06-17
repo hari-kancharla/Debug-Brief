@@ -1,15 +1,20 @@
 # Security
 
 DebugBrief is a local-first command-line tool. It runs as you, on your machine,
-and sends nothing over the network.
+and makes no network requests of its own.
 
 ## What data leaves your machine
 
-Nothing. DebugBrief has no network code: no telemetry, no accounts, no cloud
-sync, no update checks. It reads and writes only under your project's
-`.debugbrief/` directory and shells out to local `git` and to the commands you
-ask it to run. Generated reports are plain files; sharing one (pasting it into a
-pull request, for example) is an explicit action you take.
+DebugBrief itself sends nothing. It has no network code: no telemetry, no
+accounts, no cloud sync, no update checks. It reads and writes only under your
+project's `.debugbrief/` directory and shells out to local `git` and to the
+commands you ask it to run.
+
+Commands you run through DebugBrief keep their normal behavior. A command can
+access the network exactly as it would if you ran it directly, so what such a
+command sends is up to that command, not DebugBrief. Generated reports are plain
+files; sharing one (pasting it into a pull request, for example) is an explicit
+action you take.
 
 ## Threat model
 
@@ -79,8 +84,9 @@ place.
 
 ## Supported platforms
 
-Unix-like systems only. Linux and macOS are tested in CI across Python
-3.9-3.14. BSD should work. Native Windows and PowerShell are not supported.
+Unix-like systems only. Linux and macOS are tested in CI across Python 3.9
+through 3.14. Other Unix-like systems may work but are not currently tested.
+Native Windows and PowerShell are not supported.
 
 ## Reporting a vulnerability
 

@@ -16,7 +16,7 @@ pipx install debugbrief
 uv tool install debugbrief
 ```
 
-Plain `pip install debugbrief` works too. DebugBrief needs Python 3.9 or newer and native `git`. The project you debug does not need to be Python; only DebugBrief runs on Python.
+Plain `pip install debugbrief` works too. DebugBrief needs Python 3.9 or newer. Native Git is used when available to capture repository metadata and changed files. The project you debug does not need to be Python; only DebugBrief runs on Python.
 
 ## Quickstart
 
@@ -75,7 +75,7 @@ debugbrief end --stdout | gh pr comment --body-file -
 
 ## Dependencies
 
-DebugBrief uses the Python standard library and native `git`. On Python 3.11 and newer it needs nothing else. On Python 3.9 and 3.10 it uses the small `tomli` package to read an optional `.debugbrief.toml`. There is no network access, no AI, and no telemetry.
+DebugBrief uses the Python standard library and native `git`. On Python 3.11 and newer it needs nothing else. On Python 3.9 and 3.10 it uses the small `tomli` package to read an optional `.debugbrief.toml`. DebugBrief itself makes no network requests, uses no AI, and collects no telemetry.
 
 ## Supported platforms
 

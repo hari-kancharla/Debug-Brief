@@ -88,3 +88,11 @@ python -m debugbrief --help
 - Describe what changed and why.
 - Confirm `python -m pytest` passes and the wheel still builds.
 - Keep changes focused; prefer several small PRs over one large one.
+
+## Review and merge
+
+`main` is protected: changes land through a pull request with CI passing and all
+review conversations resolved, not by direct pushes. The repository owner
+(@harihkk, see [CODEOWNERS](.github/CODEOWNERS)) reviews and merges. Outside
+contributions are welcome but are merged only after that review. Maintainer
+protection settings are documented in [docs/maintainers.md](docs/maintainers.md).

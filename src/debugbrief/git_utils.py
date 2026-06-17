@@ -40,28 +40,40 @@ _GIT_DISCOVERY_ENV = (
     "GIT_DISCOVERY_ACROSS_FILESYSTEM",
 )
 
-# The variable that, by itself, asserts a repository, so the inherited provenance
-# pass could see a real repository that plain cwd discovery does not (an
-# env-selected repository whose .git marker is not on disk). When it is set, the
-# inherited pass is consulted, and a set-but-unusable selection is treated as
-# unknown rather than a plain directory.
+# Two distinct roles a git environment variable can play, which must not be
+# conflated (doing so caused redo to oscillate between failing open and refusing
+# safe local sessions):
 #
-# Only GIT_DIR qualifies. Every other git environment variable is a modifier or a
-# limiter that does not by itself establish that a repository exists: git's docs
-# describe GIT_WORK_TREE and GIT_COMMON_DIR as used only once a git directory is
-# specified, GIT_INDEX_FILE as the index path for non-bare repositories only, and
-# the discovery limiters (a ceiling, the cross-filesystem flag) and object-storage
-# variables likewise apply only to an already-found repository. Shells, hooks, and
-# tools commonly leave these set in the environment, so treating any of them as a
-# standalone selector would run the inherited pass in a plain non-Git directory,
-# classify it unknown, and wrongly refuse redo. They are all stripped for the
-# sanitized pass, so it discovers the canonical repository from cwd regardless.
-_GIT_SELECTION_ENV = ("GIT_DIR",)
+# 1. Could it make git's view of *which paths are tracked* differ from plain cwd
+#    discovery? If so the inherited pass is worth consulting alongside the
+#    sanitized one, so a session tracked only in the caller's selected repository,
+#    work tree, or index is still caught. Running the inherited pass is harmless
+#    when nothing differs (it just agrees with the sanitized pass).
+# 2. Does it, by itself, assert that a *repository exists*? Only then does a
+#    failed inherited read mean "a repository we cannot read" (UNKNOWN, fail
+#    closed) rather than "a plain directory" (UNTRACKED).
+#
+# Only GIT_DIR asserts a repository. GIT_WORK_TREE, GIT_COMMON_DIR, and
+# GIT_INDEX_FILE are modifiers that take effect only once a git directory is
+# found (git's docs: work-tree/common-dir apply once a git dir is specified,
+# GIT_INDEX_FILE is the index path for non-bare repos only). Shells, hooks, and
+# tools commonly leave them set, so treating one as a standalone repo selector
+# would wrongly refuse redo in a plain non-Git directory. But they can still
+# change tracking once a repo is found, so they belong in the tracking set.
+# Object-storage variables and the discovery-only limiters (a ceiling, the
+# cross-filesystem flag) change neither tracking nor repository existence here.
+_GIT_TRACKING_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")
+_GIT_REPO_SELECTOR_ENV = ("GIT_DIR",)
 
 
-def _git_selection_env_present() -> bool:
-    """True if the environment selects a specific git repository (GIT_DIR)."""
-    return any(os.environ.get(var) for var in _GIT_SELECTION_ENV)
+def _git_tracking_env_present() -> bool:
+    """True if the environment could change which paths git reports as tracked."""
+    return any(os.environ.get(var) for var in _GIT_TRACKING_ENV)
+
+
+def _git_repo_selector_present() -> bool:
+    """True if the environment asserts a specific git repository exists (GIT_DIR)."""
+    return any(os.environ.get(var) for var in _GIT_REPO_SELECTOR_ENV)
 
 
 # Generated/cache artifact names that should never appear in a change summary.
@@ -273,7 +285,7 @@ def _classify_tracked(cwd: Path, path: Path, *, sanitized: bool) -> TrackedState
     # have supplied committed state: there is no .git on disk and, on the
     # inherited pass, no git selection env asserting a repository. The sanitized
     # pass has stripped that env, so for it a missing .git already means no repo.
-    env_selected = not sanitized and _git_selection_env_present()
+    env_selected = not sanitized and _git_repo_selector_present()
     if _has_dotgit_ancestor(cwd) or env_selected:
         # A repository context exists but could not be read: a present-but-broken
         # .git (e.g. a missing HEAD), dubious ownership, or a set-but-unusable
@@ -300,20 +312,23 @@ def tracked_state(cwd: Path, path: Path) -> TrackedState:
     The sanitized view ignores the caller's git env and discovers the repository
     from ``cwd``, so a stale or inherited ``GIT_DIR`` pointing elsewhere cannot
     hide a tracked file in the real repository. It is authoritative unless the
-    environment actually selects a different repository, work tree, or index
-    (``_GIT_SELECTION_ENV``). When such a selector is set, an inherited view that
-    honors the caller's env is also consulted, so a legitimately env-selected
-    work tree (``GIT_DIR`` with ``GIT_WORK_TREE`` and no ``.git`` marker) is still
-    recognized as tracked, and the most restrictive result wins: ``TRACKED`` if
-    either view sees the path tracked, otherwise ``UNKNOWN`` if either is unsure.
+    environment could make git see different tracking (``_GIT_TRACKING_ENV``: a
+    different repository, work tree, or index). When one of those is set, an
+    inherited view that honors the caller's env is also consulted and the most
+    restrictive result wins: ``TRACKED`` if either view sees the path tracked,
+    otherwise ``UNKNOWN`` if either is unsure. This catches both a legitimately
+    env-selected work tree (``GIT_DIR`` with ``GIT_WORK_TREE`` and no ``.git``
+    marker) and a session tracked only in a caller-selected ``GIT_INDEX_FILE``.
 
-    A discovery-only limiter such as ``GIT_CEILING_DIRECTORIES`` is deliberately
-    not a selector: it only restricts the upward search and is stripped for the
-    sanitized view, so it must not let an inherited no-repo result override a
-    definitive sanitized classification of ordinary local state.
+    Only ``GIT_DIR`` asserts that a repository exists (``_GIT_REPO_SELECTOR_ENV``);
+    the other tracking variables are modifiers, so a stale one in a plain
+    directory does not turn an inherited no-repo result into ``UNKNOWN`` and
+    wrongly refuse safe local state. A discovery-only limiter such as
+    ``GIT_CEILING_DIRECTORIES`` is neither: it only restricts the upward search
+    and is stripped for the sanitized view.
     """
     sanitized = _classify_tracked(cwd, path, sanitized=True)
-    if not _git_selection_env_present():
+    if not _git_tracking_env_present():
         return sanitized
     inherited = _classify_tracked(cwd, path, sanitized=False)
     if TrackedState.TRACKED in (sanitized, inherited):

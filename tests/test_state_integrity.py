@@ -295,12 +295,11 @@ def test_tracked_state_unknown_for_a_broken_env_selected_repo(tmp_path, monkeypa
     assert git_utils.tracked_state(checkout, state) is git_utils.TrackedState.UNKNOWN
 
 
-def test_only_git_dir_is_a_standalone_repo_selector(tmp_path, monkeypatch):
-    # Only GIT_DIR by itself establishes a repository. GIT_WORK_TREE,
-    # GIT_COMMON_DIR, and GIT_INDEX_FILE are modifiers that matter only once a git
-    # dir is found; shells/hooks may leave any of them set in a plain directory.
-    # None of them must run the inherited pass and turn redo's provenance into
-    # UNKNOWN in a non-git directory, or safe local sessions get refused.
+def test_modifier_env_vars_do_not_force_unknown_without_git_dir(tmp_path, monkeypatch):
+    # GIT_WORK_TREE, GIT_COMMON_DIR, and GIT_INDEX_FILE are modifiers: alone (a
+    # stale shell env) they do not establish a repository, so in a plain non-git
+    # directory they must not turn redo's provenance into UNKNOWN. Only GIT_DIR by
+    # itself asserts a repository and escalates an unusable one to UNKNOWN.
     TS = git_utils.TrackedState
     for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"):
         monkeypatch.delenv(var, raising=False)
@@ -312,14 +311,34 @@ def test_only_git_dir_is_a_standalone_repo_selector(tmp_path, monkeypatch):
     )
     for var in ("GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"):
         monkeypatch.setenv(var, "/tmp/whatever")
-        assert git_utils._git_selection_env_present() is False, var
+        assert git_utils._git_repo_selector_present() is False, var
         assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNTRACKED, var
         monkeypatch.delenv(var, raising=False)
-    # GIT_DIR alone is the only standalone selector and still fails closed when the
-    # repository it names is unusable.
+    # GIT_DIR alone asserts a repository and still fails closed when unusable.
     monkeypatch.setenv("GIT_DIR", "/nonexistent.git")
-    assert git_utils._git_selection_env_present() is True
+    assert git_utils._git_repo_selector_present() is True
     assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNKNOWN
+
+
+def test_git_index_file_alternate_index_is_honored(tmp_path, monkeypatch):
+    # When GIT_INDEX_FILE selects an alternate index in a real worktree, a session
+    # tracked in that index must be caught (fail closed) even though the canonical
+    # index the sanitized pass reads does not contain it.
+    TS = git_utils.TrackedState
+    monkeypatch.delenv("GIT_DIR", raising=False)
+    monkeypatch.setenv("GIT_INDEX_FILE", "/tmp/alt.index")
+
+    def fake(args, cwd, **kwargs):
+        if args[0] == "rev-parse":
+            return (0, "true\n", "")
+        # ls-files: the sanitized pass (canonical index) misses it; the inherited
+        # pass (the caller's GIT_INDEX_FILE) finds it tracked.
+        if kwargs.get("discover_from_cwd"):
+            return (1, "", "error: pathspec 's' did not match any file(s) known to git")
+        return (0, "", "")
+
+    monkeypatch.setattr(git_utils, "_run_git_rc", fake)
+    assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.TRACKED
 
 
 def _fake_git_rc(mapping):
@@ -422,7 +441,7 @@ def test_tracked_state_untracked_when_git_is_absent_in_a_plain_directory(monkeyp
     # than be refused. Provenance is only unknowable when a repository context
     # actually exists.
     TS = git_utils.TrackedState
-    monkeypatch.setattr(git_utils, "_git_selection_env_present", lambda: False)
+    monkeypatch.setattr(git_utils, "_git_tracking_env_present", lambda: False)
     monkeypatch.setattr(
         git_utils,
         "_run_git_rc",
@@ -448,11 +467,11 @@ def test_tracked_state_ignores_inherited_unknown_without_a_selection_env(monkeyp
 
     monkeypatch.setattr(git_utils, "_classify_tracked", fake_classify)
 
-    monkeypatch.setattr(git_utils, "_git_selection_env_present", lambda: False)
+    monkeypatch.setattr(git_utils, "_git_tracking_env_present", lambda: False)
     assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNTRACKED
     # With a real selector set, the inherited view IS consulted and the most
     # restrictive result wins.
-    monkeypatch.setattr(git_utils, "_git_selection_env_present", lambda: True)
+    monkeypatch.setattr(git_utils, "_git_tracking_env_present", lambda: True)
     assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNKNOWN
 
 
@@ -462,7 +481,7 @@ def test_tracked_state_classifies_definitive_outcomes(monkeypatch, tmp_path):
     # (No .git exists up-tree and no git selection env is set, confirmed here so
     # the test does not depend on the filesystem above tmp_path or a leaked env.)
     monkeypatch.setattr(git_utils, "_has_dotgit_ancestor", lambda p: False)
-    monkeypatch.setattr(git_utils, "_git_selection_env_present", lambda: False)
+    monkeypatch.setattr(git_utils, "_git_tracking_env_present", lambda: False)
     monkeypatch.setattr(
         git_utils,
         "_run_git_rc",

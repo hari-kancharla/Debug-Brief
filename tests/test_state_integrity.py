@@ -295,13 +295,14 @@ def test_tracked_state_unknown_for_a_broken_env_selected_repo(tmp_path, monkeypa
     assert git_utils.tracked_state(checkout, state) is git_utils.TrackedState.UNKNOWN
 
 
-def test_bare_git_index_file_is_not_a_repo_selector(tmp_path, monkeypatch):
-    # GIT_INDEX_FILE alone does not establish a repository (git documents it as the
-    # index path for non-bare repos only); shells/hooks may leave it set. In a
-    # plain non-git directory it must not run the inherited pass and turn redo's
-    # provenance into UNKNOWN. A genuine selector like GIT_DIR still does.
+def test_only_git_dir_is_a_standalone_repo_selector(tmp_path, monkeypatch):
+    # Only GIT_DIR by itself establishes a repository. GIT_WORK_TREE,
+    # GIT_COMMON_DIR, and GIT_INDEX_FILE are modifiers that matter only once a git
+    # dir is found; shells/hooks may leave any of them set in a plain directory.
+    # None of them must run the inherited pass and turn redo's provenance into
+    # UNKNOWN in a non-git directory, or safe local sessions get refused.
     TS = git_utils.TrackedState
-    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"):
+    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(git_utils, "_has_dotgit_ancestor", lambda p: False)
     monkeypatch.setattr(
@@ -309,10 +310,13 @@ def test_bare_git_index_file_is_not_a_repo_selector(tmp_path, monkeypatch):
         "_run_git_rc",
         _fake_git_rc({"rev-parse": (128, "", "fatal: not a git repository (or any parent)")}),
     )
-    monkeypatch.setenv("GIT_INDEX_FILE", "/tmp/alt.index")
-    assert git_utils._git_selection_env_present() is False
-    assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNTRACKED
-    # A real selector still triggers fail-closed handling of an unusable repo.
+    for var in ("GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"):
+        monkeypatch.setenv(var, "/tmp/whatever")
+        assert git_utils._git_selection_env_present() is False, var
+        assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNTRACKED, var
+        monkeypatch.delenv(var, raising=False)
+    # GIT_DIR alone is the only standalone selector and still fails closed when the
+    # repository it names is unusable.
     monkeypatch.setenv("GIT_DIR", "/nonexistent.git")
     assert git_utils._git_selection_env_present() is True
     assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNKNOWN

@@ -40,30 +40,27 @@ _GIT_DISCOVERY_ENV = (
     "GIT_DISCOVERY_ACROSS_FILESYSTEM",
 )
 
-# The subset of the above that, by itself, asserts a specific repository or work
-# tree, so the inherited provenance pass could see a real repository that plain
-# cwd discovery does not (an env-selected work tree with no .git marker). When one
-# is set, the inherited pass is consulted, and a set-but-unusable selection is
-# treated as unknown rather than a plain directory.
+# The variable that, by itself, asserts a repository, so the inherited provenance
+# pass could see a real repository that plain cwd discovery does not (an
+# env-selected repository whose .git marker is not on disk). When it is set, the
+# inherited pass is consulted, and a set-but-unusable selection is treated as
+# unknown rather than a plain directory.
 #
-# GIT_INDEX_FILE is deliberately excluded: git documents it as the index path for
-# non-bare repositories only, so it does not by itself establish that a repository
-# exists (a shell, hook, or tool may leave it set in a plain directory). It only
-# changes which index is read once a repository is found, and the sanitized pass
-# already reads the canonical index by stripping it, which is the right provenance
-# signal. Treating a bare GIT_INDEX_FILE as a selector would wrongly refuse redo
-# in a non-Git directory. Object-storage variables and the discovery-only limiters
-# (a ceiling, the cross-filesystem flag) are excluded for the same reason: they do
-# not establish or change which paths a repository tracks.
-_GIT_SELECTION_ENV = (
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_COMMON_DIR",
-)
+# Only GIT_DIR qualifies. Every other git environment variable is a modifier or a
+# limiter that does not by itself establish that a repository exists: git's docs
+# describe GIT_WORK_TREE and GIT_COMMON_DIR as used only once a git directory is
+# specified, GIT_INDEX_FILE as the index path for non-bare repositories only, and
+# the discovery limiters (a ceiling, the cross-filesystem flag) and object-storage
+# variables likewise apply only to an already-found repository. Shells, hooks, and
+# tools commonly leave these set in the environment, so treating any of them as a
+# standalone selector would run the inherited pass in a plain non-Git directory,
+# classify it unknown, and wrongly refuse redo. They are all stripped for the
+# sanitized pass, so it discovers the canonical repository from cwd regardless.
+_GIT_SELECTION_ENV = ("GIT_DIR",)
 
 
 def _git_selection_env_present() -> bool:
-    """True if the environment asserts a specific git repository or work tree."""
+    """True if the environment selects a specific git repository (GIT_DIR)."""
     return any(os.environ.get(var) for var in _GIT_SELECTION_ENV)
 
 

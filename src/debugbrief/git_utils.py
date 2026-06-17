@@ -12,6 +12,7 @@ import hashlib
 import os
 import stat
 import subprocess
+from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -19,6 +20,72 @@ from .models import GitState
 from .utils import open_regular_binary
 
 _GIT_TIMEOUT_SECONDS = 15
+
+# Environment variables that redirect git's repository, work-tree, or index
+# selection. They are stripped only from the redo provenance query (see
+# tracked_state) so that query always discovers the repository from cwd: an
+# inherited or stale GIT_DIR otherwise "turns off the repository discovery" (per
+# git's docs), so rev-parse reports "not a git repository" inside a real worktree
+# and the check would treat tracked, repository-supplied state as untracked and
+# fail open. Report snapshots deliberately keep these variables so they stay
+# aligned with a caller's legitimate env-selected work tree or index.
+_GIT_DISCOVERY_ENV = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+)
+
+# Git environment variables that could make git's view of which paths are tracked
+# differ from plain cwd discovery: a different repository, work tree, or index. If
+# any is set, the inherited pass is consulted alongside the sanitized one, so a
+# session tracked only in the caller's selected repository, work tree, or index is
+# still caught. Running the inherited pass is harmless when nothing differs.
+# Object-storage variables and the discovery-only limiters (a ceiling, the
+# cross-filesystem flag) change neither which paths are tracked nor whether a
+# repository exists, so they are excluded.
+_GIT_TRACKING_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")
+
+
+def _git_tracking_env_present() -> bool:
+    """True if the environment could change which paths git reports as tracked."""
+    return any(os.environ.get(var) for var in _GIT_TRACKING_ENV)
+
+
+def _repository_plausibly_present(cwd: Path, *, use_env: bool) -> bool:
+    """Whether a git repository is plausibly involved, for the fail-closed branch.
+
+    Decides UNKNOWN (a repository we could not read, so redo fails closed) versus
+    UNTRACKED (genuinely no repository, so redo is safe) when git could not
+    establish a repository from ``cwd``. Keyed on whether a repository actually
+    exists, not merely on which environment variables are set, because no single
+    setting distinguishes a stale variable in a plain directory from one
+    designating a real work tree.
+
+    A ``.git`` at or above ``cwd`` always counts. On the inherited pass
+    (``use_env``) a repository the caller's environment designates also counts:
+    ``GIT_DIR`` names one outright, ``GIT_WORK_TREE`` designates a work tree that
+    itself has a ``.git``, and ``GIT_COMMON_DIR`` points at an existing git common
+    directory. A stale variable that points nowhere does not make a plain
+    directory look like a repository, so a bare ``GIT_WORK_TREE`` stays untracked
+    while one pointing at a real checkout fails closed.
+    """
+    if _has_dotgit_ancestor(cwd):
+        return True
+    if not use_env:
+        return False
+    if os.environ.get("GIT_DIR"):
+        return True
+    work_tree = os.environ.get("GIT_WORK_TREE")
+    if work_tree and _has_dotgit_ancestor(Path(work_tree)):
+        return True
+    common_dir = os.environ.get("GIT_COMMON_DIR")
+    return bool(common_dir and os.path.isdir(common_dir))
+
 
 # Generated/cache artifact names that should never appear in a change summary.
 _ARTIFACT_DIR_NAMES = frozenset(
@@ -58,12 +125,37 @@ def _is_generated_artifact(path: str) -> bool:
     return False
 
 
-def _run_git(args: List[str], cwd: Path) -> Tuple[bool, str, str]:
-    """Run ``git <args>`` in ``cwd``.
+def _run_git_rc(
+    args: List[str],
+    cwd: Path,
+    *,
+    stable_locale: bool = False,
+    discover_from_cwd: bool = False,
+) -> Tuple[Optional[int], str, str]:
+    """Run ``git <args>`` in ``cwd``, returning (returncode, stdout, stderr).
 
-    Returns (success, stdout, stderr). ``success`` is True only when git is
-    available and exits 0.
+    ``returncode`` is ``None`` when git could not be run at all (not installed,
+    timed out, or another OS error), which a caller must treat as an unknown
+    result rather than a definitive answer.
+
+    ``stable_locale`` forces a ``C`` locale so git's diagnostics stay English and
+    classifiable; both redo provenance passes need it because they recognize an
+    untracked path by git's "did not match" message. ``discover_from_cwd``
+    additionally strips the repository/work-tree/index selection variables so
+    discovery starts from ``cwd`` (it implies a stable locale); only the sanitized
+    provenance pass uses it. Every other caller inherits the caller's environment
+    unchanged, so a report snapshot stays aligned with a legitimate env-selected
+    work tree or index. Path output is requested with ``-z`` elsewhere, so it is
+    unaffected by the forced locale.
     """
+    env: Optional[Dict[str, str]] = None
+    if stable_locale or discover_from_cwd:
+        env = dict(os.environ)
+        env["LC_ALL"] = "C"
+        env["LANG"] = "C"
+        if discover_from_cwd:
+            for var in _GIT_DISCOVERY_ENV:
+                env.pop(var, None)
     try:
         completed = subprocess.run(
             ["git", *args],
@@ -77,15 +169,26 @@ def _run_git(args: List[str], cwd: Path) -> Tuple[bool, str, str]:
             encoding="utf-8",
             errors="replace",
             timeout=_GIT_TIMEOUT_SECONDS,
+            env=env,
         )
     except FileNotFoundError:
         # git is not installed / not on PATH.
-        return False, "", "git executable not found"
+        return None, "", "git executable not found"
     except subprocess.TimeoutExpired:
-        return False, "", "git command timed out"
+        return None, "", "git command timed out"
     except OSError as exc:  # pragma: no cover - defensive
-        return False, "", str(exc)
-    return completed.returncode == 0, completed.stdout, completed.stderr
+        return None, "", str(exc)
+    return completed.returncode, completed.stdout, completed.stderr
+
+
+def _run_git(args: List[str], cwd: Path) -> Tuple[bool, str, str]:
+    """Run ``git <args>`` in ``cwd``.
+
+    Returns (success, stdout, stderr). ``success`` is True only when git is
+    available and exits 0.
+    """
+    rc, out, err = _run_git_rc(args, cwd)
+    return rc == 0, out, err
 
 
 def is_git_available() -> bool:
@@ -108,17 +211,212 @@ def is_inside_repo(cwd: Path) -> bool:
     return ok and out.strip() == "true"
 
 
-def is_tracked(cwd: Path, path: Path) -> bool:
-    """True if ``path`` is tracked in the Git index of the repo at ``cwd``.
+class TrackedState(Enum):
+    """Whether a path is committed to Git, as far as we could determine.
 
-    Best-effort and conservative: returns False outside a repo, when git is
-    unavailable, or for an untracked path. Used to refuse trusting state that may
-    have been committed by a repository, so a stored command is never re-executed
-    from repository-supplied state (a cloned repo could otherwise ship a seeded
-    ``.debugbrief`` session whose last command runs on ``redo``).
+    Distinguishing ``UNKNOWN`` from ``UNTRACKED`` is a security requirement: the
+    provenance check that guards ``redo`` must fail closed. Collapsing "could not
+    check" into "not tracked" would let a repository-supplied command run in
+    exactly the cases where git is unavailable, times out, or rejects the
+    repository (e.g. ``safe.directory`` ownership) and provenance is unknowable.
     """
-    ok, _, _ = _run_git(["ls-files", "--error-unmatch", "--", str(path)], cwd)
-    return ok
+
+    TRACKED = "tracked"
+    UNTRACKED = "untracked"
+    UNKNOWN = "unknown"
+
+
+def _is_not_a_repository(stderr: str) -> bool:
+    """True if git's error means "this is simply not a Git repository".
+
+    Distinguished from other fatal exit-128 errors (dubious ownership, a corrupt
+    repository) which leave provenance unknowable. Relies on the forced ``C``
+    locale in :func:`_run_git_rc` to keep this message in English. Note git emits
+    this same message for a present-but-broken ``.git`` (e.g. a missing ``HEAD``),
+    so callers must also confirm no ``.git`` exists before trusting it as a plain
+    directory (see :func:`_has_dotgit_ancestor`).
+    """
+    return "not a git repository" in stderr.lower()
+
+
+def _has_dotgit_ancestor(start: Path) -> bool:
+    """True if a ``.git`` entry exists at ``start`` or any ancestor directory.
+
+    Used only to tell a genuinely repository-free directory (safe to treat as
+    untracked) apart from a present-but-corrupt ``.git`` that makes git report
+    "not a git repository" while a tracked, repository-supplied session can still
+    be on disk (provenance unknowable). A conservative lexical walk: it does not
+    replicate git's full discovery rules, and any uncertainty fails closed by
+    reporting that a ``.git`` may be present.
+    """
+    current = Path(os.path.abspath(start))
+    while True:
+        try:
+            if os.path.lexists(current / ".git"):
+                return True
+        except OSError:
+            return True
+        parent = current.parent
+        if parent == current:
+            return False
+        current = parent
+
+
+def _ancestors_within(cwd: Path, path: Path) -> List[Path]:
+    """Directory ancestors of ``path`` strictly between it and ``cwd``.
+
+    Nearest first, excluding ``cwd`` and the leaf itself, and empty when ``path``
+    is not under ``cwd``. Used to detect a repository-tracked ancestor (for
+    example a submodule gitlink at ``.debugbrief``, or a committed parent
+    directory) when the leaf session file itself is not directly in the index.
+    """
+    cwd_abs = Path(os.path.abspath(cwd))
+    parent = Path(os.path.abspath(path)).parent
+    ancestors: List[Path] = []
+    while parent != cwd_abs and cwd_abs in parent.parents:
+        ancestors.append(parent)
+        parent = parent.parent
+    return ancestors
+
+
+def _ancestor_gitlink_state(cwd: Path, ancestor: Path, *, sanitized: bool) -> TrackedState:
+    """Whether ``ancestor`` is itself a submodule gitlink index entry.
+
+    A directory is never an index entry except as a submodule gitlink (mode
+    ``160000``), so an exact gitlink at ``ancestor`` means the repository owns the
+    session file beneath it. Tracked *descendant* files under a normal directory
+    (for example a committed ``.debugbrief/README.md``) do not count: they do not
+    make a separate, locally created session file repository-supplied.
+
+    Returns ``TRACKED`` for an exact gitlink, ``UNTRACKED`` when ``ancestor`` is
+    not an index entry, and ``UNKNOWN`` when the check could not run.
+    """
+    rel = os.path.relpath(os.path.abspath(ancestor), os.path.abspath(cwd))
+    rc, out, _ = _run_git_rc(
+        ["ls-files", "-sz", "--", rel],
+        cwd,
+        stable_locale=True,
+        discover_from_cwd=sanitized,
+    )
+    if rc != 0:
+        return TrackedState.UNKNOWN
+    # ls-files -sz entries: "<mode> <sha> <stage>\t<path>" terminated by NUL.
+    for entry in out.split("\0"):
+        if not entry:
+            continue
+        meta, tab, epath = entry.partition("\t")
+        if tab and meta.split(" ", 1)[0] == "160000" and epath == rel:
+            return TrackedState.TRACKED
+    return TrackedState.UNTRACKED
+
+
+def _classify_tracked(cwd: Path, path: Path, *, sanitized: bool) -> TrackedState:
+    """Classify ``path`` under one git environment (see :func:`tracked_state`)."""
+    # First decide whether we are inside a working tree, which also tells us
+    # whether git works at all here.
+    rc, out, err = _run_git_rc(
+        ["rev-parse", "--is-inside-work-tree"],
+        cwd,
+        stable_locale=True,
+        discover_from_cwd=sanitized,
+    )
+    if rc == 0:
+        if out.strip() != "true":
+            # Inside a bare repo or a .git directory: not a working tree, so there
+            # is no checked-out, committable state path to worry about.
+            return TrackedState.UNTRACKED
+        rc, _, err = _run_git_rc(
+            ["ls-files", "--error-unmatch", "--", str(path)],
+            cwd,
+            stable_locale=True,
+            discover_from_cwd=sanitized,
+        )
+        if rc == 0:
+            return TrackedState.TRACKED
+        if rc == 1 and "did not match" in err.lower():
+            # The leaf file is not directly in the index, but the repository can
+            # still own it through a submodule gitlink ancestor: .debugbrief
+            # shipped as a submodule means the parent index holds only the gitlink,
+            # while the session lives in the submodule's checkout. Only an exact
+            # gitlink ancestor counts; tracked sibling files under a normal
+            # .debugbrief directory do not make this local session repo-supplied.
+            for ancestor in _ancestors_within(cwd, path):
+                state = _ancestor_gitlink_state(cwd, ancestor, sanitized=sanitized)
+                if state is TrackedState.TRACKED:
+                    return TrackedState.TRACKED
+                if state is TrackedState.UNKNOWN:
+                    return TrackedState.UNKNOWN
+                # Not a gitlink: keep checking higher ancestors.
+            return TrackedState.UNTRACKED
+        # rc is None (git vanished mid-check), exit 128, or unexpected output.
+        return TrackedState.UNKNOWN
+
+    # Git could not establish a repository here: it could not run at all (rc is
+    # None: not installed, timed out) or it failed (rc != 0). A genuinely
+    # repository-free directory is safe regardless of why, because nothing could
+    # have supplied committed state. But if a repository is plausibly present and
+    # we simply could not read it (a present-but-broken .git, dubious ownership,
+    # or an env-designated work tree), a tracked session may exist, so provenance
+    # is unknowable and redo must fail closed. The sanitized pass ignores the
+    # caller's env, so for it only a .git on disk counts.
+    if _repository_plausibly_present(cwd, use_env=not sanitized):
+        return TrackedState.UNKNOWN
+    if rc is None or _is_not_a_repository(err):
+        return TrackedState.UNTRACKED
+    # git ran and failed for another reason without a discoverable repository.
+    return TrackedState.UNKNOWN
+
+
+def tracked_state(cwd: Path, path: Path) -> TrackedState:
+    """Classify whether ``path`` is tracked in Git, failing closed when unsure.
+
+    Returns:
+    - ``UNTRACKED`` when ``cwd`` is not a Git repository at all, or it is and the
+      path is confirmed absent from the index (``git ls-files`` exits 1 cleanly);
+    - ``TRACKED`` when the path is in the index (``git ls-files`` exits 0);
+    - ``UNKNOWN`` whenever provenance cannot be established: git is missing, times
+      out, or fails for any reason other than a clean "not a repository" or
+      "no match" (a fatal exit such as ``safe.directory`` ownership, a corrupt
+      repository, a permission error, or unexpected output).
+
+    The sanitized view ignores the caller's git env and discovers the repository
+    from ``cwd``, so a stale or inherited ``GIT_DIR`` pointing elsewhere cannot
+    hide a tracked file in the real repository. It is authoritative unless the
+    environment could make git see different tracking (``_GIT_TRACKING_ENV``: a
+    different repository, work tree, or index). When one of those is set, an
+    inherited view that honors the caller's env is also consulted and the most
+    restrictive result wins: ``TRACKED`` if either view sees the path tracked,
+    otherwise ``UNKNOWN`` if either is unsure. This catches both a legitimately
+    env-selected work tree (``GIT_DIR`` with ``GIT_WORK_TREE`` and no ``.git``
+    marker) and a session tracked only in a caller-selected ``GIT_INDEX_FILE``.
+
+    When git cannot establish a repository, whether to fail closed is keyed on
+    whether a repository is actually present (see
+    :func:`_repository_plausibly_present`), not merely on which variables are set,
+    so a stale ``GIT_WORK_TREE`` in a plain directory does not refuse safe local
+    state, while one pointing at a real checkout does. A discovery-only limiter
+    such as ``GIT_CEILING_DIRECTORIES`` only restricts the upward search and is
+    stripped for the sanitized view.
+    """
+    sanitized = _classify_tracked(cwd, path, sanitized=True)
+    if not _git_tracking_env_present():
+        return sanitized
+    inherited = _classify_tracked(cwd, path, sanitized=False)
+    if TrackedState.TRACKED in (sanitized, inherited):
+        return TrackedState.TRACKED
+    if TrackedState.UNKNOWN in (sanitized, inherited):
+        return TrackedState.UNKNOWN
+    return TrackedState.UNTRACKED
+
+
+def is_tracked(cwd: Path, path: Path) -> bool:
+    """True only if ``path`` is confirmed tracked in Git (see :func:`tracked_state`).
+
+    Thin boolean view for callers that only care about the tracked case. Security
+    decisions that must fail closed should use :func:`tracked_state` directly so
+    an ``UNKNOWN`` result is not silently treated as untracked.
+    """
+    return tracked_state(cwd, path) is TrackedState.TRACKED
 
 
 def current_sha(cwd: Path) -> Optional[str]:

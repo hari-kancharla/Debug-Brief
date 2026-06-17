@@ -37,9 +37,15 @@ hazards rather than a remote attacker:
   cloned repository could ship a pre-seeded session. DebugBrief does not trust
   that state to drive execution: `debugbrief redo` refuses to re-run a command
   from a session file that is tracked by Git (the state DebugBrief writes is kept
-  out of the index), the id inside a session file is bound to its filename so it
-  cannot redirect a write outside `sessions/`, and a malformed or hostile state
-  file produces a reported error rather than a crash.
+  out of the index). This check **fails closed**: when a Git repository is
+  present but DebugBrief cannot confirm whether the session file is tracked (Git
+  is unavailable or times out, or the repository is rejected, for example a
+  `safe.directory` ownership error, or is corrupt), `redo` refuses rather than
+  assume the state is safe. In a directory that is not a Git repository at all,
+  no repository could have supplied the state, so `redo` still works normally,
+  including on machines without Git installed. The id inside a session file is
+  bound to its filename so it cannot redirect a write outside `sessions/`, and a
+  malformed or hostile state file produces a reported error rather than a crash.
 
 It does **not** defend against a local attacker who already has write access to
 your `.debugbrief/` directory or who can modify the commands you run.

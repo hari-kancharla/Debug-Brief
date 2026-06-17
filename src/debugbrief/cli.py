@@ -509,23 +509,34 @@ def cmd_redo(args: argparse.Namespace) -> int:
         if not events:
             eprint("No commands have been captured in this session yet.")
             return 1
-        # Refuse to re-execute a command from session state tracked by Git: a
-        # cloned repository could ship a seeded .debugbrief session whose last
-        # command would otherwise run here. State DebugBrief writes is kept out of
-        # the index (ensure_local_ignore), so this only trips on repo-supplied
-        # state.
-        if session is not None and git_utils.is_tracked(
-            paths.project_root, paths.session_file(session.session_id)
-        ):
-            eprint(
-                "The active session is stored in a file tracked by Git, so it may "
-                "have come from the repository rather than your own runs. "
-                "DebugBrief will not re-run a command from repository-supplied "
-                "state. Remove it from the index "
-                "(git rm --cached -r .debugbrief) and run the command yourself: "
-                "debugbrief run -- <command>"
+        # Refuse to re-execute a command unless the session file is confirmed not
+        # to be tracked by Git: a cloned repository could ship a seeded
+        # .debugbrief session whose last command would otherwise run here. State
+        # DebugBrief writes is kept out of the index (ensure_local_ignore), so a
+        # TRACKED result means repository-supplied state. The check fails closed:
+        # when provenance cannot be established (git missing, a timeout, or a
+        # fatal error such as safe.directory ownership), redo is refused too.
+        if session is not None:
+            state = git_utils.tracked_state(
+                paths.project_root, paths.session_file(session.session_id)
             )
-            return 1
+            if state is git_utils.TrackedState.TRACKED:
+                eprint(
+                    "The active session is stored in a file tracked by Git, so it "
+                    "may have come from the repository rather than your own runs. "
+                    "DebugBrief will not re-run a command from repository-supplied "
+                    "state. Remove it from the index "
+                    "(git rm --cached -r .debugbrief) and run the command "
+                    "yourself: debugbrief run -- <command>"
+                )
+                return 1
+            if state is git_utils.TrackedState.UNKNOWN:
+                eprint(
+                    "DebugBrief could not confirm whether this session file is "
+                    "tracked by Git, so redo was refused for safety. Run the "
+                    "command manually with: debugbrief run -- <command>"
+                )
+                return 1
         last = CommandData.from_dict(events[-1].data)
         if PLACEHOLDER in last.command:
             eprint(

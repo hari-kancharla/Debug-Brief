@@ -212,7 +212,7 @@ def test_a_null_nested_object_degrades_to_defaults(project):
 
 
 # Blocker 2: a Git-tracked command is never re-executed by redo ---------------
-def test_is_tracked_distinguishes_committed_from_untracked(tmp_path):
+def test_tracked_state_distinguishes_committed_from_untracked(tmp_path):
     _init_repo(tmp_path)
     tracked = tmp_path / "a.txt"
     tracked.write_text("x", encoding="utf-8")
@@ -221,10 +221,357 @@ def test_is_tracked_distinguishes_committed_from_untracked(tmp_path):
     untracked = tmp_path / "b.txt"
     untracked.write_text("y", encoding="utf-8")
 
+    TS = git_utils.TrackedState
+    assert git_utils.tracked_state(tmp_path, tracked) is TS.TRACKED
+    assert git_utils.tracked_state(tmp_path, untracked) is TS.UNTRACKED
+    # The boolean view stays consistent with the tracked case only.
     assert git_utils.is_tracked(tmp_path, tracked) is True
     assert git_utils.is_tracked(tmp_path, untracked) is False
-    # Outside a repo, conservatively False.
-    assert git_utils.is_tracked(tmp_path / "nope", tmp_path / "nope" / "c") is False
+
+
+def test_tracked_state_treats_a_corrupt_repo_as_unknown(tmp_path):
+    # A present-but-corrupt .git (here, a missing HEAD) makes git report "not a
+    # git repository", the same message as a plain directory. But a tracked
+    # .debugbrief can still be on disk, so provenance is unknowable and redo must
+    # fail closed (UNKNOWN), not treat the broken repo as an untracked directory.
+    _init_repo(tmp_path)
+    state = tmp_path / "s.json"
+    state.write_text("{}", encoding="utf-8")
+    _git(["add", "-f", "s.json"], tmp_path)
+    _git(["commit", "-q", "-m", "seed"], tmp_path)
+    (tmp_path / ".git" / "HEAD").unlink()
+    assert git_utils.tracked_state(tmp_path, state) is git_utils.TrackedState.UNKNOWN
+
+
+def test_tracked_state_ignores_inherited_git_dir(tmp_path, monkeypatch):
+    # A stale/inherited GIT_DIR turns off git's repository discovery, so rev-parse
+    # reports "not a git repository" even inside a real worktree. The provenance
+    # check must still discover the repo from cwd and see the tracked file (fail
+    # closed), not classify it UNTRACKED and let redo run repository state.
+    _init_repo(tmp_path)
+    state = tmp_path / "s.json"
+    state.write_text("{}", encoding="utf-8")
+    _git(["add", "-f", "s.json"], tmp_path)
+    _git(["commit", "-q", "-m", "seed"], tmp_path)
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "nonexistent-git-dir"))
+    assert git_utils.tracked_state(tmp_path, state) is git_utils.TrackedState.TRACKED
+
+
+def test_tracked_state_sees_an_env_selected_worktree_as_tracked(tmp_path, monkeypatch):
+    # A legitimate env-selected worktree: the repository lives at a separate
+    # gitdir and the checkout has no .git marker, so selection is purely via
+    # GIT_DIR/GIT_WORK_TREE. The sanitized cwd-discovery view sees no repo here,
+    # but the caller-env view finds the tracked file, so the combined result must
+    # be TRACKED (fail closed), not UNTRACKED.
+    gitdir = tmp_path / "repo.git"
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _init_repo(checkout)
+    state = checkout / "s.json"
+    state.write_text("{}", encoding="utf-8")
+    _git(["add", "-f", "s.json"], checkout)
+    _git(["commit", "-q", "-m", "seed"], checkout)
+    # Relocate the gitdir out of the checkout so only the env selects the repo.
+    (checkout / ".git").rename(gitdir)
+    assert not (checkout / ".git").exists()
+    monkeypatch.setenv("GIT_DIR", str(gitdir))
+    monkeypatch.setenv("GIT_WORK_TREE", str(checkout))
+
+    assert git_utils.tracked_state(checkout, state) is git_utils.TrackedState.TRACKED
+
+
+def test_tracked_state_unknown_for_a_broken_env_selected_repo(tmp_path, monkeypatch):
+    # A work tree selected only via GIT_DIR/GIT_WORK_TREE (no .git on disk) whose
+    # git dir is missing makes rev-parse report "not a git repository", the same
+    # message as a plain directory. But the selection env asserts a repo that we
+    # cannot read, so provenance is unknowable and redo must fail closed, not
+    # treat the checkout as a plain untracked directory.
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    state = checkout / "s.json"
+    state.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "missing-repo.git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(checkout))
+    assert git_utils.tracked_state(checkout, state) is git_utils.TrackedState.UNKNOWN
+
+
+def test_tracked_state_refuses_when_a_gitlink_ancestor_owns_the_state(tmp_path):
+    # A repository can ship .debugbrief as a submodule: the parent index then
+    # tracks only the .debugbrief gitlink, not the leaf session file, so a
+    # leaf-only ls-files check misses it. Provenance must walk tracked ancestors
+    # (here a real gitlink index entry) and classify it TRACKED so redo refuses.
+    import subprocess
+
+    _init_repo(tmp_path)
+    (tmp_path / "f").write_text("x", encoding="utf-8")
+    _git(["add", "f"], tmp_path)
+    _git(["commit", "-q", "-m", "init"], tmp_path)
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    # Add a gitlink entry at .debugbrief (a submodule mount) without a checkout.
+    _git(["update-index", "--add", "--cacheinfo", f"160000,{sha},.debugbrief"], tmp_path)
+    state = tmp_path / ".debugbrief" / "sessions" / "s.json"
+    state.parent.mkdir(parents=True)
+    state.write_text("{}", encoding="utf-8")
+
+    assert git_utils.tracked_state(tmp_path, state) is git_utils.TrackedState.TRACKED
+
+
+def test_tracked_state_allows_a_local_session_beside_committed_debugbrief_files(tmp_path):
+    # A repo may commit some files under .debugbrief (a README, an old session).
+    # A newly created local session is NOT repository-supplied just because
+    # sibling files under .debugbrief are tracked: only a directly tracked leaf or
+    # an exact submodule gitlink ancestor counts, so redo must still run.
+    _init_repo(tmp_path)
+    committed = tmp_path / ".debugbrief" / "README.md"
+    committed.parent.mkdir(parents=True)
+    committed.write_text("docs", encoding="utf-8")
+    _git(["add", "-f", ".debugbrief/README.md"], tmp_path)
+    _git(["commit", "-q", "-m", "seed"], tmp_path)
+    state = tmp_path / ".debugbrief" / "sessions" / "s.json"
+    state.parent.mkdir(parents=True)
+    state.write_text("{}", encoding="utf-8")
+
+    assert git_utils.tracked_state(tmp_path, state) is git_utils.TrackedState.UNTRACKED
+
+
+def test_stale_modifier_env_vars_do_not_refuse_redo_in_a_plain_directory(tmp_path, monkeypatch):
+    # A stale modifier env var pointing nowhere (a leftover shell env) must not
+    # make a plain non-git directory look like a repository, so redo's provenance
+    # stays UNTRACKED. GIT_DIR, which names a repository outright, still fails
+    # closed when unreadable.
+    TS = git_utils.TrackedState
+    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(git_utils, "_has_dotgit_ancestor", lambda p: False)
+    monkeypatch.setattr(
+        git_utils,
+        "_run_git_rc",
+        _fake_git_rc({"rev-parse": (128, "", "fatal: not a git repository (or any parent)")}),
+    )
+    nowhere = str(tmp_path / "nonexistent")
+    for var in ("GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"):
+        monkeypatch.setenv(var, nowhere)
+        assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNTRACKED, var
+        monkeypatch.delenv(var, raising=False)
+    # GIT_DIR names a repository outright, so it still fails closed when unusable.
+    monkeypatch.setenv("GIT_DIR", nowhere)
+    assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNKNOWN
+
+
+def test_git_work_tree_pointing_at_a_real_repo_is_unknown_when_unreadable(tmp_path, monkeypatch):
+    # GIT_WORK_TREE designating a work tree that actually has a .git means a
+    # repository is involved. If the inherited rev-parse cannot read it, redo must
+    # fail closed (UNKNOWN), not treat the checkout as a plain directory. This is
+    # the counterpart to the stale-GIT_WORK_TREE case above; the deciding signal
+    # is whether a real repository exists, not merely that the var is set.
+    TS = git_utils.TrackedState
+    for var in ("GIT_DIR", "GIT_COMMON_DIR", "GIT_INDEX_FILE"):
+        monkeypatch.delenv(var, raising=False)
+    work_tree = tmp_path / "wt"
+    (work_tree / ".git").mkdir(parents=True)  # a real .git at the designated tree
+    monkeypatch.setenv("GIT_WORK_TREE", str(work_tree))
+    # Both passes fail to establish a repo from cwd (which has no .git).
+    monkeypatch.setattr(
+        git_utils,
+        "_run_git_rc",
+        _fake_git_rc({"rev-parse": (128, "", "fatal: not a git repository (or any parent)")}),
+    )
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert git_utils.tracked_state(plain, plain / "s") is TS.UNKNOWN
+
+
+def test_git_index_file_alternate_index_is_honored(tmp_path, monkeypatch):
+    # When GIT_INDEX_FILE selects an alternate index in a real worktree, a session
+    # tracked in that index must be caught (fail closed) even though the canonical
+    # index the sanitized pass reads does not contain it.
+    TS = git_utils.TrackedState
+    monkeypatch.delenv("GIT_DIR", raising=False)
+    monkeypatch.setenv("GIT_INDEX_FILE", "/tmp/alt.index")
+
+    def fake(args, cwd, **kwargs):
+        if args[0] == "rev-parse":
+            return (0, "true\n", "")
+        # ls-files: the sanitized pass (canonical index) misses it; the inherited
+        # pass (the caller's GIT_INDEX_FILE) finds it tracked.
+        if kwargs.get("discover_from_cwd"):
+            return (1, "", "error: pathspec 's' did not match any file(s) known to git")
+        return (0, "", "")
+
+    monkeypatch.setattr(git_utils, "_run_git_rc", fake)
+    assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.TRACKED
+
+
+def _fake_git_rc(mapping):
+    """Build a fake _run_git_rc that responds per git subcommand (args[0])."""
+
+    def runner(args, cwd, **kwargs):
+        return mapping[args[0]]
+
+    return runner
+
+
+def test_run_git_rc_environment_modes(monkeypatch):
+    # Three modes: a plain snapshot call inherits the caller's environment; a
+    # stable-locale call forces C but keeps the caller's repo selection; a
+    # discover-from-cwd call forces C and strips the repo-selection variables.
+    envs = []
+
+    class _Done:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        envs.append(kwargs.get("env"))
+        return _Done()
+
+    monkeypatch.setattr(git_utils.subprocess, "run", fake_run)
+    monkeypatch.setenv("GIT_DIR", "/somewhere.git")
+
+    git_utils._run_git(["rev-parse", "HEAD"], Path("/x"))
+    assert envs[-1] is None  # snapshot call inherits the caller's git env
+
+    git_utils._run_git_rc(["status"], Path("/x"), stable_locale=True)
+    assert envs[-1]["LC_ALL"] == "C" and "GIT_DIR" in envs[-1]
+
+    git_utils._run_git_rc(["status"], Path("/x"), discover_from_cwd=True)
+    assert envs[-1]["LC_ALL"] == "C" and "GIT_DIR" not in envs[-1]
+
+
+def test_both_provenance_passes_force_a_stable_locale(tmp_path, monkeypatch):
+    # Both provenance passes must force a C locale so git's "did not match" /
+    # "not a git repository" messages stay English and classifiable. Otherwise a
+    # non-English locale makes the inherited pass UNKNOWN and tracked_state
+    # wrongly refuses redo for an untracked session. Only the sanitized pass also
+    # strips the repo-selection env so it discovers from cwd.
+    envs = []
+
+    class _Done:
+        returncode = 0
+        stdout = "true"  # rev-parse: in a work tree; ls-files: exit 0 -> TRACKED
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        envs.append(kwargs.get("env"))
+        return _Done()
+
+    monkeypatch.setattr(git_utils.subprocess, "run", fake_run)
+    monkeypatch.setenv("GIT_DIR", "/somewhere.git")
+
+    assert git_utils.tracked_state(tmp_path, tmp_path / "s") is git_utils.TrackedState.TRACKED
+    # Every provenance git call forces the C locale.
+    assert envs and all(e is not None and e["LC_ALL"] == "C" for e in envs)
+    # The sanitized pass (2 calls) strips GIT_DIR; the inherited pass (2) keeps it
+    # so a legitimate env-selected work tree is still honored.
+    assert sum(1 for e in envs if "GIT_DIR" not in e) == 2
+    assert sum(1 for e in envs if "GIT_DIR" in e) == 2
+
+
+def test_tracked_state_fails_closed_when_provenance_is_unknowable(monkeypatch, tmp_path):
+    # With a repository present on disk but git unable to give a definitive
+    # answer, each case must classify as UNKNOWN, never UNTRACKED, so the redo
+    # guard fails closed. (A .git is present here; the no-repo case where git is
+    # simply absent is covered separately and is UNTRACKED.)
+    monkeypatch.setattr(git_utils, "_has_dotgit_ancestor", lambda p: True)
+    TS = git_utils.TrackedState
+    cases = {
+        "git missing": {"rev-parse": (None, "", "git executable not found")},
+        "rev-parse timeout": {"rev-parse": (None, "", "git command timed out")},
+        "dubious ownership": {
+            "rev-parse": (128, "", "fatal: detected dubious ownership in repository at '/r'")
+        },
+        "corrupt repo": {"rev-parse": (128, "", "fatal: not a valid object name")},
+        "ls-files timeout": {
+            "rev-parse": (0, "true\n", ""),
+            "ls-files": (None, "", "git command timed out"),
+        },
+        "ls-files fatal": {
+            "rev-parse": (0, "true\n", ""),
+            "ls-files": (128, "", "fatal: unable to read index"),
+        },
+    }
+    for label, mapping in cases.items():
+        monkeypatch.setattr(git_utils, "_run_git_rc", _fake_git_rc(mapping))
+        assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNKNOWN, label
+
+
+def test_tracked_state_untracked_when_git_is_absent_in_a_plain_directory(monkeypatch, tmp_path):
+    # On a machine without git, a plain non-git project has no repository that
+    # could have supplied the session, so redo must still work (UNTRACKED) rather
+    # than be refused. Provenance is only unknowable when a repository context
+    # actually exists.
+    TS = git_utils.TrackedState
+    monkeypatch.setattr(git_utils, "_git_tracking_env_present", lambda: False)
+    monkeypatch.setattr(
+        git_utils,
+        "_run_git_rc",
+        _fake_git_rc({"rev-parse": (None, "", "git executable not found")}),
+    )
+    # No .git on disk: nothing could have supplied committed state.
+    monkeypatch.setattr(git_utils, "_has_dotgit_ancestor", lambda p: False)
+    assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNTRACKED
+    # A .git is present but git cannot read it: provenance unknowable, fail closed.
+    monkeypatch.setattr(git_utils, "_has_dotgit_ancestor", lambda p: True)
+    assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNKNOWN
+
+
+def test_tracked_state_ignores_inherited_unknown_without_a_selection_env(monkeypatch, tmp_path):
+    # Without a git selection env (only a discovery limiter like
+    # GIT_CEILING_DIRECTORIES, or nothing), the sanitized cwd-discovery view is
+    # authoritative: an inherited-pass UNKNOWN must not override a definitive
+    # UNTRACKED, or redo is wrongly refused for ordinary local state.
+    TS = git_utils.TrackedState
+
+    def fake_classify(cwd, path, *, sanitized):
+        return TS.UNTRACKED if sanitized else TS.UNKNOWN
+
+    monkeypatch.setattr(git_utils, "_classify_tracked", fake_classify)
+
+    monkeypatch.setattr(git_utils, "_git_tracking_env_present", lambda: False)
+    assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNTRACKED
+    # With a real selector set, the inherited view IS consulted and the most
+    # restrictive result wins.
+    monkeypatch.setattr(git_utils, "_git_tracking_env_present", lambda: True)
+    assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNKNOWN
+
+
+def test_tracked_state_classifies_definitive_outcomes(monkeypatch, tmp_path):
+    TS = git_utils.TrackedState
+    # A plain directory that is not a repository carries no committable state.
+    # (No .git exists up-tree and no git selection env is set, confirmed here so
+    # the test does not depend on the filesystem above tmp_path or a leaked env.)
+    monkeypatch.setattr(git_utils, "_has_dotgit_ancestor", lambda p: False)
+    monkeypatch.setattr(git_utils, "_git_tracking_env_present", lambda: False)
+    monkeypatch.setattr(
+        git_utils,
+        "_run_git_rc",
+        _fake_git_rc({"rev-parse": (128, "", "fatal: not a git repository (or any parent)")}),
+    )
+    assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNTRACKED
+    # A confirmed no-match from ls-files is untracked.
+    monkeypatch.setattr(
+        git_utils,
+        "_run_git_rc",
+        _fake_git_rc(
+            {
+                "rev-parse": (0, "true\n", ""),
+                "ls-files": (1, "", "error: pathspec 's' did not match any file(s) known to git"),
+            }
+        ),
+    )
+    assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNTRACKED
+    # A bare repo / inside .git is not a working tree, so no checked-out state.
+    monkeypatch.setattr(
+        git_utils, "_run_git_rc", _fake_git_rc({"rev-parse": (0, "false\n", "")})
+    )
+    assert git_utils.tracked_state(tmp_path, tmp_path / "s") is TS.UNTRACKED
 
 
 def test_redo_refuses_a_command_from_git_tracked_state(tmp_path, monkeypatch, capsys):
@@ -274,6 +621,60 @@ def test_redo_runs_normally_for_untracked_state(tmp_path, monkeypatch, capsys):
     # redo re-runs `true`, which exits 0; the point is it is not refused.
     assert cli.main(["redo"]) == 0
     err = capsys.readouterr().err
+    assert "tracked by Git" not in err
+
+
+def test_redo_refuses_and_does_not_run_when_provenance_is_unknown(
+    tmp_path, monkeypatch, capsys
+):
+    # When git cannot confirm the session is untracked (git missing, a timeout, a
+    # safe.directory rejection, ...), redo must refuse, must not execute the
+    # stored command, and must leave the lease clean for the next command.
+    _init_repo(tmp_path)
+    paths = ProjectPaths(
+        project_root=tmp_path, is_git_repo=True, repo_root=str(tmp_path)
+    )
+    mgr = SessionManager(paths)
+    session = mgr.start("local")
+    now = now_iso8601()
+    command = CommandData(
+        command="true", started_at=now, ended_at=now, duration_seconds=0.0, exit_code=0
+    )
+    session.events.append(Event.command(command, now))
+    mgr.save_session(session)
+    monkeypatch.setattr(cli, "resolve_project_paths", lambda: paths)
+    monkeypatch.setattr(
+        git_utils, "tracked_state", lambda *a, **k: git_utils.TrackedState.UNKNOWN
+    )
+    ran = []
+    monkeypatch.setattr(cli, "run_command", lambda *a, **k: ran.append(a))
+
+    assert cli.main(["redo"]) == 1
+    err = capsys.readouterr().err
+    assert "could not confirm" in err
+    assert ran == []  # the stored command was never executed
+    # The lease is released, so a later command is not wrongly blocked.
+    assert not os.path.lexists(paths.active_command_file)
+    assert mgr._command_is_active() is False
+
+
+def test_redo_runs_in_a_non_git_project(tmp_path, monkeypatch, capsys):
+    # A project that is not a Git repository has no repository-supplied state to
+    # distrust, so redo proceeds (tracked_state is UNTRACKED for a non-repo).
+    paths = ProjectPaths(project_root=tmp_path, is_git_repo=False, repo_root=None)
+    mgr = SessionManager(paths)
+    session = mgr.start("local")
+    now = now_iso8601()
+    command = CommandData(
+        command="true", started_at=now, ended_at=now, duration_seconds=0.0, exit_code=0
+    )
+    session.events.append(Event.command(command, now))
+    mgr.save_session(session)
+    monkeypatch.setattr(cli, "resolve_project_paths", lambda: paths)
+
+    assert cli.main(["redo"]) == 0
+    err = capsys.readouterr().err
+    assert "could not confirm" not in err
     assert "tracked by Git" not in err
 
 

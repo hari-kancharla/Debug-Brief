@@ -251,6 +251,23 @@ def _has_dotgit_ancestor(start: Path) -> bool:
         current = parent
 
 
+def _ancestors_within(cwd: Path, path: Path) -> List[Path]:
+    """Directory ancestors of ``path`` strictly between it and ``cwd``.
+
+    Nearest first, excluding ``cwd`` and the leaf itself, and empty when ``path``
+    is not under ``cwd``. Used to detect a repository-tracked ancestor (for
+    example a submodule gitlink at ``.debugbrief``, or a committed parent
+    directory) when the leaf session file itself is not directly in the index.
+    """
+    cwd_abs = Path(os.path.abspath(cwd))
+    parent = Path(os.path.abspath(path)).parent
+    ancestors: List[Path] = []
+    while parent != cwd_abs and cwd_abs in parent.parents:
+        ancestors.append(parent)
+        parent = parent.parent
+    return ancestors
+
+
 def _classify_tracked(cwd: Path, path: Path, *, sanitized: bool) -> TrackedState:
     """Classify ``path`` under one git environment (see :func:`tracked_state`)."""
     # First decide whether we are inside a working tree, which also tells us
@@ -275,6 +292,23 @@ def _classify_tracked(cwd: Path, path: Path, *, sanitized: bool) -> TrackedState
         if rc == 0:
             return TrackedState.TRACKED
         if rc == 1 and "did not match" in err.lower():
+            # The leaf file is not directly in the index, but the repository may
+            # still own it through a tracked ancestor: .debugbrief shipped as a
+            # submodule (the parent index holds only the gitlink) or a committed
+            # parent directory. A tracked ancestor is repository-supplied state.
+            for ancestor in _ancestors_within(cwd, path):
+                arc, _, aerr = _run_git_rc(
+                    ["ls-files", "--error-unmatch", "--", str(ancestor)],
+                    cwd,
+                    stable_locale=True,
+                    discover_from_cwd=sanitized,
+                )
+                if arc == 0:
+                    return TrackedState.TRACKED
+                if arc == 1 and "did not match" in aerr.lower():
+                    continue
+                # Unexpected/failed ancestor check: cannot be sure.
+                return TrackedState.UNKNOWN
             return TrackedState.UNTRACKED
         # rc is None (git vanished mid-check), exit 128, or unexpected output.
         return TrackedState.UNKNOWN

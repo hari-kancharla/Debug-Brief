@@ -295,6 +295,33 @@ def test_tracked_state_unknown_for_a_broken_env_selected_repo(tmp_path, monkeypa
     assert git_utils.tracked_state(checkout, state) is git_utils.TrackedState.UNKNOWN
 
 
+def test_tracked_state_refuses_when_a_gitlink_ancestor_owns_the_state(tmp_path):
+    # A repository can ship .debugbrief as a submodule: the parent index then
+    # tracks only the .debugbrief gitlink, not the leaf session file, so a
+    # leaf-only ls-files check misses it. Provenance must walk tracked ancestors
+    # (here a real gitlink index entry) and classify it TRACKED so redo refuses.
+    import subprocess
+
+    _init_repo(tmp_path)
+    (tmp_path / "f").write_text("x", encoding="utf-8")
+    _git(["add", "f"], tmp_path)
+    _git(["commit", "-q", "-m", "init"], tmp_path)
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    # Add a gitlink entry at .debugbrief (a submodule mount) without a checkout.
+    _git(["update-index", "--add", "--cacheinfo", f"160000,{sha},.debugbrief"], tmp_path)
+    state = tmp_path / ".debugbrief" / "sessions" / "s.json"
+    state.parent.mkdir(parents=True)
+    state.write_text("{}", encoding="utf-8")
+
+    assert git_utils.tracked_state(tmp_path, state) is git_utils.TrackedState.TRACKED
+
+
 def test_modifier_env_vars_do_not_force_unknown_without_git_dir(tmp_path, monkeypatch):
     # GIT_WORK_TREE, GIT_COMMON_DIR, and GIT_INDEX_FILE are modifiers: alone (a
     # stale shell env) they do not establish a repository, so in a plain non-git

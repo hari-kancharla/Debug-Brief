@@ -268,6 +268,37 @@ def _ancestors_within(cwd: Path, path: Path) -> List[Path]:
     return ancestors
 
 
+def _ancestor_gitlink_state(cwd: Path, ancestor: Path, *, sanitized: bool) -> TrackedState:
+    """Whether ``ancestor`` is itself a submodule gitlink index entry.
+
+    A directory is never an index entry except as a submodule gitlink (mode
+    ``160000``), so an exact gitlink at ``ancestor`` means the repository owns the
+    session file beneath it. Tracked *descendant* files under a normal directory
+    (for example a committed ``.debugbrief/README.md``) do not count: they do not
+    make a separate, locally created session file repository-supplied.
+
+    Returns ``TRACKED`` for an exact gitlink, ``UNTRACKED`` when ``ancestor`` is
+    not an index entry, and ``UNKNOWN`` when the check could not run.
+    """
+    rel = os.path.relpath(os.path.abspath(ancestor), os.path.abspath(cwd))
+    rc, out, _ = _run_git_rc(
+        ["ls-files", "-sz", "--", rel],
+        cwd,
+        stable_locale=True,
+        discover_from_cwd=sanitized,
+    )
+    if rc != 0:
+        return TrackedState.UNKNOWN
+    # ls-files -sz entries: "<mode> <sha> <stage>\t<path>" terminated by NUL.
+    for entry in out.split("\0"):
+        if not entry:
+            continue
+        meta, tab, epath = entry.partition("\t")
+        if tab and meta.split(" ", 1)[0] == "160000" and epath == rel:
+            return TrackedState.TRACKED
+    return TrackedState.UNTRACKED
+
+
 def _classify_tracked(cwd: Path, path: Path, *, sanitized: bool) -> TrackedState:
     """Classify ``path`` under one git environment (see :func:`tracked_state`)."""
     # First decide whether we are inside a working tree, which also tells us
@@ -292,23 +323,19 @@ def _classify_tracked(cwd: Path, path: Path, *, sanitized: bool) -> TrackedState
         if rc == 0:
             return TrackedState.TRACKED
         if rc == 1 and "did not match" in err.lower():
-            # The leaf file is not directly in the index, but the repository may
-            # still own it through a tracked ancestor: .debugbrief shipped as a
-            # submodule (the parent index holds only the gitlink) or a committed
-            # parent directory. A tracked ancestor is repository-supplied state.
+            # The leaf file is not directly in the index, but the repository can
+            # still own it through a submodule gitlink ancestor: .debugbrief
+            # shipped as a submodule means the parent index holds only the gitlink,
+            # while the session lives in the submodule's checkout. Only an exact
+            # gitlink ancestor counts; tracked sibling files under a normal
+            # .debugbrief directory do not make this local session repo-supplied.
             for ancestor in _ancestors_within(cwd, path):
-                arc, _, aerr = _run_git_rc(
-                    ["ls-files", "--error-unmatch", "--", str(ancestor)],
-                    cwd,
-                    stable_locale=True,
-                    discover_from_cwd=sanitized,
-                )
-                if arc == 0:
+                state = _ancestor_gitlink_state(cwd, ancestor, sanitized=sanitized)
+                if state is TrackedState.TRACKED:
                     return TrackedState.TRACKED
-                if arc == 1 and "did not match" in aerr.lower():
-                    continue
-                # Unexpected/failed ancestor check: cannot be sure.
-                return TrackedState.UNKNOWN
+                if state is TrackedState.UNKNOWN:
+                    return TrackedState.UNKNOWN
+                # Not a gitlink: keep checking higher ancestors.
             return TrackedState.UNTRACKED
         # rc is None (git vanished mid-check), exit 128, or unexpected output.
         return TrackedState.UNKNOWN

@@ -322,6 +322,24 @@ def test_tracked_state_refuses_when_a_gitlink_ancestor_owns_the_state(tmp_path):
     assert git_utils.tracked_state(tmp_path, state) is git_utils.TrackedState.TRACKED
 
 
+def test_tracked_state_allows_a_local_session_beside_committed_debugbrief_files(tmp_path):
+    # A repo may commit some files under .debugbrief (a README, an old session).
+    # A newly created local session is NOT repository-supplied just because
+    # sibling files under .debugbrief are tracked: only a directly tracked leaf or
+    # an exact submodule gitlink ancestor counts, so redo must still run.
+    _init_repo(tmp_path)
+    committed = tmp_path / ".debugbrief" / "README.md"
+    committed.parent.mkdir(parents=True)
+    committed.write_text("docs", encoding="utf-8")
+    _git(["add", "-f", ".debugbrief/README.md"], tmp_path)
+    _git(["commit", "-q", "-m", "seed"], tmp_path)
+    state = tmp_path / ".debugbrief" / "sessions" / "s.json"
+    state.parent.mkdir(parents=True)
+    state.write_text("{}", encoding="utf-8")
+
+    assert git_utils.tracked_state(tmp_path, state) is git_utils.TrackedState.UNTRACKED
+
+
 def test_modifier_env_vars_do_not_force_unknown_without_git_dir(tmp_path, monkeypatch):
     # GIT_WORK_TREE, GIT_COMMON_DIR, and GIT_INDEX_FILE are modifiers: alone (a
     # stale shell env) they do not establish a repository, so in a plain non-git

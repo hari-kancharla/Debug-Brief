@@ -1,0 +1,41 @@
+name: Bug report
+description: Report something that does not work as documented.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what occurred instead.
+      placeholder: |
+        Steps:
+        1. debugbrief run -- ...
+        2. ...
+
+        Expected: ...
+        Actual: ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: DebugBrief version
+      description: Output of `debugbrief --version`.
+      placeholder: debugbrief 1.3.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS and Python version
+      placeholder: macOS 14, Python 3.12
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      description: Command output or a report excerpt. Remove anything sensitive.
+      render: text
+    validations:
+      required: false

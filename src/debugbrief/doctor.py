@@ -272,7 +272,9 @@ def _active_session_checks(
     paths: ProjectPaths, checks: List[CheckResult]
 ) -> None:
     pointer_path = paths.active_session_file
-    if not pointer_path.exists():
+    # lexists, not exists: a dangling symlink (exists() is False) must reach the
+    # regular-file check below and be reported as unsafe, not passed as "none".
+    if not os.path.lexists(pointer_path):
         checks.append(
             CheckResult(PASS, "Active session", "none (no active_session.json)")
         )

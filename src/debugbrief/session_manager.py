@@ -389,7 +389,9 @@ class SessionManager:
         # .debugbrief is refused on read-only commands too, not only mutations.
         self.paths.assert_state_dirs_safe()
         pointer_path = self.paths.active_session_file
-        if not pointer_path.exists():
+        # lexists, not exists: a dangling symlink (exists() is False) must still be
+        # caught and refused below, not silently treated as "no active session".
+        if not os.path.lexists(pointer_path):
             return None
         # Refuse a symlinked or non-regular pointer rather than follow it.
         _require_regular_or_absent(pointer_path, ".debugbrief/active_session.json")
@@ -424,7 +426,9 @@ class SessionManager:
     def _clear_active_pointer(self) -> None:
         pointer_path = self.paths.active_session_file
         try:
-            if pointer_path.exists():
+            # lexists so a dangling symlink pointer is removed too (exists() is
+            # False for it, which would leave it behind).
+            if os.path.lexists(pointer_path):
                 pointer_path.unlink()
         except OSError as exc:  # pragma: no cover - defensive
             raise SessionError(
@@ -432,7 +436,9 @@ class SessionManager:
             ) from exc
 
     def has_active(self) -> bool:
-        return self.paths.active_session_file.exists()
+        # lexists so a dangling or symlinked pointer counts as present and is
+        # routed to the unsafe-pointer handling, not treated as "no session".
+        return os.path.lexists(self.paths.active_session_file)
 
     # Session persistence -----------------------------------------------------
     def save_session(self, session: Session) -> None:
@@ -805,7 +811,10 @@ class SessionManager:
             if self.has_active():
                 try:
                     session = self.load_active()
-                except SessionError as exc:
+                except (SessionError, UnsafeStateDirectory) as exc:
+                    # A broken pointer (bad JSON) or an unsafe one (symlink, FIFO,
+                    # or a dangling symlink) is cleared and reported, so recover
+                    # restores a usable project instead of leaving it stuck.
                     self._clear_active_pointer()
                     result["action"] = "cleared_broken_pointer"
                     result["detail"] = str(exc)

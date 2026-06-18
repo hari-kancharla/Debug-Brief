@@ -14,7 +14,7 @@ import sys
 import pytest
 
 from debugbrief import cli
-from debugbrief.paths import ProjectPaths
+from debugbrief.paths import ProjectPaths, UnsafeStateDirectory
 from debugbrief.reports_index import first_title, latest_report, list_reports
 from debugbrief.session_manager import SessionError, SessionManager
 from debugbrief.sessions_index import load_all_sessions
@@ -33,6 +33,37 @@ def _real_session_with_report(mgr):
     session = mgr.start("real session")
     mgr.end("pr")  # writes a real report and completes the session
     return session
+
+
+def _plant_dangling_active_pointer(paths):
+    # A dangling symlink: lexists() is True but exists() is False, so it must be
+    # reported as unsafe, not silently treated as "no active session".
+    paths.ensure_directories()
+    paths.active_session_file.symlink_to(paths.base_dir / "missing-target")
+
+
+# Active-session pointer: a dangling symlink is unsafe, not "no session" -------
+def test_status_refuses_a_dangling_active_pointer(project):
+    paths, mgr = project
+    _plant_dangling_active_pointer(paths)
+    with pytest.raises(UnsafeStateDirectory):
+        mgr.build_status()
+
+
+def test_load_active_refuses_a_dangling_active_pointer(project):
+    paths, mgr = project
+    _plant_dangling_active_pointer(paths)
+    with pytest.raises(UnsafeStateDirectory):
+        mgr.load_active()
+
+
+def test_recover_clears_a_dangling_active_pointer(project):
+    paths, mgr = project
+    _plant_dangling_active_pointer(paths)
+    result = mgr.recover()
+    assert result["action"] == "cleared_broken_pointer"
+    # The dangling symlink is actually removed (exists() would have missed it).
+    assert not os.path.lexists(paths.active_session_file)
 
 
 # Sessions --------------------------------------------------------------------

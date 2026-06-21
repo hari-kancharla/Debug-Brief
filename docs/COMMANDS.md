@@ -92,7 +92,8 @@ The old single-argument form still works: `debugbrief run "python -m pytest"`.
 
 `run`:
 
-- executes the command from the project root,
+- executes the command from the directory you run it in, not the project root
+  (your DebugBrief state still lives at the project root),
 - streams the command's stdout and stderr to your terminal live (it runs under
   a pseudo-terminal), while accumulating them for the stored previews
   (DebugBrief's own status lines go to stderr, so the command's stdout stays

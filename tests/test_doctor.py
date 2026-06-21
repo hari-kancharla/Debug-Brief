@@ -114,6 +114,17 @@ def test_doctor_rejects_symlinked_active_session_pointer(nogit_paths, tmp_path):
     assert active.level == FAIL and "not a regular file" in active.detail
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink")
+def test_doctor_reports_a_dangling_active_session_pointer(nogit_paths):
+    nogit_paths.ensure_directories()
+    # A dangling symlink: exists() is False, so doctor must use lexists to reach
+    # the regular-file check and report it as unsafe rather than passing "none".
+    nogit_paths.active_session_file.symlink_to(nogit_paths.base_dir / "missing")
+    report = run_doctor(nogit_paths)
+    active = _find(report.checks, "Active session")
+    assert active.level == FAIL and "not a regular file" in active.detail
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX FIFO")
 def test_doctor_does_not_block_on_a_fifo_pointer(nogit_paths):
     nogit_paths.ensure_directories()

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A dangling symlink at `.debugbrief/active_session.json` is now treated as an
+  unsafe pointer rather than silently as "no active session". `status` and a new
+  `start` refuse it, `doctor` reports it, and `recover` clears it. The pointer
+  checks use `os.path.lexists`, matching how the command lease and the state
+  directories already detect dangling symlinks.
+- `docs/COMMANDS.md` now states that `run` executes the command from the
+  directory it is invoked in, not the project root, while DebugBrief state still
+  lives at the project root.
+
 ## [1.3.0] - 2026-06-17
 
 ### Added

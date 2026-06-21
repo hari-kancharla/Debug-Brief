@@ -14,7 +14,7 @@ Set TypingSpeed 35ms
 Set Framerate 24
 
 Hide
-Type "cd \"$(mktemp -d)\" && git init -q -b main . && git config user.email demo@example.com && git config user.name Demo && printf 'def add(a, b):\n    return a - b\n' > calc.py && printf 'from calc import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n' > test_calc.py && git add . && git commit -qm 'initial code' && clear"
+Type `cd "$(mktemp -d)" && git init -q -b main . && git config user.email demo@example.com && git config user.name Demo && printf 'def add(a, b):\n    return a - b\n' > calc.py && printf 'from calc import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n' > test_calc.py && git add . && git commit -qm 'initial code' && clear`
 Enter
 Show
 

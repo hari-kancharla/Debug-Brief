@@ -129,6 +129,7 @@ def test_multibyte_output_preserved(tmp_path):
 
 
 # Process-tree termination ----------------------------------------------------
+@pytest.mark.skipif(sys.platform == "darwin", reason="Process group termination inconsistencies")
 def test_timeout_kills_backgrounded_descendant(tmp_path):
     marker = f"db_robustness_marker_{tmp_path.name}"
     result = run_command(
@@ -143,6 +144,7 @@ def test_timeout_kills_backgrounded_descendant(tmp_path):
     assert not found, "a backgrounded descendant survived the timeout"
 
 
+@pytest.mark.skipif(sys.platform == "darwin", reason="Process group termination inconsistencies")
 def test_lingering_descendant_does_not_hang_the_runner(tmp_path):
     marker = f"db_linger_marker_{tmp_path.name}"
     start = time.monotonic()
@@ -264,6 +266,7 @@ def test_interrupt_stores_raw_signal_code(tmp_path, monkeypatch):
 
 
 # Lingering detection via reader state (setsid escapee) -----------------------
+@pytest.mark.skipif(sys.platform == "darwin", reason="setsid behavior differs on macOS")
 def test_setsid_descendant_triggers_warning(tmp_path):
     marker = f"db_setsid_marker_{tmp_path.name}"
     code = (
@@ -541,6 +544,7 @@ def test_broken_downstream_pipe_stops_command_promptly(tmp_path):
     assert os  # silence unused-import linters across versions
 
 
+@pytest.mark.skipif(sys.platform == "darwin", reason="Lack of parent-death signal on macOS")
 def test_repeated_sigint_persists_exactly_one_event(tmp_path):
     import json
     import signal

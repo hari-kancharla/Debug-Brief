@@ -22,18 +22,35 @@
 
         debugbrief = pyPkgs.buildPythonApplication rec {
           pname = "debugbrief";
-          version = "1.3.0";
+          version =
+            let
+              pyproject = builtins.readFile ./pyproject.toml;
+              # find the line `version = "..."`
+              # and extract the value between
+              # quotes
+              versionLine = builtins.filter (line: builtins.match "version = \"[^\"]+\"" line != null) (
+                builtins.split [ "\n" ] pyproject
+              );
+              # now extract the actual version string from the line
+              versionString =
+                let
+                  line = builtins.head versionLine;
+                  parts = builtins.split [ "\"" ] line;
+                in
+                parts [ 1 ];
+            in
+            versionString;
           src = self;
           pyproject = true;
 
           nativeBuildInputs = [
             pyPkgs.setuptools
             pyPkgs.wheel
-            pkgs.git
           ];
 
           propagatedBuildInputs = pkgs.lib.optionals (pkgs.lib.versionOlder python.version "3.11") [
             pyPkgs.tomli
+            pkgs.git
           ];
 
           nativeCheckInputs = [

@@ -15,13 +15,13 @@ pyPkgs.buildPythonApplication rec {
       # and extract the value between
       # quotes
       versionLine = builtins.filter (line: builtins.match "version = \"[^\"]+\"" line != null) (
-        builtins.split [ "\n" ] pyproject
+        builtins.split "\n" pyproject
       );
       # now extract the actual version string from the line
       versionString =
         let
           line = builtins.head versionLine;
-          parts = builtins.split [ "\"" ] line;
+          parts = builtins.split "\"" line;
         in
         parts [ 1 ];
     in

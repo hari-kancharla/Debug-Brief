@@ -433,6 +433,7 @@ def test_concurrent_runs_are_serialized_without_event_loss(tmp_path):
     assert len(set(command_ids)) == len(command_ids)  # unique ids: no overwrite/dup
 
 
+@pytest.mark.skipif(sys.platform == "darwin", reason="pgrep not available in Nix sandbox on macOS")
 def test_real_sigint_records_interrupted_and_kills_child(tmp_path):
     import json
     import signal
@@ -502,6 +503,7 @@ def test_repeated_interrupt_during_termination_still_records(tmp_path, monkeypat
 
 
 # Broken downstream pipe (debugbrief run | head) ------------------------------
+@pytest.mark.skipif(sys.platform == "darwin", reason="pgrep not available in Nix sandbox on macOS")
 def test_broken_downstream_pipe_stops_command_promptly(tmp_path):
     import json
     import os

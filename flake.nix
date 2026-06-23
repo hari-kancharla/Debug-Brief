@@ -29,35 +29,37 @@
               # and extract the value between
               # quotes
               versionLine = builtins.filter (line: builtins.match "version = \"[^\"]+\"" line != null) (
-                builtins.split [ "\n" ] pyproject
+                pkgs.lib.splitString "\n" pyproject
               );
               # now extract the actual version string from the line
               versionString =
                 let
                   line = builtins.head versionLine;
-                  parts = builtins.split [ "\"" ] line;
+                  parts = pkgs.lib.splitString "\"" line;
                 in
-                parts [ 1 ];
+                builtins.elemAt parts 1;
             in
             versionString;
           src = self;
           pyproject = true;
 
-          nativeBuildInputs = [
-            pyPkgs.setuptools
-            pyPkgs.wheel
-          ];
+           nativeBuildInputs = [
+             pyPkgs.setuptools
+             pyPkgs.wheel
+           ];
 
           propagatedBuildInputs = pkgs.lib.optionals (pkgs.lib.versionOlder python.version "3.11") [
             pyPkgs.tomli
             pkgs.git
           ];
 
-          nativeCheckInputs = [
-            pyPkgs.pytest
-            pkgs.git
-            pkgs.procps
-          ];
+           nativeCheckInputs = [
+             pyPkgs.pytest
+             pkgs.git
+           ]
+           ++ pkgs.lib.optionals (pkgs.stdenv.hostPlatform.system != "aarch64-darwin" && pkgs.stdenv.hostPlatform.system != "x86_64-darwin") [
+             pkgs.procps
+           ];
 
           # The command-runner robustness tests depend on pgrep/pkill and are
           # intentionally OS/process-tool specific. Keep the package build

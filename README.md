@@ -15,7 +15,7 @@ pipx install debugbrief
 # or
 uv tool install debugbrief
 # or via Nix
-nix run .
+nix run github:harihkk/Debug-Brief
 ```
 
 Plain `pip install debugbrief` works too. DebugBrief needs Python 3.9 or newer. Native Git is used when available to capture repository metadata and changed files. The project you debug does not need to be Python; only DebugBrief runs on Python.

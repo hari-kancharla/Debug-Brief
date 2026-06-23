@@ -21,7 +21,20 @@ jobs:
         run: python -m ruff check src tests
       - name: mypy
         run: python -m mypy src/debugbrief
-
+  nix-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Nix
+        uses: nix-community/nix-action@v1
+      - name: Nix Flake Check
+        run: nix flake check
+      - name: Nix Build
+        run: nix build
+      - name: Verify Version
+        run: nix run . -- --version
+      - name: Run Tests in DevShell
+        run: nix develop -c python -m pytest -q
   test:
     # Unix-only by design. DebugBrief does not support Windows/PowerShell,
     # so CI runs on Linux and macOS only and never on a Windows runner.

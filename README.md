@@ -14,6 +14,8 @@ DebugBrief captures the notes you write and the commands you run, then builds a 
 pipx install debugbrief
 # or
 uv tool install debugbrief
+# or via Nix
+nix run github:harihkk/Debug-Brief
 ```
 
 Plain `pip install debugbrief` works too. DebugBrief needs Python 3.9 or newer. Native Git is used when available to capture repository metadata and changed files. The project you debug does not need to be Python; only DebugBrief runs on Python.
@@ -118,6 +120,16 @@ Linux and macOS are tested in CI across Python 3.9 through 3.14. Other Unix-like
 - Git sections need native `git`; outside a repository they are omitted.
 
 ## Development
+
+You can set up the development environment using Nix:
+
+```bash
+nix develop
+# Then run `tests/lint`
+python -m pytest
+```
+
+Alternatively, use pip:
 
 ```bash
 pip install -e ".[dev]"

@@ -56,6 +56,7 @@
           nativeCheckInputs = [
             pyPkgs.pytest
             pkgs.git
+            pkgs.procps
           ];
 
           # The command-runner robustness tests depend on pgrep/pkill and are
@@ -63,7 +64,7 @@
           # focused on packaging correctness and the broader test suite.
           checkPhase = ''
             runHook preCheck
-            pytest -q -k "not runner_robustness"
+            pytest -q
             runHook postCheck
           '';
 
@@ -92,6 +93,7 @@
           ];
 
           shellHook = ''
+            export PYTHONPATH="$PWD/src:$PYTHONPATH"
             echo "DebugBrief dev shell"
             echo "Python: ${python.version}"
             echo "Run tests: python -m pytest"

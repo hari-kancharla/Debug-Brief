@@ -8,6 +8,7 @@ accessible.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 
@@ -168,6 +169,21 @@ def test_read_json_safe_converts_deep_nesting_to_value_error(tmp_path):
     deep.write_text("[" * 2000 + "]" * 2000, encoding="utf-8")
     with pytest.raises(ValueError, match="nesting"):
         read_json_safe(deep)
+
+
+def test_read_json_safe_limits_depth_without_rejecting_wide_or_quoted_data(tmp_path):
+    path = tmp_path / "state.json"
+    valid = {"notes": ["[" * 2000, "]" * 2000], "events": [{"value": 1}] * 2000}
+    path.write_text(json.dumps(valid), encoding="utf-8")
+    assert read_json_safe(path) == valid
+
+    for depth in (128, 129):
+        path.write_text("[" * depth + "0" + "]" * depth, encoding="utf-8")
+        if depth == 128:
+            assert isinstance(read_json_safe(path), list)
+        else:
+            with pytest.raises(ValueError, match="nesting"):
+                read_json_safe(path)
 
 
 def test_open_regular_binary_rejects_non_regular(tmp_path):

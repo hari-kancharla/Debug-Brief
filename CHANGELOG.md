@@ -60,6 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reports are discoverable through `list` and `show`.
 - Persisted display fields and lease previews are terminal-safe before they
   reach status, list, show, doctor, or recovery output.
+- Persisted JSON nesting is capped consistently across supported Python versions,
+  and first-commit Git tests configure their own author identity.
 
 ## [1.3.0] - 2026-06-17
 

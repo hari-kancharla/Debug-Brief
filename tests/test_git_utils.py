@@ -297,7 +297,7 @@ def test_session_changes_infers_untracked_rename_without_a_commit(tmp_path):
 
 
 def test_session_changes_reports_files_from_a_first_commit(tmp_path):
-    _git(["init", "-q"], tmp_path)
+    _init_repo(tmp_path)
     baseline = git_utils.working_tree_fingerprints(tmp_path)
     (tmp_path / "created.py").write_text("one\ntwo\n", encoding="utf-8")
     _git(["add", "-A"], tmp_path)
@@ -318,7 +318,7 @@ def test_unborn_numstat_uses_net_working_tree_lines_for_partial_staging(tmp_path
 
 
 def test_session_changes_reports_files_from_multiple_unborn_commits(tmp_path):
-    _git(["init", "-q"], tmp_path)
+    _init_repo(tmp_path)
     baseline = git_utils.working_tree_fingerprints(tmp_path)
     (tmp_path / "first.py").write_text("one\n", encoding="utf-8")
     _git(["add", "-A"], tmp_path)
@@ -335,7 +335,7 @@ def test_session_changes_reports_files_from_multiple_unborn_commits(tmp_path):
 def test_session_changes_does_not_double_count_deleted_baseline_after_first_commit(
     tmp_path,
 ):
-    _git(["init", "-q"], tmp_path)
+    _init_repo(tmp_path)
     path = tmp_path / "scratch.txt"
     path.write_text("one\ntwo\n", encoding="utf-8")
     baseline = git_utils.working_tree_fingerprints(tmp_path)

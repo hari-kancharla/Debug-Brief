@@ -115,6 +115,20 @@ def test_sensitive_segments_are_redacted():
         assert n == 1
 
 
+def test_redacts_complete_quoted_and_spaced_values():
+    cases = [
+        ('password="correct horse battery staple"', 'password="[redacted]"'),
+        ("password: 'correct horse battery staple'", "password: '[redacted]'"),
+        ('token=correct horse battery staple', 'token=[redacted]'),
+        (r'password="escaped\\\"value"', 'password="[redacted]"'),
+    ]
+    for text, expected in cases:
+        out, count = redact_text(text)
+        assert out == expected, f"{text!r} -> {out!r}"
+        assert count == 1
+        assert "horse" not in out
+
+
 def test_json_style_quoted_keys_are_redacted():
     # JSON/dict output is a common shape in captured logs. A quoted key must be
     # recognized too, not only bare env/shell `key=` / `key:` forms, so a secret

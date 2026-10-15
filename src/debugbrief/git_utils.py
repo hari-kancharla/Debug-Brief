@@ -14,7 +14,7 @@ import stat
 import subprocess
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from .models import GitState
 from .utils import open_regular_binary
@@ -100,6 +100,7 @@ _ARTIFACT_DIR_NAMES = frozenset(
         ".hypothesis",
         "node_modules",
         ".DS_Store",
+        ".debugbrief",
     }
 )
 
@@ -182,12 +183,21 @@ def _run_git_rc(
 
 
 def _run_git(args: List[str], cwd: Path) -> Tuple[bool, str, str]:
-    """Run ``git <args>`` in ``cwd``.
-
-    Returns (success, stdout, stderr). ``success`` is True only when git is
-    available and exits 0.
-    """
+    """Run an internal Git query, retrying stale repository-selection env."""
     rc, out, err = _run_git_rc(args, cwd)
+    if rc != 0 and any(
+        marker in err.lower()
+        for marker in (
+            "not a git repository",
+            "does not appear to be a git repository",
+            "this operation must be run in a work tree",
+        )
+    ):
+        retry_rc, retry_out, _retry_err = _run_git_rc(
+            args, cwd, discover_from_cwd=True
+        )
+        if retry_rc == 0:
+            return True, retry_out, err
     return rc == 0, out, err
 
 
@@ -199,10 +209,18 @@ def is_git_available() -> bool:
 
 def find_repo_root(cwd: Path) -> Optional[str]:
     """Return the absolute path of the enclosing Git repo root, or None."""
-    ok, out, _ = _run_git(["rev-parse", "--show-toplevel"], cwd)
-    if not ok:
+    inherited_ok, inherited_out, _ = _run_git(
+        ["rev-parse", "--show-toplevel"], cwd
+    )
+    if inherited_ok:
+        root = inherited_out.rstrip("\r\n")
+        return root or None
+    sanitized_rc, sanitized_out, _ = _run_git_rc(
+        ["rev-parse", "--show-toplevel"], cwd, discover_from_cwd=True
+    )
+    if sanitized_rc != 0:
         return None
-    root = out.strip()
+    root = sanitized_out.rstrip("\r\n")
     return root or None
 
 
@@ -493,7 +511,9 @@ def name_status(cwd: Path) -> List[Tuple[str, str]]:
     non-ASCII bytes (a filename like ``café.py`` would otherwise show up as
     ``caf\\303\\251.py`` in a report).
     """
-    ok, out, _ = _run_git(["status", "--porcelain", "-z"], cwd)
+    ok, out, _ = _run_git(
+        ["status", "--porcelain", "-z", "--untracked-files=all"], cwd
+    )
     if not ok:
         return []
     seen: Dict[str, str] = {}
@@ -657,6 +677,81 @@ def _parse_diff_name_status(out: str) -> List[Tuple[str, str]]:
     return pairs
 
 
+def _parse_rename_map(out: str) -> Dict[str, str]:
+    renames: Dict[str, str] = {}
+    tokens = out.split("\x00")
+    index = 0
+    while index < len(tokens):
+        code = tokens[index]
+        if code[:1] in {"R", "C"} and index + 2 < len(tokens):
+            source, destination = tokens[index + 1], tokens[index + 2]
+            if source and destination:
+                renames[source] = destination
+            index += 3
+            continue
+        index += 1
+    return renames
+
+
+def _parse_status_rename_map(out: str) -> Dict[str, str]:
+    renames: Dict[str, str] = {}
+    tokens = out.split("\x00")
+    index = 0
+    while index < len(tokens):
+        entry = tokens[index]
+        if entry[:1] in {"R", "C"} and index + 1 < len(tokens):
+            source = tokens[index + 1]
+            destination = entry[3:]
+            if source and destination:
+                renames[source] = destination
+            index += 2
+        else:
+            index += 1
+    return renames
+
+
+def _status_rename_map(cwd: Path) -> Dict[str, str]:
+    ok, out, _ = _run_git(
+        ["status", "--porcelain", "-z", "--untracked-files=all"], cwd
+    )
+    return _parse_status_rename_map(out) if ok else {}
+
+
+def _infer_baseline_renames(
+    cwd: Path, baseline: Dict[str, str], candidates: Dict[str, str]
+) -> Dict[str, str]:
+    missing = [
+        path
+        for path in baseline
+        if (
+            path not in candidates or candidates.get(path) == "D"
+        )
+        and not os.path.lexists(cwd / path)
+        and not _is_generated_artifact(path)
+    ]
+    additions = [
+        path
+        for path, label in candidates.items()
+        if label == "A" and not _is_generated_artifact(path)
+    ]
+    sources_by_fingerprint: Dict[str, List[str]] = {}
+    for path in missing:
+        sources_by_fingerprint.setdefault(baseline[path], []).append(path)
+    destinations_by_fingerprint: Dict[str, List[str]] = {}
+    for path in additions:
+        fingerprint = _file_fingerprint(cwd, path, deleted=False)
+        destinations_by_fingerprint.setdefault(fingerprint, []).append(path)
+    renames: Dict[str, str] = {}
+    for fingerprint, destinations in destinations_by_fingerprint.items():
+        sources = sources_by_fingerprint.get(fingerprint, [])
+        if len(sources) == 1 and len(destinations) == 1:
+            source, destination = sources[0], destinations[0]
+            renames[source] = destination
+            if candidates.get(source) == "D":
+                candidates.pop(source, None)
+    return renames
+
+
 def _untracked_files(cwd: Path) -> List[str]:
     ok, out, _ = _run_git(["ls-files", "--others", "--exclude-standard", "-z"], cwd)
     if not ok:
@@ -664,8 +759,226 @@ def _untracked_files(cwd: Path) -> List[str]:
     return [p for p in out.split("\x00") if p and not _is_generated_artifact(p)]
 
 
+def _line_count(cwd: Path, path: str) -> int:
+    try:
+        with open_regular_binary(Path(cwd) / path) as handle:
+            count = 0
+            last = b""
+            while True:
+                chunk = handle.read(65536)
+                if not chunk:
+                    break
+                count += chunk.count(b"\n")
+                last = chunk[-1:]
+            return count + (1 if last and last != b"\n" else 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def _parse_numstat_z(output: str) -> Dict[str, Tuple[int, int]]:
+    result: Dict[str, Tuple[int, int]] = {}
+    tokens = output.split("\x00")
+    index = 0
+    while index < len(tokens):
+        header = tokens[index]
+        fields = header.split("\t", 2)
+        if len(fields) < 3:
+            index += 1
+            continue
+        added = int(fields[0]) if fields[0].isdigit() else 0
+        deleted = int(fields[1]) if fields[1].isdigit() else 0
+        path = fields[2]
+        index += 1
+        if not path and index + 1 < len(tokens):
+            source = tokens[index]
+            destination = tokens[index + 1]
+            path = destination or source
+            index += 2
+        if path and not _is_generated_artifact(path):
+            result[path] = (added, deleted)
+    return result
+
+
+def _head_tree_paths(cwd: Path) -> List[str]:
+    sha = current_sha(cwd)
+    if not sha:
+        return []
+    ok, out, _ = _run_git(["ls-tree", "-r", "--name-only", "-z", sha], cwd)
+    if not ok:
+        return []
+    return [path for path in out.split("\x00") if path and not _is_generated_artifact(path)]
+
+
+def _root_commit_name_status(cwd: Path) -> List[Tuple[str, str]]:
+    sha = current_sha(cwd)
+    if not sha:
+        return []
+    ok, out, _ = _run_git(
+        ["diff-tree", "--root", "--no-commit-id", "--name-status", "-r", "-z", sha],
+        cwd,
+    )
+    return _parse_diff_name_status(out) if ok else []
+
+
+def _root_commit_numstat(cwd: Path) -> Dict[str, Tuple[int, int]]:
+    sha = current_sha(cwd)
+    if not sha:
+        return {}
+    ok, out, _ = _run_git(
+        [
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "--numstat",
+            "-z",
+            "--find-renames=20%",
+            sha,
+        ],
+        cwd,
+    )
+    return _parse_numstat_z(out) if ok else {}
+
+
+def _diff_numstat_by_paths(
+    cwd: Path, initial_sha: Optional[str], paths: Optional[List[str]]
+) -> Dict[str, Tuple[int, int]]:
+    if paths is not None and not paths:
+        return {}
+    result: Dict[str, Tuple[int, int]] = {}
+    chunks: List[Optional[List[str]]] = [paths] if paths is not None else [None]
+    for chunk in chunks:
+        if chunk is None:
+            args = ["diff", "--numstat", "-z", "--find-renames=20%"]
+            if initial_sha is not None:
+                args.append(initial_sha)
+        else:
+            args = ["diff", "--numstat", "-z", "--find-renames=20%"]
+            if initial_sha is not None:
+                args.append(initial_sha)
+            args.append("--")
+            args.extend(chunk)
+        ok, output, _ = _run_git(args, cwd)
+        if ok:
+            result.update(_parse_numstat_z(output))
+    return result
+
+
+def _session_line_delta(
+    label: str,
+    current: Tuple[int, int],
+    baseline: Tuple[int, int],
+    changed: bool = False,
+) -> Tuple[int, int]:
+    current_added, current_deleted = current
+    baseline_added, baseline_deleted = baseline
+    if label == "A":
+        if current_added >= baseline_added:
+            delta = (current_added - baseline_added, 0)
+        else:
+            delta = (0, baseline_added - current_added)
+    elif label == "D":
+        delta = (0, max(0, current_deleted - baseline_deleted) + baseline_added)
+    else:
+        delta = (
+            max(0, current_added - baseline_added)
+            + max(0, baseline_deleted - current_deleted),
+            max(0, current_deleted - baseline_deleted)
+            + max(0, baseline_added - current_added),
+        )
+    if changed and delta == (0, 0):
+        return 1, 1
+    return delta
+
+
+def _session_file_changed(
+    cwd: Path,
+    path: str,
+    label: str,
+    baseline: Dict[str, str],
+    rename_map: Dict[str, str],
+    baseline_stats: Dict[str, Tuple[int, int]],
+) -> bool:
+    source = next((old for old, new in rename_map.items() if new == path), path)
+    if source not in baseline and label == "R":
+        return False
+    if baseline.get(source) == _file_fingerprint(cwd, path, deleted=label == "D"):
+        return False
+    line_count = _line_count(cwd, path)
+    baseline_added, baseline_deleted = baseline_stats.get(path, (0, 0))
+    return line_count > 0 or baseline_added > 0 or baseline_deleted > 0
+
+
+def _remap_baseline_stats(
+    baseline_stats: Dict[str, Tuple[int, int]], rename_map: Dict[str, str]
+) -> Dict[str, Tuple[int, int]]:
+    remapped = dict(baseline_stats)
+    for source, destination in rename_map.items():
+        if source in baseline_stats and destination not in remapped:
+            remapped[destination] = baseline_stats[source]
+    return remapped
+
+
+def _session_numstat(
+    cwd: Path, initial_sha: Optional[str], paths: List[str]
+) -> Dict[str, Tuple[int, int]]:
+    result = _diff_numstat_by_paths(cwd, initial_sha, None)
+    result = {path: result[path] for path in paths if path in result}
+    untracked = set(_untracked_files(cwd))
+    for path in paths:
+        if path in untracked:
+            result[path] = (_line_count(cwd, path), 0)
+    return result
+
+
+def working_tree_numstat(
+    cwd: Path, initial_sha: Optional[str] = None
+) -> Dict[str, Tuple[int, int]]:
+    if initial_sha is not None:
+        result = _diff_numstat_by_paths(cwd, initial_sha, None)
+    else:
+        result = _diff_numstat_by_paths(cwd, None, None)
+        ok, staged_output, _ = _run_git(
+            ["diff", "--cached", "--numstat", "-z"], cwd
+        )
+        staged = _parse_numstat_z(staged_output) if ok else {}
+        for path, (added, deleted) in staged.items():
+            prior_added, prior_deleted = result.get(path, (0, 0))
+            result[path] = (prior_added + added, prior_deleted + deleted)
+    if initial_sha is None:
+        for _label, path in name_status(cwd):
+            if os.path.lexists(cwd / path):
+                result[path] = (_line_count(cwd, path), 0)
+    for path in _untracked_files(cwd):
+        result[path] = (_line_count(cwd, path), 0)
+    return result
+
+
+def _add_missing_baseline_paths(
+    cwd: Path,
+    baseline: Dict[str, str],
+    candidates: Dict[str, str],
+    skip_paths: Optional[Set[str]] = None,
+) -> None:
+    skipped = skip_paths or set()
+    for path, baseline_fingerprint in baseline.items():
+        if path in candidates or path in skipped or _is_generated_artifact(path):
+            continue
+        full_path = cwd / path
+        if not os.path.lexists(full_path):
+            current_fingerprint = "<deleted>"
+            label = "D"
+        else:
+            current_fingerprint = _file_fingerprint(cwd, path, deleted=False)
+            label = "M"
+        if current_fingerprint != baseline_fingerprint:
+            candidates[path] = label
+
+
 def session_changes(
-    cwd: Path, initial_sha: Optional[str], baseline: Dict[str, str]
+    cwd: Path,
+    initial_sha: Optional[str],
+    baseline: Dict[str, str],
+    baseline_stats: Optional[Dict[str, Tuple[int, int]]] = None,
 ) -> Tuple[List[Tuple[str, str]], int, int]:
     """Files changed during the session, as ``(pairs, added, deleted)``.
 
@@ -673,32 +986,101 @@ def session_changes(
     uncommitted) or is newly untracked, and its current content differs from its
     state at session start, so a file left dirty from before the session and
     untouched since is excluded. Lines are measured against the starting commit.
-    Falls back to the plain working-tree diff when there is no starting commit.
+    Falls back to baseline fingerprints when there is no starting commit.
     """
+    baseline_stats = baseline_stats or {}
     if not initial_sha:
-        return name_status(cwd), *shortstat(cwd)
+        candidates: Dict[str, str] = {
+            path: label for label, path in _root_commit_name_status(cwd)
+        }
+        for path in _head_tree_paths(cwd):
+            candidates.setdefault(path, "A")
+        for label, path in name_status(cwd):
+            candidates[path] = label
+        status_rename_map = _status_rename_map(cwd)
+        status_rename_map.update(_infer_baseline_renames(cwd, baseline, candidates))
+        _add_missing_baseline_paths(cwd, baseline, candidates, set(status_rename_map))
+        pairs: List[Tuple[str, str]] = []
+        for path, label in candidates.items():
+            current = _file_fingerprint(cwd, path, deleted=(label == "D"))
+            if baseline.get(path) != current:
+                pairs.append((label, path))
+        pairs.sort(key=lambda item: item[1])
+        current_stats = working_tree_numstat(cwd)
+        root_stats = _root_commit_numstat(cwd)
+        for path, (root_added, _root_deleted) in root_stats.items():
+            if path not in candidates:
+                continue
+            has_baseline = path in baseline or path in status_rename_map.values()
+            if os.path.lexists(cwd / path):
+                current_stats[path] = (_line_count(cwd, path), 0)
+            elif has_baseline:
+                current_stats[path] = (0, 0)
+            else:
+                current_stats[path] = (0, root_added)
+        for path in candidates:
+            if path not in current_stats and os.path.lexists(cwd / path):
+                current_stats[path] = (_line_count(cwd, path), 0)
+        effective_baseline_stats = _remap_baseline_stats(
+            baseline_stats, status_rename_map
+        )
+        added = deleted = 0
+        for label, path in pairs:
+            added_delta, deleted_delta = _session_line_delta(
+                label,
+                current_stats.get(path, (0, 0)),
+                effective_baseline_stats.get(path, (0, 0)),
+                _session_file_changed(
+                    cwd,
+                    path,
+                    label,
+                    baseline,
+                    status_rename_map,
+                    effective_baseline_stats,
+                ),
+            )
+            added += added_delta
+            deleted += deleted_delta
+        return pairs, added, deleted
 
-    candidates: Dict[str, str] = {}
-    ok, out, _ = _run_git(["diff", "--name-status", "-z", initial_sha], cwd)
+    session_candidates: Dict[str, str] = {}
+    rename_map: Dict[str, str] = {}
+    ok, out, _ = _run_git(
+        ["diff", "--name-status", "-z", "--find-renames=20%", initial_sha], cwd
+    )
     if ok:
+        rename_map = _parse_rename_map(out)
         for label, path in _parse_diff_name_status(out):
-            candidates.setdefault(path, label)
+            session_candidates.setdefault(path, label)
     for path in _untracked_files(cwd):
-        candidates.setdefault(path, "A")
+        session_candidates.setdefault(path, "A")
+    rename_map.update(_infer_baseline_renames(cwd, baseline, session_candidates))
+    _add_missing_baseline_paths(cwd, baseline, session_candidates, set(rename_map))
 
-    pairs: List[Tuple[str, str]] = []
-    for path, label in candidates.items():
+    session_pairs: List[Tuple[str, str]] = []
+    for path, label in session_candidates.items():
         current = _file_fingerprint(cwd, path, deleted=(label == "D"))
         if baseline.get(path) == current:
             continue  # already in this exact state before the session started
-        pairs.append((label, path))
-    pairs.sort(key=lambda item: item[1])
+        session_pairs.append((label, path))
+    session_pairs.sort(key=lambda item: item[1])
 
-    added, deleted = 0, 0
-    ok, out, _ = _run_git(["diff", "--shortstat", initial_sha], cwd)
-    if ok and out.strip():
-        added, deleted = _parse_shortstat(out)
-    return pairs, added, deleted
+    tracked_paths = [path for _label, path in session_pairs]
+    final_stats = _session_numstat(cwd, initial_sha, tracked_paths)
+    effective_baseline_stats = _remap_baseline_stats(baseline_stats, rename_map)
+    added = deleted = 0
+    for label, path in session_pairs:
+        added_delta, deleted_delta = _session_line_delta(
+            label,
+            final_stats.get(path, (0, 0)),
+            effective_baseline_stats.get(path, (0, 0)),
+            _session_file_changed(
+                cwd, path, label, baseline, rename_map, effective_baseline_stats
+            ),
+        )
+        added += added_delta
+        deleted += deleted_delta
+    return session_pairs, added, deleted
 
 
 def capture_state(cwd: Path, initial: bool = True) -> GitState:

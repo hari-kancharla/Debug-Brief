@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from debugbrief import git_utils
 from debugbrief.paths import (
     ProjectPaths,
     ensure_local_ignore,
@@ -24,6 +25,20 @@ def test_resolve_inside_git_uses_repo_root(git_repo, monkeypatch):
     resolved = resolve_project_paths()
     assert resolved.is_git_repo is True
     assert resolved.project_root.resolve() == git_repo.resolve()
+
+
+def test_resolve_ignores_stale_git_environment(git_repo, monkeypatch):
+    subdir = git_repo / "nested"
+    subdir.mkdir()
+    monkeypatch.chdir(subdir)
+    monkeypatch.setenv("GIT_DIR", str(git_repo / "missing-git-dir"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(git_repo / "missing-work-tree"))
+    resolved = resolve_project_paths()
+    assert resolved.is_git_repo is True
+    assert resolved.project_root.resolve() == git_repo.resolve()
+    state = git_utils.capture_state(subdir)
+    assert state.is_repo is True
+    assert state.initial_sha == git_utils.current_sha(git_repo)
 
 
 def test_storage_layout_paths(tmp_path):
@@ -60,6 +75,31 @@ def test_ensure_local_ignore_outside_git_is_noop(nogit_paths):
     changed, warnings = ensure_local_ignore(nogit_paths)
     assert changed is False
     assert warnings == []
+
+
+def test_ensure_local_ignore_rejects_symlinked_git_info(git_paths, tmp_path):
+    import os
+    import shutil
+
+    info_dir = git_paths.repo_root / ".git" / "info"
+    external = tmp_path / "external-info"
+    external.mkdir()
+    if info_dir.exists():
+        shutil.rmtree(info_dir)
+    info_dir.symlink_to(external, target_is_directory=True)
+    changed, warnings = ensure_local_ignore(git_paths)
+    assert changed is False
+    assert warnings and "real directory" in warnings[0]
+    assert not (external / "exclude").exists()
+    assert os.path.lexists(info_dir)
+
+
+def test_ensure_local_ignore_does_not_fabricate_git_metadata(tmp_path):
+    pp = ProjectPaths(project_root=tmp_path, is_git_repo=True, repo_root=tmp_path)
+    changed, warnings = ensure_local_ignore(pp)
+    assert changed is False
+    assert warnings
+    assert not (tmp_path / ".git").exists()
 
 
 def test_ensure_local_ignore_warns_when_git_is_file(tmp_path):

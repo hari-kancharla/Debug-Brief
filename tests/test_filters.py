@@ -49,6 +49,48 @@ def test_classify_pytest_fail_is_not_verification():
     assert cls.is_verification is False
 
 
+def test_metadata_and_collection_commands_are_not_verification():
+    for command in (
+        "pytest --version",
+        "pytest --help",
+        "pytest --collect-only",
+        "python -m pytest --co -q",
+        "npm test -- --help",
+        "pytest --fixtures-per-test",
+        "go test -list .",
+        "vitest list",
+        "pytest --help",
+        "jest --listTests",
+        "dotnet test --list-tests",
+        "ctest -N",
+    ):
+        classification = filters.classify_command(command, exit_code=0)
+        assert classification.is_verification is False, command
+
+
+def test_legacy_metadata_classification_is_sanitized_in_reports():
+    event = _make_command_event(
+        "pytest --version",
+        COMMAND_STATUS_PASSED,
+        "2026-01-01T00:00:00Z",
+        is_test=True,
+        is_verification=True,
+        tool="pytest",
+    )
+    command = filters.build_report_commands([event])[0]
+    assert command.is_verification is False
+    assert command.is_test is False
+    assert command.tool is None
+
+
+def test_metadata_flags_cannot_be_forced_into_verification():
+    for command in ("pytest --help", "go test -list .", "vitest list"):
+        classification = filters.classify_command(
+            command, exit_code=0, force_verification=True
+        )
+        assert classification.is_verification is False, command
+
+
 def test_classify_various_test_tools():
     cases = {
         "npm test": "npm",
@@ -260,6 +302,20 @@ def test_exotic_shell_constructs_are_never_attributed_to_a_tool():
         for ec in (0, 1):
             c = filters.classify_command(cmd, exit_code=ec, use_shell=True, pipefail=True)
             assert c.tool != "pytest" and c.is_verification is False, (cmd, ec)
+
+
+def test_verify_never_trusts_shell_substitution_exit_codes():
+    for command in ("echo $(false)", "echo `false`", "echo >(false)"):
+        classification = filters.classify_command(
+            command,
+            exit_code=0,
+            use_shell=True,
+            pipefail=True,
+            force_verification=True,
+        )
+        assert classification.is_verification is False
+        warning = _warn(command, True, passed=True, force_verification=True)
+        assert warning is not None and "substitution" in warning
 
 
 def test_verify_declares_reliable_compound_but_never_an_unreliable_pipe():

@@ -5,14 +5,15 @@ Commands:
     debugbrief note  <text ...>
     debugbrief run   [--shell] [--timeout N] [--no-redact] -- <command ...>
     debugbrief run   "<command>"
-    debugbrief redo  [--timeout N] [--no-redact] [--verify]
-    debugbrief preview [--mode pr|handoff|incident]
-    debugbrief end   [--mode pr|handoff|incident] [--format md|json|both] [--stdout]
+    debugbrief redo  [--timeout N] [--no-redact] [--verify] [--dry-run] [--yes]
+    debugbrief preview [--mode pr|handoff|incident] [--format md|json|html] [--include-full-path]
+    debugbrief end   [--mode pr|handoff|incident] [--format md|json|html|both|all] [--stdout]
+                     [--open] [--include-full-path]
     debugbrief cancel [--yes]
     debugbrief status
     debugbrief doctor [--fix]
     debugbrief last
-    debugbrief open  [--last | --path PATH]
+    debugbrief open  [--last | --path PATH] [--html]
     debugbrief list  [--json]
     debugbrief show  <session_id> [--json]
 
@@ -24,10 +25,12 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import math
 import os
 import shlex
 import subprocess
 import sys
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -36,19 +39,33 @@ from . import __version__, git_utils
 from .command_runner import DEFAULT_TIMEOUT_SECONDS, RunResult, run_command
 from .config import load_config
 from .doctor import FAIL, run_doctor
-from .models import COMMAND_STATUS_PASSED, CommandData
+from .markdown import normalize_free_text
+from .models import (
+    COMMAND_STATUS_PASSED,
+    CommandData,
+    effective_event_timestamp,
+    valid_timestamp,
+)
 from .paths import UnsafeStateDirectory, ensure_local_ignore, resolve_project_paths
 from .redaction import PLACEHOLDER
-from .reporters import VALID_MODES, build_context, render_report
-from .reports_index import first_title, infer_mode, latest_report
+from .redo_safety import confirm_redo, is_destructive_command
+from .reporters import (
+    VALID_MODES,
+    build_context,
+    render_report,
+    render_report_html,
+    render_report_json,
+)
+from .reports_index import first_title, infer_mode, latest_report, list_reports
 from .session_manager import SessionError, SessionManager
 from .sessions_index import (
     is_verified,
     load_all_sessions,
+    normalize_session_counts,
     report_modes_for,
     resolve_session_id,
 )
-from .utils import eprint, is_supported_platform
+from .utils import eprint, is_regular_file, is_supported_platform, parse_iso8601
 
 PROG = "debugbrief"
 
@@ -58,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog=PROG,
         description=(
             "Record the meaningful context of a debugging session and turn it "
-            "into a useful markdown brief (PR, handoff, or incident)."
+            "into an evidence-backed report (PR, handoff, or incident)."
         ),
     )
     parser.add_argument(
@@ -173,6 +190,16 @@ def build_parser() -> argparse.ArgumentParser:
             "automatically when the original run was declared with --verify."
         ),
     )
+    p_redo.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the command that would be re-run without executing it.",
+    )
+    p_redo.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip confirmation for a destructive re-run.",
+    )
     p_redo.set_defaults(func=cmd_redo)
 
     # preview ------------------------------------------------------------
@@ -190,13 +217,35 @@ def build_parser() -> argparse.ArgumentParser:
         "--detail",
         choices=["full", "compact"],
         default=None,
-        help="Report verbosity: full (default), or compact for a shorter PR brief.",
+        help="Report verbosity: compact (default) for PR, or full for the complete record.",
+    )
+    p_preview.add_argument(
+        "--format",
+        dest="report_format",
+        choices=["md", "json", "html"],
+        default="md",
+        help="Preview format: md (default), json, or html.",
+    )
+    preview_path = p_preview.add_mutually_exclusive_group()
+    preview_path.add_argument(
+        "--include-full-path",
+        dest="include_full_path",
+        action="store_true",
+        default=None,
+        help="Include the absolute project root in the generated report.",
+    )
+    preview_path.add_argument(
+        "--no-include-full-path",
+        dest="include_full_path",
+        action="store_false",
+        default=None,
+        help="Keep the absolute project root out of the generated report.",
     )
     p_preview.set_defaults(func=cmd_preview)
 
     # end ----------------------------------------------------------------
     p_end = subparsers.add_parser(
-        "end", help="Finalize the session and write a markdown report."
+        "end", help="Finalize the session and write a report artifact."
     )
     p_end.add_argument(
         "--mode",
@@ -207,32 +256,55 @@ def build_parser() -> argparse.ArgumentParser:
     p_end.add_argument(
         "--format",
         dest="report_format",
-        choices=["md", "json", "both"],
+        choices=["md", "json", "html", "both", "all"],
         default="md",
-        help="Report output format (default md). 'both' writes markdown and JSON.",
+        help="Report output: md, json, html, both, or all (default md).",
     )
     p_end.add_argument(
         "--stdout",
         dest="to_stdout",
         action="store_true",
         help=(
-            "Print the rendered markdown report to stdout (the file is still "
-            "written). Informational lines move to stderr, so the output pipes "
-            "cleanly: debugbrief end --stdout | gh pr comment --body-file -"
+            "Print the selected report to stdout (the file is still written). "
+            "Informational lines move to stderr, so Markdown output pipes cleanly: "
+            "debugbrief end --stdout | gh pr comment --body-file -"
+        ),
+    )
+    p_end.add_argument(
+        "--open",
+        action="store_true",
+        help=(
+            "Open the generated HTML report in the system browser "
+            "(use with --format html or all)."
         ),
     )
     p_end.add_argument(
         "--detail",
         choices=["full", "compact"],
         default=None,
-        help="Report verbosity: full (default), or compact for a shorter PR brief.",
+        help="Report verbosity: compact (default) for PR, or full for the complete record.",
+    )
+    end_path = p_end.add_mutually_exclusive_group()
+    end_path.add_argument(
+        "--include-full-path",
+        dest="include_full_path",
+        action="store_true",
+        default=None,
+        help="Include the absolute project root in the generated report.",
+    )
+    end_path.add_argument(
+        "--no-include-full-path",
+        dest="include_full_path",
+        action="store_false",
+        default=None,
+        help="Keep the absolute project root out of the generated report.",
     )
     p_end.set_defaults(func=cmd_end)
 
     # cancel -------------------------------------------------------------
     p_cancel = subparsers.add_parser(
         "cancel",
-        help="Discard the active session without writing a report.",
+        help="Abandon the active session without writing a report.",
     )
     p_cancel.add_argument(
         "--yes",
@@ -242,7 +314,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_cancel.set_defaults(func=cmd_cancel)
 
     # status -------------------------------------------------------------
-    p_status = subparsers.add_parser("status", help="Show the active session status.")
+    p_status = subparsers.add_parser(
+        "status", help="Show the active session and any running captured command."
+    )
     p_status.set_defaults(func=cmd_status)
 
     # doctor -------------------------------------------------------------
@@ -269,17 +343,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_last = subparsers.add_parser(
         "last", help="Show the most recently generated report."
     )
+    p_last.add_argument(
+        "--open", action="store_true", help="Open the latest report immediately."
+    )
     p_last.set_defaults(func=cmd_last)
 
     # open ---------------------------------------------------------------
     p_open = subparsers.add_parser(
-        "open", help="Open a report in $EDITOR (defaults to the latest report)."
+        "open",
+        help="Open a report in $EDITOR or the system browser (defaults to the latest report).",
     )
-    p_open.add_argument(
+    open_target = p_open.add_mutually_exclusive_group()
+    open_target.add_argument(
         "--last", action="store_true", help="Open the latest report (default)."
     )
-    p_open.add_argument(
+    open_target.add_argument(
         "--path", metavar="REPORT", help="Open a specific report file."
+    )
+    p_open.add_argument(
+        "--html",
+        action="store_true",
+        help="Open the latest HTML report in the system browser instead of an editor.",
     )
     p_open.set_defaults(func=cmd_open)
 
@@ -335,12 +419,15 @@ def _ensure_session(manager, paths, seed_text):
     session = manager.auto_start(seed_text)
     changed, warnings = _apply_local_ignore(manager, paths, session)
     # Status lines go to stderr so a wrapped command's stdout stays clean.
-    eprint(f"Auto-started a DebugBrief session (none was active): {session.title}")
-    eprint(f"  id: {session.session_id}")
+    eprint(
+        "Auto-started a DebugBrief session (none was active): "
+        f"{_display(session.title)}"
+    )
+    eprint(f"  id: {_display(session.session_id)}")
     if changed:
         eprint("  ignore: added .debugbrief/ to .git/info/exclude")
     for warning in warnings:
-        eprint(f"  warning: {warning}")
+        eprint(f"  warning: {_display(warning)}")
     return session
 
 
@@ -364,20 +451,20 @@ def cmd_start(args: argparse.Namespace) -> int:
     changed, warnings = _apply_local_ignore(manager, paths, session)
 
     print("Started DebugBrief session.")
-    print(f"  id:        {session.session_id}")
-    print(f"  title:     {session.title}")
-    print(f"  root:      {session.project_root}")
+    print(f"  id:        {_display(session.session_id)}")
+    print(f"  title:     {_display(session.title)}")
+    print(f"  root:      {_display(session.project_root)}")
     if session.git.is_repo:
         branch = session.git.branch or (
             "(detached HEAD)" if session.git.detached_head else "(no branch)"
         )
-        print(f"  git:       repo on {branch}")
+        print(f"  git:       repo on {_display(branch)}")
     else:
         print("  git:       not a Git repository (continuing locally)")
     if changed:
         print("  ignore:    added .debugbrief/ to .git/info/exclude")
     for warning in warnings:
-        eprint(f"  warning:   {warning}")
+        eprint(f"  warning:   {_display(warning)}")
     print("")
     print("Next:")
     print('  debugbrief note "<observation>"')
@@ -395,7 +482,11 @@ def cmd_note(args: argparse.Namespace) -> int:
     manager = SessionManager(paths)
     _ensure_session(manager, paths, text)
     session = manager.add_note(text)
-    print(f"Noted ({session.summary.notes_count} total).")
+    print(
+        f"Noted locally · {session.summary.notes_count} note"
+        f"{'s' if session.summary.notes_count != 1 else ''} · "
+        f"session {session.session_id[:8]}"
+    )
     return 0
 
 
@@ -430,7 +521,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     # Hold the active-command lease for the command's lifetime so end/cancel and a
     # second run cannot run concurrently with it.
     with manager.command_lease(command_str, str(invocation_cwd)) as command_id:
-        eprint(f"$ {command_str}")
+        eprint(f"$ {_display(command_str)}")
         result = run_command(
             command=command_str,
             cwd=invocation_cwd,
@@ -451,7 +542,7 @@ def _print_command_outcome(result: RunResult, timeout_seconds: int) -> None:
     """Report a captured command's outcome on stderr (shared by run and redo)."""
     data = result.command_data
     if result.errored:
-        eprint(f"  error:     {result.error_message}")
+        eprint(f"  error:     {_display(result.error_message)}")
     elif result.interrupted:
         eprint("  status:    interrupted (recorded)")
     elif result.broken_pipe:
@@ -461,9 +552,10 @@ def _print_command_outcome(result: RunResult, timeout_seconds: int) -> None:
     else:
         verdict = "passed" if data.classification.status == COMMAND_STATUS_PASSED else "failed"
         eprint(f"  status:    {verdict} (exit {data.exit_code})")
+    eprint("  captured:  locally · bounded preview · Git state when available")
     eprint(f"  duration:  {data.duration_seconds}s")
     if data.classification.is_test:
-        eprint(f"  test:      {data.classification.tool or 'unknown'}")
+        eprint(f"  test:      {_display(data.classification.tool or 'unknown')}")
     if data.stdout_truncated:
         eprint("  note:      stdout preview was truncated")
     if data.stderr_truncated:
@@ -471,14 +563,128 @@ def _print_command_outcome(result: RunResult, timeout_seconds: int) -> None:
     if data.redacted:
         eprint("  note:      secret-like values were redacted")
     if result.warning:
-        eprint(f"  warning:   {result.warning}")
+        eprint(f"  warning:   {_display(result.warning)}")
+    if data.classification.status == COMMAND_STATUS_PASSED:
+        eprint("  next:      debugbrief end --format html")
+    else:
+        eprint("  next:      edit, then debugbrief redo")
+
+
+def _latest_command_event(events):
+    ranked = []
+    for index, event in enumerate(events):
+        stamp = valid_timestamp(effective_event_timestamp(event))
+        if stamp is None:
+            continue
+        try:
+            seconds = parse_iso8601(stamp).timestamp()
+        except (TypeError, ValueError, OverflowError):
+            continue
+        ranked.append((seconds, index, event))
+    if ranked:
+        selected = max(ranked, key=lambda item: (item[0], item[1]))
+        selected_index = selected[1]
+        for index, event in enumerate(events):
+            data = event.data if isinstance(event.data, dict) else {}
+            ended_at = data.get("ended_at")
+            if (
+                index > selected_index
+                and "ended_at" in data
+                and valid_timestamp(ended_at) is None
+            ):
+                selected = (0.0, index, event)
+                selected_index = index
+        return selected[2]
+    if events:
+        return events[-1]
+    raise ValueError("no command events")
+
+
+def _redo_preflight(manager, paths, session, check_active=False):
+    if check_active:
+        try:
+            active = manager._command_is_active()
+        except Exception:
+            return None, None, "DebugBrief could not determine command activity safely."
+        if active:
+            return None, None, "A captured command is already running in this project."
+    events = session.command_events()
+    if not events:
+        return None, None, "No commands have been captured in this session yet."
+    selected = _latest_command_event(events)
+    selected_index = next(
+        index for index, event in enumerate(events) if event is selected
+    )
+    for index, event in enumerate(events):
+        if index > selected_index and not valid_timestamp(
+            effective_event_timestamp(event)
+        ):
+            return None, None, (
+                "A newer command has no valid timestamp, so redo cannot select a "
+                "safe command."
+            )
+    if not valid_timestamp(effective_event_timestamp(selected)):
+        return None, None, "The selected command has no valid timestamp."
+    try:
+        state = git_utils.tracked_state(
+            paths.project_root, paths.session_file(session.session_id)
+        )
+    except Exception:
+        state = git_utils.TrackedState.UNKNOWN
+    if state is git_utils.TrackedState.TRACKED:
+        return None, None, (
+            "The active session is stored in a file tracked by Git, so it may "
+            "have come from the repository rather than your own runs. Remove it "
+            "from the index (git rm --cached -r .debugbrief) and run the command "
+            "yourself: debugbrief run -- <command>"
+        )
+    if state is not git_utils.TrackedState.UNTRACKED:
+        return None, None, (
+            "DebugBrief could not confirm whether this session file is tracked by "
+            "Git, so redo was refused for safety. Run the command manually with: "
+            "debugbrief run -- <command>"
+        )
+    seed = CommandData.from_dict(selected.data)
+    if not seed.command.strip():
+        return None, None, "The selected command is empty and cannot be re-run."
+    if PLACEHOLDER in seed.command:
+        return None, None, (
+            f"The last stored command contains {PLACEHOLDER}, a redaction "
+            "placeholder, not the real text, so it cannot be re-run. Run the "
+            "command again yourself: debugbrief run -- <command>"
+        )
+    if seed.invocation_cwd:
+        try:
+            invocation_cwd = Path(seed.invocation_cwd)
+            valid_cwd = invocation_cwd.is_dir()
+        except (OSError, TypeError, ValueError):
+            invocation_cwd = Path.cwd()
+            valid_cwd = False
+        if not valid_cwd:
+            return None, None, (
+                f"The original command ran in {seed.invocation_cwd}, which no "
+                "longer exists, so redo did not run it. Re-run it yourself from a "
+                "valid directory: debugbrief run -- <command>"
+            )
+    else:
+        invocation_cwd = Path.cwd()
+    return seed, invocation_cwd, None
+
+
+def _redo_refusal(reason: str, dry_run: bool = False) -> int:
+    prefix = "Redo preflight: normal redo would be refused: " if dry_run else ""
+    eprint(prefix + _display(reason))
+    return 1
 
 
 def cmd_redo(args: argparse.Namespace) -> int:
     paths = resolve_project_paths()
     manager = SessionManager(paths)
+    timeout = getattr(args, "timeout", DEFAULT_TIMEOUT_SECONDS)
+    if timeout is None:
+        timeout = DEFAULT_TIMEOUT_SECONDS
 
-    if args.timeout <= 0:
+    if timeout <= 0:
         eprint("--timeout must be a positive number of seconds.")
         return 2
 
@@ -489,136 +695,158 @@ def cmd_redo(args: argparse.Namespace) -> int:
             "Run a command first: debugbrief run -- <command>"
         )
         return 1
-    events = session.command_events()
-    if not events:
-        eprint(
-            "No commands have been captured in this session yet. "
-            "Run one first: debugbrief run -- <command>"
+
+    if getattr(args, "dry_run", False):
+        seed, invocation_cwd, reason = _redo_preflight(
+            manager, paths, session, check_active=True
         )
-        return 1
-
-    # Acquire the lease first, then select the last command under it: once the
-    # lease is held no other command can complete, so "the last command" cannot
-    # change between selection and execution. The seed preview/cwd are just lease
-    # metadata; the command actually run is the one re-read inside the lease.
-    seed = CommandData.from_dict(events[-1].data)
-    seed_cwd = seed.invocation_cwd or str(Path.cwd())
-    with manager.command_lease(seed.command, seed_cwd) as command_id:
-        session = manager.load_active()
-        events = session.command_events() if session else []
-        if not events:
-            eprint("No commands have been captured in this session yet.")
-            return 1
-        # Refuse to re-execute a command unless the session file is confirmed not
-        # to be tracked by Git: a cloned repository could ship a seeded
-        # .debugbrief session whose last command would otherwise run here. State
-        # DebugBrief writes is kept out of the index (ensure_local_ignore), so a
-        # TRACKED result means repository-supplied state. The check fails closed:
-        # when provenance cannot be established (git missing, a timeout, or a
-        # fatal error such as safe.directory ownership), redo is refused too.
-        if session is not None:
-            state = git_utils.tracked_state(
-                paths.project_root, paths.session_file(session.session_id)
-            )
-            if state is git_utils.TrackedState.TRACKED:
-                eprint(
-                    "The active session is stored in a file tracked by Git, so it "
-                    "may have come from the repository rather than your own runs. "
-                    "DebugBrief will not re-run a command from repository-supplied "
-                    "state. Remove it from the index "
-                    "(git rm --cached -r .debugbrief) and run the command "
-                    "yourself: debugbrief run -- <command>"
-                )
-                return 1
-            if state is git_utils.TrackedState.UNKNOWN:
-                eprint(
-                    "DebugBrief could not confirm whether this session file is "
-                    "tracked by Git, so redo was refused for safety. Run the "
-                    "command manually with: debugbrief run -- <command>"
-                )
-                return 1
-        last = CommandData.from_dict(events[-1].data)
-        if PLACEHOLDER in last.command:
+        if reason is not None:
+            return _redo_refusal(reason, dry_run=True)
+        assert seed is not None and invocation_cwd is not None
+        print(f"$ {normalize_free_text(seed.command)}  (redo --dry-run)")
+        print(f"  cwd:       {_display(invocation_cwd)}")
+        if not seed.invocation_cwd:
             eprint(
-                f"The last stored command contains {PLACEHOLDER}, a redaction "
-                "placeholder, not the real text, so it cannot be re-run. "
-                "Run the command again yourself: debugbrief run -- <command>"
+                "  warning:   the original command's directory was not recorded; "
+                "the dry run would use the current directory."
             )
+        if is_destructive_command(seed.command, used_shell=seed.used_shell):
+            if getattr(args, "yes", False):
+                print("  confirmation: bypassed by --yes for normal redo")
+            else:
+                print("  confirmation: normal redo would require confirmation")
+        print("  normal redo would not be refused by preflight")
+        return 0
+
+    seed, seed_cwd, reason = _redo_preflight(
+        manager, paths, session, check_active=True
+    )
+    if reason is not None:
+        return _redo_refusal(reason)
+    assert seed is not None and seed_cwd is not None
+    with manager.command_lease(seed.command, str(seed_cwd)) as command_id:
+        session = manager.load_active()
+        if session is None:
+            eprint("No active DebugBrief session, so there is nothing to redo.")
             return 1
-
-        # A redo of a command originally declared with --verify stays a declared
-        # check without retyping the flag; an explicit --verify also works.
+        last, invocation_cwd, reason = _redo_preflight(
+            manager, paths, session
+        )
+        if reason is not None:
+            return _redo_refusal(reason)
+        assert last is not None and invocation_cwd is not None
         inherit_verify = last.classification.tool == "custom"
-
-        # Re-run from the directory the original command ran in, so a redo behaves
-        # like the original even when invoked elsewhere (important in monorepos).
-        if last.invocation_cwd:
-            invocation_cwd = Path(last.invocation_cwd)
-            if not invocation_cwd.is_dir():
-                eprint(
-                    f"The original command ran in {last.invocation_cwd}, which no "
-                    "longer exists, so redo did not run it. Re-run it yourself from "
-                    "a valid directory: debugbrief run -- <command>"
-                )
-                return 1
-        else:
-            # Older session data did not record the directory; fall back to the
-            # current one and say so, so the change of directory is never silent.
-            invocation_cwd = Path.cwd()
+        if not last.invocation_cwd:
             eprint(
                 "  warning:   the original command's directory was not recorded; "
                 "re-running in the current directory."
             )
-
-        eprint(f"$ {last.command}  (redo)")
+        try:
+            confirmed = confirm_redo(
+                last.command,
+                assume_yes=bool(getattr(args, "yes", False)),
+                used_shell=last.used_shell,
+            )
+        except KeyboardInterrupt:
+            return 1
+        if not confirmed:
+            return 1
+        eprint(f"$ {normalize_free_text(last.command)}  (redo)")
         result = run_command(
             command=last.command,
             cwd=invocation_cwd,
             use_shell=last.used_shell,
-            timeout_seconds=args.timeout,
-            redact=not args.no_redact,
-            force_verification=args.verify or inherit_verify,
+            timeout_seconds=timeout,
+            redact=not bool(getattr(args, "no_redact", False)),
+            force_verification=bool(getattr(args, "verify", False)) or inherit_verify,
             pass_fds=manager.command_pass_fds,
         )
         result.command_data.invocation_cwd = str(invocation_cwd)
         with _deferred_sigint():
             manager.record_command(result, command_id=command_id)
-    _print_command_outcome(result, args.timeout)
+    _print_command_outcome(result, timeout)
     return result.propagated_exit_code
 
 
 def cmd_end(args: argparse.Namespace) -> int:
     manager = _manager()
-    session = manager.end(args.mode, args.report_format, detail=args.detail)
+    if getattr(args, "open", False) and args.report_format not in ("html", "all"):
+        eprint("--open requires --format html or --format all.")
+        return 2
+    include_full_path = bool(getattr(args, "include_full_path", False))
+    session = manager.end(
+        args.mode,
+        args.report_format,
+        detail=args.detail,
+        include_full_path=include_full_path,
+    )
     # With --stdout the report itself owns stdout; everything informational
     # moves to stderr so the output pipes cleanly.
     info = eprint if args.to_stdout else print
-    info(f"Session completed: {session.title}")
+    info(f"Session completed: {_display(session.title)}")
     info(f"  mode:      {args.mode}")
-    if args.report_format in ("md", "both"):
+    if args.report_format in ("md", "both", "all"):
         info(
-            f"  report:    {manager.paths.report_file(session.session_id, args.mode)}"
+            f"  report:    {_display(manager.paths.report_file(session.session_id, args.mode))}"
         )
-    if args.report_format in ("json", "both"):
+    if args.report_format in ("json", "both", "all"):
         info(
             f"  json:      "
-            f"{manager.paths.report_json_file(session.session_id, args.mode)}"
+            f"{_display(manager.paths.report_json_file(session.session_id, args.mode))}"
         )
-    info(f"  session:   {manager.paths.session_file(session.session_id)}")
+    if args.report_format in ("html", "all"):
+        info(
+            f"  html:      "
+            f"{_display(manager.paths.report_html_file(session.session_id, args.mode))}"
+        )
+    info(f"  session:   {_display(manager.paths.session_file(session.session_id))}")
+    info("  proof:     saved locally · review before sharing")
+    if args.report_format in ("html", "all"):
+        info("  open:      debugbrief open --html")
+    else:
+        info("  open:      debugbrief open")
     if args.to_stdout:
-        sys.stdout.write(render_report(session, args.mode, args.detail))
+        if args.report_format == "html":
+            rendered = render_report_html(
+                session, args.mode, include_full_path=include_full_path
+            )
+        elif args.report_format == "json":
+            payload = render_report_json(
+                session, args.mode, include_full_path=include_full_path
+            )
+            rendered = json.dumps(payload, indent=2) + "\n"
+        else:
+            rendered = (
+                render_report(session, args.mode, args.detail, include_full_path=True)
+                if include_full_path
+                else render_report(session, args.mode, args.detail)
+            )
+        sys.stdout.write(rendered)
+    if getattr(args, "open", False):
+        return _open_report_in_browser(
+            manager.paths.report_html_file(session.session_id, args.mode),
+            announce_to_stderr=bool(getattr(args, "to_stdout", False)),
+        )
     return 0
 
 
 def cmd_preview(args: argparse.Namespace) -> int:
     manager = _manager()
-    markdown = manager.preview(args.mode, detail=args.detail)
+    rendered = manager.preview(
+        args.mode,
+        detail=args.detail,
+        include_full_path=bool(getattr(args, "include_full_path", False)),
+        report_format=getattr(args, "report_format", "md"),
+    )
+    if getattr(args, "report_format", "md") != "md":
+        sys.stdout.write(rendered)
+        return 0
     banner = "_Preview of an active session. Run debugbrief end to finalize._"
-    lines = markdown.splitlines()
+    lines = rendered.splitlines()
     if lines and lines[0].startswith("# "):
         rendered = lines[0] + "\n\n" + banner + "\n" + "\n".join(lines[1:]) + "\n"
     else:  # pragma: no cover - reports always start with a title
-        rendered = banner + "\n\n" + markdown
+        rendered = banner + "\n\n" + rendered
     sys.stdout.write(rendered)
     return 0
 
@@ -632,7 +860,7 @@ def cmd_cancel(args: argparse.Namespace) -> int:
 
     if not args.yes:
         try:
-            answer = input(f"Discard active session '{session.title}'? [y/N] ")
+            answer = input(f"Abandon active session '{_display(session.title)}'? [y/N] ")
         except EOFError:
             # No stdin to answer with (e.g. a pipe): treat as a decline.
             answer = ""
@@ -641,7 +869,10 @@ def cmd_cancel(args: argparse.Namespace) -> int:
             return 1
 
     manager.cancel()
-    eprint(f"Discarded session '{session.title}' (no report written).")
+    eprint(
+        f"Abandoned session '{_display(session.title)}'. No report written; "
+        "the local record remains available to list/show."
+    )
     return 0
 
 
@@ -650,6 +881,32 @@ _BACKGROUND_LOCK_NOTE = (
     "lock (it was backgrounded and has not exited). New commands, end, and cancel "
     "stay blocked until it exits."
 )
+
+
+def _display(value) -> str:
+    return normalize_free_text("" if value is None else value)
+
+
+def _print_active_command(status) -> None:
+    command = status.get("active_command")
+    if not isinstance(command, dict):
+        return
+    state = str(command.get("state", "unknown"))
+    print(f"  command:  {state}")
+    preview = command.get("command_preview")
+    if isinstance(preview, str) and preview.strip():
+        print(f"    {normalize_free_text(preview)}")
+    started = command.get("started_at")
+    if isinstance(started, str) and started.strip():
+        print(f"    started: {normalize_free_text(started)}")
+    cwd = command.get("invocation_cwd")
+    if isinstance(cwd, str) and cwd.strip():
+        print(f"    cwd:     {normalize_free_text(cwd)}")
+    detail = command.get("detail")
+    if isinstance(detail, str) and detail.strip():
+        print(f"    detail:  {normalize_free_text(detail)}")
+    if state in {"stale", "unsafe", "unreadable"}:
+        print("    action:  run 'debugbrief recover' to repair the lease")
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -662,27 +919,29 @@ def cmd_status(args: argparse.Namespace) -> int:
         if status.get("background_lock"):
             print("")
             print(_BACKGROUND_LOCK_NOTE)
+        _print_active_command(status)
         return 0
 
     if status.get("interrupted"):
         print("A session appears INTERRUPTED or inconsistent.")
-        print(f"  id:        {status.get('session_id')}")
+        print(f"  id:        {_display(status.get('session_id'))}")
         if status.get("title"):
-            print(f"  title:     {status.get('title')}")
+            print(f"  title:     {_display(status.get('title'))}")
         reason = status.get("reason")
         if reason:
-            print(f"  reason:    {reason}")
+            print(f"  reason:    {_display(reason)}")
         print("")
         print("Recovery:")
         print("  - Run 'debugbrief recover' to repair the pointer safely")
         print("    (it never deletes session data), then start a fresh session.")
+        _print_active_command(status)
         return 0
 
-    print(f"Active session: {status.get('title')}")
-    print(f"  id:        {status.get('session_id')}")
-    print(f"  status:    {status.get('status')}")
-    print(f"  root:      {status.get('project_root')}")
-    print(f"  started:   {status.get('start')}")
+    print(f"Active session: {_display(status.get('title'))}")
+    print(f"  id:        {_display(status.get('session_id'))}")
+    print(f"  status:    {_display(status.get('status'))}")
+    print(f"  root:      {_display(status.get('project_root'))}")
+    print(f"  started:   {_display(status.get('start'))}")
     print(f"  notes:     {status.get('notes_count')}")
     print(
         f"  commands:  {status.get('commands_count')} "
@@ -692,14 +951,15 @@ def cmd_status(args: argparse.Namespace) -> int:
         branch = status.get("branch") or (
             "(detached HEAD)" if status.get("detached_head") else "(no branch)"
         )
-        print(f"  git:       {branch}")
+        print(f"  git:       {_display(branch)}")
     else:
         print("  git:       not a Git repository")
     for warning in status.get("warnings", []):
-        print(f"  warning:   {warning}")
+        print(f"  warning:   {_display(warning)}")
     if status.get("background_lock"):
         print("")
         print(_BACKGROUND_LOCK_NOTE)
+    _print_active_command(status)
     print("")
     print("End with: debugbrief end --mode pr|handoff|incident")
     return 0
@@ -719,12 +979,12 @@ def cmd_init(args: argparse.Namespace) -> int:
     report = run_doctor(paths, fix=True)
 
     print("DebugBrief is set up for this project.")
-    print(f"  project root:  {paths.project_root}")
+    print(f"  project root:  {_display(paths.project_root)}")
     if paths.is_git_repo:
         print("  git:           repository detected (.debugbrief/ is ignored locally)")
     else:
         print("  git:           not a Git repository (Git sections are omitted)")
-    print(f"  health:        {report.summary}")
+    print(f"  health:        {_display(report.summary)}")
 
     blocking = [c for c in report.checks if c.level == FAIL]
     if blocking:
@@ -773,12 +1033,15 @@ def cmd_recover(args: argparse.Namespace) -> int:
         )
     action = result["action"]
     if action == "healthy":
-        print(f"Active session is healthy, nothing to recover: {result['detail']}")
+        print(
+            "Active session is healthy, nothing to recover: "
+            f"{_display(result['detail'])}"
+        )
     elif action == "cleared_broken_pointer":
         print("Cleared a broken active-session pointer so a new session can start.")
-        print(f"  reason: {result['detail']}")
+        print(f"  reason: {_display(result['detail'])}")
     elif action == "cleared_stale_pointer":
-        print(f"Cleared a stale pointer to a {result['detail']} session.")
+        print(f"Cleared a stale pointer to a {_display(result['detail'])} session.")
     else:
         print("No active-session pointer; nothing to recover.")
     corrupt = result["corrupt"]
@@ -786,7 +1049,7 @@ def cmd_recover(args: argparse.Namespace) -> int:
         print("")
         print(f"Found {len(corrupt)} unreadable session file(s), left in place:")
         for name in corrupt:
-            print(f"  - {name}")
+            print(f"  - {_display(name)}")
     return 0
 
 
@@ -796,56 +1059,36 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print("DebugBrief doctor")
     print("=================")
     for check in report.checks:
-        detail = f" - {check.detail}" if check.detail else ""
-        print(f"[{check.level}] {check.name}{detail}")
+        detail = f" - {_display(check.detail)}" if check.detail else ""
+        print(f"[{check.level}] {_display(check.name)}{detail}")
     print("")
-    print(report.summary)
+    print(_display(report.summary))
     return report.exit_code
 
 
-def cmd_last(args: argparse.Namespace) -> int:
-    paths = resolve_project_paths()
-    paths.assert_state_dirs_safe()  # refuse a symlinked .debugbrief before reading
-    report_path = latest_report(paths.reports_dir)
-    if report_path is None:
-        eprint(
-            "No DebugBrief reports found. Generate one with: "
-            "debugbrief end --mode pr|handoff|incident"
-        )
+def _open_report_in_browser(target: Path, announce_to_stderr: bool = False) -> int:
+    try:
+        opened = webbrowser.open(target.resolve().as_uri())
+    except (OSError, ValueError) as exc:
+        eprint(f"Could not open browser ({exc}).")
+        eprint(f"Report path: {_display(target)}")
         return 1
-
-    mode = infer_mode(report_path) or "unknown"
-    title = first_title(report_path)
-    mtime = datetime.fromtimestamp(report_path.stat().st_mtime)
-    print(f"Latest report: {report_path}")
-    print(f"  mode:      {mode}")
-    print(f"  modified:  {mtime.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"  title:     {title or '(no title line found)'}")
+    if not opened:
+        eprint("The system browser could not be opened.")
+        eprint(f"Report path: {_display(target)}")
+        return 1
+    message = f"Opening report: {_display(target)}"
+    if announce_to_stderr:
+        eprint(message)
+    else:
+        print(message)
     return 0
 
 
-def cmd_open(args: argparse.Namespace) -> int:
-    paths = resolve_project_paths()
-    paths.assert_state_dirs_safe()  # refuse a symlinked .debugbrief before reading
-
-    target: Optional[Path]
-    if args.path:
-        target = Path(args.path).expanduser()
-        if not target.exists():
-            eprint(f"Report not found: {target}")
-            return 1
-    else:
-        target = latest_report(paths.reports_dir)
-        if target is None:
-            eprint(
-                "No DebugBrief reports found to open. Generate one with: "
-                "debugbrief end --mode pr|handoff|incident"
-            )
-            return 1
-
+def _open_report_in_editor(target: Path) -> int:
     editor = os.environ.get("EDITOR", "").strip()
     if not editor:
-        print(f"Report path: {target}")
+        print(f"Report path: {_display(target)}")
         print(
             "Set the $EDITOR environment variable to open reports automatically, "
             'e.g. export EDITOR="vim" (or "code -w").'
@@ -861,14 +1104,109 @@ def cmd_open(args: argparse.Namespace) -> int:
         completed = subprocess.run([*editor_args, str(target)])
     except (OSError, ValueError) as exc:
         eprint(f"Could not open editor ({exc}).")
-        eprint(f"Report path: {target}")
+        eprint(f"Report path: {_display(target)}")
         return 1
 
     if completed.returncode != 0:
         eprint(f"Editor exited with code {completed.returncode}.")
-        eprint(f"Report path: {target}")
+        eprint(f"Report path: {_display(target)}")
         return 1
     return 0
+
+
+def cmd_last(args: argparse.Namespace) -> int:
+    paths = resolve_project_paths()
+    paths.assert_state_dirs_safe()
+    report_path = latest_report(paths.reports_dir)
+    if report_path is None:
+        eprint(
+            "No DebugBrief reports found. Generate one with: "
+            "debugbrief end --mode pr|handoff|incident"
+        )
+        return 1
+
+    mode = infer_mode(report_path) or "unknown"
+    title = first_title(report_path)
+    try:
+        mtime = datetime.fromtimestamp(report_path.stat().st_mtime)
+    except (OSError, ValueError, OverflowError):
+        eprint("The latest report could not be inspected safely.")
+        return 1
+    print(f"Latest report: {_display(report_path)}")
+    print(f"  mode:      {mode}")
+    print(f"  modified:  {mtime.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  title:     {_display(title or '(no title line found)')}")
+    if getattr(args, "open", False):
+        if report_path.suffix == ".html":
+            return _open_report_in_browser(report_path)
+        return _open_report_in_editor(report_path)
+    return 0
+
+
+def cmd_open(args: argparse.Namespace) -> int:
+    paths = resolve_project_paths()
+    paths.assert_state_dirs_safe()
+
+    target: Optional[Path]
+    if args.path:
+        target = Path(args.path).expanduser()
+        if not os.path.lexists(target):
+            eprint(f"Report not found: {_display(target)}")
+            return 1
+        if not is_regular_file(target):
+            eprint(f"Report path is not a regular file: {_display(target)}")
+            return 1
+    elif getattr(args, "html", False):
+        target = next(
+            (path for path in list_reports(paths.reports_dir) if path.suffix == ".html"),
+            None,
+        )
+        if target is None:
+            eprint(
+                "No HTML report found. Generate one with: "
+                "debugbrief end --format html"
+            )
+            return 1
+    else:
+        target = latest_report(paths.reports_dir)
+        if target is None:
+            eprint(
+                "No DebugBrief reports found to open. Generate one with: "
+                "debugbrief end --mode pr|handoff|incident"
+            )
+            return 1
+
+    if getattr(args, "html", False):
+        if target.suffix != ".html":
+            eprint(f"Expected an HTML report, got: {_display(target)}")
+            return 1
+        return _open_report_in_browser(target)
+    if target.suffix == ".html":
+        return _open_report_in_browser(target)
+    return _open_report_in_editor(target)
+
+
+def _json_safe(value):
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _json_session_payload(session) -> dict:
+    payload = session.to_dict()
+    events = payload.get("events")
+    if isinstance(events, list):
+        for event in events:
+            if isinstance(event, dict) and event.get("type") == "command":
+                data = event.get("data")
+                event["data"] = CommandData.from_dict(
+                    data if isinstance(data, dict) else {}
+                ).to_dict()
+    return _json_safe(payload)
 
 
 def _session_summary_dict(paths, session) -> dict:
@@ -876,10 +1214,10 @@ def _session_summary_dict(paths, session) -> dict:
     return {
         "session_id": session.session_id,
         "short_id": session.session_id[:8],
-        "status": session.status,
-        "title": session.title,
-        "start": session.timestamps.start,
-        "end": session.timestamps.end,
+        "status": normalize_free_text(session.status),
+        "title": normalize_free_text(session.title),
+        "start": normalize_free_text(session.timestamps.start or ""),
+        "end": normalize_free_text(session.timestamps.end or ""),
         "commands_count": session.summary.commands_count,
         "notes_count": session.summary.notes_count,
         "failed_commands_count": session.summary.failed_commands_count,
@@ -913,8 +1251,11 @@ def cmd_list(args: argparse.Namespace) -> int:
         modes = report_modes_for(paths, session.session_id)
         modes_label = ", ".join(modes) if modes else "none"
         verified = "verified" if is_verified(session) else "unverified"
-        print(f"- {session.session_id[:8]}  [{session.status}]  {session.title}")
-        print(f"    started:      {session.timestamps.start or 'unknown'}")
+        print(
+            f"- {_display(session.session_id[:8])}  [{_display(session.status)}]  "
+            f"{_display(session.title)}"
+        )
+        print(f"    started:      {_display(session.timestamps.start or 'unknown')}")
         print(
             f"    commands:     {session.summary.commands_count} "
             f"({session.summary.failed_commands_count} failed)"
@@ -951,25 +1292,30 @@ def cmd_show(args: argparse.Namespace) -> int:
     except SessionError as exc:
         eprint(f"error: {exc}")
         return 1
+    normalize_session_counts(session)
 
     if args.json:
-        print(json.dumps(session.to_dict(), indent=2))
+        try:
+            print(json.dumps(_json_session_payload(session), indent=2, allow_nan=False))
+        except (TypeError, ValueError):
+            eprint("Session contains data that cannot be represented as JSON.")
+            return 1
         return 0
 
     ctx = build_context(session)
     modes = report_modes_for(paths, session.session_id)
 
-    print(f"Session: {session.title}")
-    print(f"  id:        {session.session_id}")
-    print(f"  status:    {session.status}")
-    print(f"  root:      {session.project_root}")
-    print(f"  started:   {session.timestamps.start or 'unknown'}")
-    print(f"  ended:     {session.timestamps.end or '(not ended)'}")
+    print(f"Session: {_display(session.title)}")
+    print(f"  id:        {_display(session.session_id)}")
+    print(f"  status:    {_display(session.status)}")
+    print(f"  root:      {_display(session.project_root)}")
+    print(f"  started:   {_display(session.timestamps.start or 'unknown')}")
+    print(f"  ended:     {_display(session.timestamps.end or '(not ended)')}")
     if session.git.is_repo:
         branch = session.git.branch or (
             "(detached HEAD)" if session.git.detached_head else "(no branch)"
         )
-        print(f"  git:       {branch}")
+        print(f"  git:       {_display(branch)}")
     else:
         print("  git:       not a Git repository")
 
@@ -977,7 +1323,7 @@ def cmd_show(args: argparse.Namespace) -> int:
     print(f"Notes ({len(ctx.notes)}):")
     if ctx.notes:
         for _ts, text in ctx.notes:
-            print(f"  - {text}")
+            print(f"  - {_display(text)}")
     else:
         print("  (none)")
 
@@ -987,7 +1333,10 @@ def cmd_show(args: argparse.Namespace) -> int:
         for rc in ctx.report_commands:
             repeat = f" x{rc.count}" if rc.count > 1 else ""
             exit_repr = "n/a" if rc.exit_code is None else str(rc.exit_code)
-            print(f"  - {rc.command}{repeat} -> {rc.status} (exit {exit_repr})")
+            print(
+                f"  - {_display(rc.command)}{repeat} -> {_display(rc.status)} "
+                f"(exit {exit_repr})"
+            )
     else:
         print("  (none)")
 
@@ -995,13 +1344,13 @@ def cmd_show(args: argparse.Namespace) -> int:
         print("")
         print(f"Failed commands ({len(ctx.failed_commands)}):")
         for rc in ctx.failed_commands:
-            print(f"  - {rc.command}")
+            print(f"  - {_display(rc.command)}")
 
     print("")
     print(f"Verification commands ({len(ctx.verification_commands)}):")
     if ctx.verification_commands:
         for rc in ctx.verification_commands:
-            print(f"  - {rc.command}")
+            print(f"  - {_display(rc.command)}")
     else:
         print("  (none passed)")
 
@@ -1009,11 +1358,11 @@ def cmd_show(args: argparse.Namespace) -> int:
     if session.git.is_repo and session.summary.file_changes:
         print(f"Changed files ({len(session.summary.file_changes)}):")
         for fc in session.summary.file_changes:
-            print(f"  - {fc.status} {fc.path}")
+            print(f"  - {_display(fc.status)} {_display(fc.path)}")
     elif session.git.is_repo and session.summary.modified_files:
         print(f"Changed files ({len(session.summary.modified_files)}):")
         for path in session.summary.modified_files:
-            print(f"  - {path}")
+            print(f"  - {_display(path)}")
     else:
         print("Changed files: (none recorded)")
 
@@ -1021,7 +1370,9 @@ def cmd_show(args: argparse.Namespace) -> int:
     if modes:
         print("Reports:")
         for mode in modes:
-            print(f"  - {mode}: {paths.report_file(session.session_id, mode)}")
+            report = paths.existing_report_file(session.session_id, mode)
+            if report is not None:
+                print(f"  - {mode}: {_display(report)}")
     else:
         print("Reports: (none generated)")
     return 0
@@ -1055,7 +1406,14 @@ def _plain_command_text(parts: List[str]) -> str:
     tokens = list(parts)
     if tokens and tokens[0] == "--":
         tokens = tokens[1:]
-    return " ".join(tokens)
+    if not tokens:
+        return ""
+    executable = Path(tokens[0]).name
+    if len(tokens) > 1 and tokens[1] in {"-c", "-e", "-r"}:
+        return f"{executable} {tokens[1]} <code>"
+    if len(tokens) > 2 and tokens[1] == "-m":
+        return f"{executable} -m {tokens[2]}"
+    return " ".join([executable, *tokens[1:]])
 
 
 def _silence_stdout() -> None:
@@ -1095,11 +1453,12 @@ def _deferred_sigint():
 def _apply_config_defaults(args: argparse.Namespace) -> None:
     """Fill flags the user did not pass from .debugbrief.toml, then built-ins.
 
-    Only timeout, mode, and detail have project-config defaults, and only when
-    argparse left them None (the user did not pass the flag). An explicit flag
+    Only timeout, mode, and detail have project-config defaults. The sensitive
+    full-path option is deliberately CLI-only, so repository configuration cannot
+    enable it. The CLI defaults PR reports to compact detail. An explicit flag
     therefore always beats config, and config always beats the built-in default.
     """
-    resolvable = ("timeout", "mode", "detail")
+    resolvable = ("timeout", "mode", "detail", "include_full_path")
     if not any(getattr(args, name, "unset") is None for name in resolvable):
         return
     config = load_config(resolve_project_paths().project_root)
@@ -1108,7 +1467,9 @@ def _apply_config_defaults(args: argparse.Namespace) -> None:
     if getattr(args, "mode", "unset") is None:
         args.mode = config.get("default_mode", "pr")
     if getattr(args, "detail", "unset") is None:
-        args.detail = config.get("detail", "full")
+        args.detail = config.get("detail", "compact")
+    if getattr(args, "include_full_path", "unset") is None:
+        args.include_full_path = False
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -1141,6 +1502,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         # (128 + 13) and silence stdout so exit does not raise again.
         _silence_stdout()
         return 141
+    except (OSError, ValueError, RecursionError) as exc:
+        eprint(f"error: {exc}")
+        return 1
     except KeyboardInterrupt:  # pragma: no cover
         eprint("Interrupted.")
         return 130

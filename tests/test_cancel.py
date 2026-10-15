@@ -36,7 +36,7 @@ def test_cancel_discards_active_session(paths, capsys):
     session = _start_session(paths)
     rc = cli.main(["cancel", "--yes"])
     assert rc == 0
-    assert "Discarded session 'cancel me'" in capsys.readouterr().err
+    assert "Abandoned session 'cancel me'" in capsys.readouterr().err
 
     # The pointer is gone, the session file survives with status ABANDONED.
     assert not paths.active_session_file.exists()

@@ -113,6 +113,304 @@ def test_session_changes_excludes_files_dirty_before_the_session(tmp_path):
     assert "a.py" not in paths  # untouched since start, so not a session change
 
 
+def test_session_change_stats_exclude_unrelated_dirty_files(tmp_path):
+    _init_repo(tmp_path)
+    (tmp_path / "a.py").write_text("one\ntwo\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("one\ntwo\n", encoding="utf-8")
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-qm", "base"], tmp_path)
+    initial = git_utils.current_sha(tmp_path)
+    (tmp_path / "a.py").write_text("one\nchanged before session\n", encoding="utf-8")
+    baseline = git_utils.working_tree_fingerprints(tmp_path)
+    baseline_stats = git_utils.working_tree_numstat(tmp_path, initial)
+    (tmp_path / "b.py").write_text("one\ntwo\nthree during session\n", encoding="utf-8")
+    pairs, added, deleted = git_utils.session_changes(
+        tmp_path, initial, baseline, baseline_stats
+    )
+    assert [path for _label, path in pairs] == ["b.py"]
+    assert added == 1
+    assert deleted == 0
+
+
+def test_session_change_stats_subtract_baseline_dirty_delta(tmp_path):
+    _init_repo(tmp_path)
+    (tmp_path / "a.py").write_text("one\ntwo\n", encoding="utf-8")
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-qm", "base"], tmp_path)
+    initial = git_utils.current_sha(tmp_path)
+    (tmp_path / "a.py").write_text("one\nbefore\n", encoding="utf-8")
+    baseline = git_utils.working_tree_fingerprints(tmp_path)
+    baseline_stats = git_utils.working_tree_numstat(tmp_path, initial)
+    (tmp_path / "a.py").write_text("one\nafter\nextra\n", encoding="utf-8")
+    pairs, added, deleted = git_utils.session_changes(
+        tmp_path, initial, baseline, baseline_stats
+    )
+    assert [path for _label, path in pairs] == ["a.py"]
+    assert added == 1
+    assert deleted == 0
+
+
+def test_session_change_stats_report_reverted_baseline_lines(tmp_path):
+    _init_repo(tmp_path)
+    (tmp_path / "a.py").write_text("one\ntwo\n", encoding="utf-8")
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-qm", "base"], tmp_path)
+    initial = git_utils.current_sha(tmp_path)
+    (tmp_path / "a.py").write_text("one\nbefore\n", encoding="utf-8")
+    baseline = git_utils.working_tree_fingerprints(tmp_path)
+    baseline_stats = git_utils.working_tree_numstat(tmp_path, initial)
+    (tmp_path / "a.py").write_text("one\ntwo\n", encoding="utf-8")
+    pairs, added, deleted = git_utils.session_changes(
+        tmp_path, initial, baseline, baseline_stats
+    )
+    assert pairs == [("M", "a.py")]
+    assert added == 1
+    assert deleted == 1
+
+
+
+def test_session_change_stats_do_not_invent_lines_for_empty_files(tmp_path):
+    _init_repo(tmp_path)
+    initial = git_utils.current_sha(tmp_path)
+    baseline = git_utils.working_tree_fingerprints(tmp_path)
+    (tmp_path / "empty.txt").write_text("", encoding="utf-8")
+    pairs, added, deleted = git_utils.session_changes(tmp_path, initial, baseline)
+    assert pairs == [("A", "empty.txt")]
+    assert added == 0
+    assert deleted == 0
+
+
+def test_baseline_rename_inference_collapses_add_delete_edges(tmp_path):
+    _git(["init", "-q"], tmp_path)
+    old = tmp_path / "old.py"
+    old.write_text("one\ntwo\n", encoding="utf-8")
+    baseline = git_utils.working_tree_fingerprints(tmp_path)
+    old.rename(tmp_path / "new.py")
+    candidates = {"new.py": "A", "old.py": "D"}
+    renames = git_utils._infer_baseline_renames(tmp_path, baseline, candidates)
+    assert renames == {"old.py": "new.py"}
+    assert candidates == {"new.py": "A"}
+
+
+def test_session_changes_does_not_double_count_dirty_rename(tmp_path):
+    _init_repo(tmp_path)
+    (tmp_path / "old.py").write_text("one\ntwo\n", encoding="utf-8")
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-qm", "base"], tmp_path)
+    initial = git_utils.current_sha(tmp_path)
+    (tmp_path / "old.py").write_text("one\nbefore\n", encoding="utf-8")
+    baseline = git_utils.working_tree_fingerprints(tmp_path)
+    baseline_stats = git_utils.working_tree_numstat(tmp_path, initial)
+    (tmp_path / "old.py").rename(tmp_path / "new.py")
+    _git(["add", "-A"], tmp_path)
+    pairs, added, deleted = git_utils.session_changes(
+        tmp_path, initial, baseline, baseline_stats
+    )
+    assert pairs == [("R", "new.py")]
+    assert added == 0
+    assert deleted == 0
+
+
+def test_session_changes_without_head_uses_start_fingerprints(tmp_path):
+    _git(["init", "-q"], tmp_path)
+    (tmp_path / "a.py").write_text("one\nchanged before\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("one\n", encoding="utf-8")
+    baseline = git_utils.working_tree_fingerprints(tmp_path)
+    (tmp_path / "b.py").write_text("one\nchanged during\n", encoding="utf-8")
+    pairs, added, deleted = git_utils.session_changes(tmp_path, None, baseline)
+    assert [path for _label, path in pairs] == ["b.py"]
+    assert added == 2 and deleted == 0
+
+
+def test_session_changes_forces_tracked_rename_detection_when_git_config_disables_it(
+    tmp_path,
+):
+    _init_repo(tmp_path)
+    _git(["config", "status.renames", "false"], tmp_path)
+    _git(["config", "diff.renames", "false"], tmp_path)
+    (tmp_path / "old.py").write_text("one\ntwo\n", encoding="utf-8")
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-qm", "base"], tmp_path)
+    initial = git_utils.current_sha(tmp_path)
+    baseline = git_utils.working_tree_fingerprints(tmp_path)
+    baseline_stats = git_utils.working_tree_numstat(tmp_path, initial)
+    (tmp_path / "old.py").rename(tmp_path / "new.py")
+    _git(["add", "-A"], tmp_path)
+    pairs, added, deleted = git_utils.session_changes(
+        tmp_path, initial, baseline, baseline_stats
+    )
+    assert pairs == [("R", "new.py")]
+    assert added == 0
+    assert deleted == 0
+
+
+def test_session_change_stats_report_equal_aggregate_replacements(tmp_path):
+    _init_repo(tmp_path)
+    (tmp_path / "a.py").write_text("one\ntwo\n", encoding="utf-8")
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-qm", "base"], tmp_path)
+    initial = git_utils.current_sha(tmp_path)
+    (tmp_path / "a.py").write_text("one\nbefore\n", encoding="utf-8")
+    baseline = git_utils.working_tree_fingerprints(tmp_path)
+    baseline_stats = git_utils.working_tree_numstat(tmp_path, initial)
+    (tmp_path / "a.py").write_text("one\nafter!\n", encoding="utf-8")
+    pairs, added, deleted = git_utils.session_changes(
+        tmp_path, initial, baseline, baseline_stats
+    )
+    assert pairs == [("M", "a.py")]
+    assert added == 1
+    assert deleted == 1
+
+
+def test_session_changes_infers_untracked_rename_with_a_commit(tmp_path):
+    _init_repo(tmp_path)
+    (tmp_path / "seed.txt").write_text("seed\n", encoding="utf-8")
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-qm", "base"], tmp_path)
+    initial = git_utils.current_sha(tmp_path)
+    old = tmp_path / "old.txt"
+    old.write_text("one\ntwo\n", encoding="utf-8")
+    baseline = git_utils.working_tree_fingerprints(tmp_path)
+    baseline_stats = git_utils.working_tree_numstat(tmp_path, initial)
+    old.rename(tmp_path / "new.txt")
+    pairs, added, deleted = git_utils.session_changes(
+        tmp_path, initial, baseline, baseline_stats
+    )
+    assert pairs == [("A", "new.txt")]
+    assert added == 0
+    assert deleted == 0
+
+
+def test_session_changes_infers_untracked_rename_without_a_commit(tmp_path):
+    _git(["init", "-q"], tmp_path)
+    old = tmp_path / "old.txt"
+    old.write_text("one\ntwo\n", encoding="utf-8")
+    baseline = git_utils.working_tree_fingerprints(tmp_path)
+    baseline_stats = git_utils.working_tree_numstat(tmp_path)
+    old.rename(tmp_path / "new.txt")
+    pairs, added, deleted = git_utils.session_changes(
+        tmp_path, None, baseline, baseline_stats
+    )
+    assert pairs == [("A", "new.txt")]
+    assert added == 0
+    assert deleted == 0
+
+
+def test_session_changes_reports_files_from_a_first_commit(tmp_path):
+    _init_repo(tmp_path)
+    baseline = git_utils.working_tree_fingerprints(tmp_path)
+    (tmp_path / "created.py").write_text("one\ntwo\n", encoding="utf-8")
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-qm", "first"], tmp_path)
+    pairs, added, deleted = git_utils.session_changes(tmp_path, None, baseline)
+    assert pairs == [("A", "created.py")]
+    assert added == 2
+    assert deleted == 0
+
+
+def test_unborn_numstat_uses_net_working_tree_lines_for_partial_staging(tmp_path):
+    _git(["init", "-q"], tmp_path)
+    path = tmp_path / "partial.txt"
+    path.write_text("one\n", encoding="utf-8")
+    _git(["add", "-A"], tmp_path)
+    path.write_text("one\ntwo\n", encoding="utf-8")
+    assert git_utils.working_tree_numstat(tmp_path)["partial.txt"] == (2, 0)
+
+
+def test_session_changes_reports_files_from_multiple_unborn_commits(tmp_path):
+    _init_repo(tmp_path)
+    baseline = git_utils.working_tree_fingerprints(tmp_path)
+    (tmp_path / "first.py").write_text("one\n", encoding="utf-8")
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-qm", "first"], tmp_path)
+    (tmp_path / "second.py").write_text("two\n", encoding="utf-8")
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-qm", "second"], tmp_path)
+    pairs, added, deleted = git_utils.session_changes(tmp_path, None, baseline)
+    assert pairs == [("A", "first.py"), ("A", "second.py")]
+    assert added == 2
+    assert deleted == 0
+
+
+def test_session_changes_does_not_double_count_deleted_baseline_after_first_commit(
+    tmp_path,
+):
+    _init_repo(tmp_path)
+    path = tmp_path / "scratch.txt"
+    path.write_text("one\ntwo\n", encoding="utf-8")
+    baseline = git_utils.working_tree_fingerprints(tmp_path)
+    baseline_stats = git_utils.working_tree_numstat(tmp_path)
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-qm", "first"], tmp_path)
+    path.unlink()
+    pairs, added, deleted = git_utils.session_changes(
+        tmp_path, None, baseline, baseline_stats
+    )
+    assert pairs == [("D", "scratch.txt")]
+    assert added == 0
+    assert deleted == 2
+
+
+def test_session_changes_uses_per_file_untracked_baselines(tmp_path):
+    _init_repo(tmp_path)
+    directory = tmp_path / "scratch"
+    directory.mkdir()
+    (directory / "one.txt").write_text("one\n", encoding="utf-8")
+    (directory / "two.txt").write_text("two\n", encoding="utf-8")
+    baseline = git_utils.working_tree_fingerprints(tmp_path)
+    assert "scratch/one.txt" in baseline
+    pairs, _added, _deleted = git_utils.session_changes(tmp_path, None, baseline)
+    assert pairs == []
+
+
+def test_session_changes_reports_deleted_baseline_untracked_file(tmp_path):
+    _git(["init", "-q"], tmp_path)
+    path = tmp_path / "scratch.txt"
+    path.write_text("one\ntwo\n", encoding="utf-8")
+    baseline = git_utils.working_tree_fingerprints(tmp_path)
+    baseline_stats = git_utils.working_tree_numstat(tmp_path)
+    path.unlink()
+    pairs, added, deleted = git_utils.session_changes(
+        tmp_path, None, baseline, baseline_stats
+    )
+    assert pairs == [("D", "scratch.txt")]
+    assert added == 0
+    assert deleted == 2
+
+
+def test_session_changes_counts_deletion_of_an_initially_dirty_file(tmp_path):
+    _init_repo(tmp_path)
+    (tmp_path / "a.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-qm", "base"], tmp_path)
+    initial = git_utils.current_sha(tmp_path)
+    (tmp_path / "a.py").write_text("one\nbefore\n", encoding="utf-8")
+    baseline = git_utils.working_tree_fingerprints(tmp_path)
+    baseline_stats = git_utils.working_tree_numstat(tmp_path, initial)
+    (tmp_path / "a.py").unlink()
+    pairs, added, deleted = git_utils.session_changes(
+        tmp_path, initial, baseline, baseline_stats
+    )
+    assert pairs == [("D", "a.py")]
+    assert added == 0
+    assert deleted == 2
+
+
+def test_session_changes_counts_tracked_additions(tmp_path):
+    _init_repo(tmp_path)
+    (tmp_path / "seed.txt").write_text("seed\n", encoding="utf-8")
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-qm", "base"], tmp_path)
+    initial = git_utils.current_sha(tmp_path)
+    baseline = git_utils.working_tree_fingerprints(tmp_path)
+    (tmp_path / "new.py").write_text("one\ntwo\n", encoding="utf-8")
+    _git(["add", "new.py"], tmp_path)
+    _git(["commit", "-qm", "add new file"], tmp_path)
+    pairs, added, _deleted = git_utils.session_changes(tmp_path, initial, baseline)
+    assert ("A", "new.py") in pairs
+    assert added == 2
+
+
 def test_session_changes_includes_a_commit_made_during_the_session(tmp_path):
     _init_repo(tmp_path)
     (tmp_path / "a.py").write_text("v1\n", encoding="utf-8")
@@ -271,6 +569,11 @@ def test_porcelain_label_mapping():
     assert git_utils._porcelain_label("D ") == "D"
     assert git_utils._porcelain_label("R ") == "R"
     assert git_utils._porcelain_label("C ") == "A"
+
+
+def test_parse_numstat_uses_the_new_path_for_renames():
+    output = "2\t1\t\x00old name.py\x00new name.py\x00"
+    assert git_utils._parse_numstat_z(output) == {"new name.py": (2, 1)}
 
 
 def test_parse_shortstat_helper():

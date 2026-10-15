@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import List
 
-from ..markdown import code_span
+from ..markdown import code_span, inline_text
 from ..utils import parse_iso8601
 from .base import BaseReporter, join_sections
 
@@ -16,6 +16,7 @@ class IncidentReporter(BaseReporter):
         return join_sections(
             [self.title_line()],
             self.one_liner_section(),
+            self.evidence_section(),
             self.metadata_lines(),
             self.warnings_section(),
             self._time_window_section(),
@@ -32,8 +33,8 @@ class IncidentReporter(BaseReporter):
         lines = ["## Time window", ""]
         start = s.timestamps.start
         end = s.timestamps.end
-        lines.append(f"- **Start:** {start or 'unknown'}")
-        lines.append(f"- **End:** {end or 'unknown'}")
+        lines.append(f"- **Start:** {inline_text(start) if start else 'unknown'}")
+        lines.append(f"- **End:** {inline_text(end) if end else 'unknown'}")
         duration = _duration(start, end)
         if duration is not None:
             lines.append(f"- **Duration:** {duration}")
@@ -42,12 +43,13 @@ class IncidentReporter(BaseReporter):
     def _resolution_section(self) -> List[str]:
         s = self.session
         lines = ["## Resolution / current state", ""]
-        verified = len(self.ctx.verification_commands) > 0
+        verified = self.ctx.derivation.proof_state == "verified"
         failed = len(self.ctx.currently_failing)
         if verified and failed == 0:
             lines.append(
                 "A verification command passed and no commands are failing. "
-                "The recorded evidence is consistent with a resolved state."
+                "This supports a passing check; it does not independently establish "
+                "incident resolution."
             )
         elif failed:
             lines.append(
@@ -59,10 +61,15 @@ class IncidentReporter(BaseReporter):
                 "No verification command passed; the resolution state is "
                 "unconfirmed by the recorded evidence."
             )
-        if s.git.is_repo and s.summary.modified_files:
+        modified_files = (
+            s.summary.modified_files
+            if isinstance(s.summary.modified_files, list)
+            else []
+        )
+        if s.git.is_repo and modified_files:
             lines.append("")
             lines.append(
-                f"Working tree: {len(s.summary.modified_files)} file(s) changed, "
+                f"Session changes: {len(modified_files)} file(s) changed, "
                 f"+{s.summary.lines_added} / -{s.summary.lines_deleted} lines."
             )
         return lines
@@ -86,7 +93,7 @@ def _duration(start, end):
         return None
     try:
         delta = parse_iso8601(end) - parse_iso8601(start)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, AttributeError, OverflowError):
         return None
     total = int(delta.total_seconds())
     if total < 0:

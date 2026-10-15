@@ -7,10 +7,13 @@ them, which keeps persistence honest and round-trippable.
 
 from __future__ import annotations
 
+import math
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+from .markdown import normalize_text
 
 
 class SessionStatus(str, Enum):
@@ -47,46 +50,72 @@ NON_SUCCESS_STATUSES = (
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
-    """``value`` when it is a dict, otherwise an empty dict.
-
-    Persisted state can be hand-edited, corrupted, or (when ``.debugbrief`` is
-    committed) supplied by a cloned repository. A nested field that should be an
-    object but is null or the wrong type degrades to defaults here instead of
-    raising ``AttributeError`` on a later ``.get``. A structurally broken
-    top-level session file is still rejected by :meth:`Session.from_dict`, so the
-    file is reported as corrupt rather than silently truncated.
-    """
+    """Return a mapping leaf, or an empty mapping for malformed state."""
     return value if isinstance(value, dict) else {}
 
 
 def _as_int(value: Any, default: int = 0) -> int:
-    """``value`` as an int, or ``default`` for a missing or unparsable value.
-
-    A leaf number in persisted state degrades to its default rather than raising,
-    so a single bad value cannot crash a consumer reading the record.
-    """
-    try:
-        return int(value)
-    except (TypeError, ValueError):
+    """Return a finite integer for a persisted numeric leaf."""
+    if isinstance(value, bool):
         return default
+    try:
+        result = int(value)
+        finite = math.isfinite(float(result))
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return result if finite else default
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:
-    """``value`` as a float, or ``default`` for a missing or unparsable value."""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
+    """Return a finite float for a persisted numeric leaf."""
+    if isinstance(value, bool):
         return default
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return result if math.isfinite(result) else default
+
+
+def _as_bool(value: Any, default: bool = False) -> bool:
+    """Return a real boolean leaf, without treating arbitrary strings as true."""
+    return value if isinstance(value, bool) else default
+
+
+def _as_text(value: Any, default: str = "") -> str:
+    """Return a text leaf, using the default for malformed persisted values."""
+    return value if isinstance(value, str) else default
+
+
+def _as_optional_text(value: Any) -> Optional[str]:
+    """Return a text leaf or ``None`` when it is absent or malformed."""
+    return value if isinstance(value, str) else None
+
+
+def _as_string_list(value: Any) -> List[str]:
+    """Return only string members from a persisted list leaf."""
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
 
 
 def _as_list(value: Any) -> List[Any]:
-    """``value`` when it is a list, otherwise an empty list.
-
-    A null or wrong-typed optional collection (e.g. ``"git_changed_files": null``)
-    degrades to empty instead of raising in ``list(None)``, so reading an older
-    or hand-edited record never crashes a consumer.
-    """
+    """Return a list leaf, or an empty list for a malformed value."""
     return value if isinstance(value, list) else []
+
+
+def _as_stat_map(value: Any) -> Dict[str, Tuple[int, int]]:
+    if not isinstance(value, dict):
+        return {}
+    result: Dict[str, Tuple[int, int]] = {}
+    for key, stats in value.items():
+        if not isinstance(key, str) or not isinstance(stats, (list, tuple)):
+            continue
+        if len(stats) != 2:
+            continue
+        added, deleted = (_as_int(stats[0]), _as_int(stats[1]))
+        result[key] = (added, deleted)
+    return result
 
 
 @dataclass
@@ -101,6 +130,32 @@ class GitState:
     # session started, so the final report can tell which files actually changed
     # during the session. Empty for older sessions and outside a repo.
     initial_dirty: Dict[str, str] = field(default_factory=dict)
+    initial_dirty_stats: Dict[str, Tuple[int, int]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.is_repo = _as_bool(self.is_repo)
+        self.repo_root = _as_optional_text(self.repo_root)
+        self.initial_sha = _as_optional_text(self.initial_sha)
+        self.final_sha = _as_optional_text(self.final_sha)
+        self.branch = _as_optional_text(self.branch)
+        if self.repo_root is not None:
+            self.repo_root = normalize_text(self.repo_root)
+        if self.initial_sha is not None:
+            self.initial_sha = normalize_text(self.initial_sha)
+        if self.final_sha is not None:
+            self.final_sha = normalize_text(self.final_sha)
+        if self.branch is not None:
+            self.branch = normalize_text(self.branch)
+        self.detached_head = _as_bool(self.detached_head)
+        if not isinstance(self.initial_dirty, dict):
+            self.initial_dirty = {}
+        else:
+            self.initial_dirty = {
+                key: value
+                for key, value in self.initial_dirty.items()
+                if isinstance(key, str) and isinstance(value, str)
+            }
+        self.initial_dirty_stats = _as_stat_map(self.initial_dirty_stats)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -111,19 +166,32 @@ class GitState:
             "branch": self.branch,
             "detached_head": self.detached_head,
             "initial_dirty": dict(self.initial_dirty),
+            "initial_dirty_stats": {
+                path: [added, deleted]
+                for path, (added, deleted) in self.initial_dirty_stats.items()
+            },
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "GitState":
         data = _as_dict(data)
+        initial_dirty = data.get("initial_dirty")
+        if not isinstance(initial_dirty, dict):
+            initial_dirty = {}
+        initial_dirty_stats = _as_stat_map(data.get("initial_dirty_stats"))
         return cls(
-            is_repo=bool(data.get("is_repo", False)),
-            repo_root=data.get("repo_root"),
-            initial_sha=data.get("initial_sha"),
-            final_sha=data.get("final_sha"),
-            branch=data.get("branch"),
-            detached_head=bool(data.get("detached_head", False)),
-            initial_dirty=dict(data.get("initial_dirty") or {}),
+            is_repo=_as_bool(data.get("is_repo")),
+            repo_root=_as_optional_text(data.get("repo_root")),
+            initial_sha=_as_optional_text(data.get("initial_sha")),
+            final_sha=_as_optional_text(data.get("final_sha")),
+            branch=_as_optional_text(data.get("branch")),
+            detached_head=_as_bool(data.get("detached_head")),
+            initial_dirty={
+                key: value
+                for key, value in initial_dirty.items()
+                if isinstance(key, str) and isinstance(value, str)
+            },
+            initial_dirty_stats=initial_dirty_stats,
         )
 
 
@@ -132,13 +200,24 @@ class Timestamps:
     start: Optional[str] = None
     end: Optional[str] = None
 
+    def __post_init__(self) -> None:
+        self.start = _as_optional_text(self.start)
+        self.end = _as_optional_text(self.end)
+        if self.start is not None:
+            self.start = normalize_text(self.start)
+        if self.end is not None:
+            self.end = normalize_text(self.end)
+
     def to_dict(self) -> Dict[str, Any]:
         return {"start": self.start, "end": self.end}
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Timestamps":
         data = _as_dict(data)
-        return cls(start=data.get("start"), end=data.get("end"))
+        return cls(
+            start=_as_optional_text(data.get("start")),
+            end=_as_optional_text(data.get("end")),
+        )
 
 
 @dataclass
@@ -147,6 +226,22 @@ class CommandClassification:
     is_verification: bool = False
     tool: Optional[str] = None
     status: str = COMMAND_STATUS_FAILED
+
+    def __post_init__(self) -> None:
+        self.is_test = _as_bool(self.is_test)
+        self.is_verification = _as_bool(self.is_verification)
+        self.tool = _as_optional_text(self.tool)
+        self.status = _as_text(self.status, COMMAND_STATUS_FAILED) or COMMAND_STATUS_FAILED
+        if self.tool is not None:
+            self.tool = normalize_text(self.tool).strip() or None
+        self.status = normalize_text(self.status).strip().lower()
+        if self.status not in {
+            COMMAND_STATUS_PASSED,
+            *NON_SUCCESS_STATUSES,
+        }:
+            self.status = COMMAND_STATUS_FAILED
+        if self.status != COMMAND_STATUS_PASSED:
+            self.is_verification = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -160,10 +255,11 @@ class CommandClassification:
     def from_dict(cls, data: Dict[str, Any]) -> "CommandClassification":
         data = _as_dict(data)
         return cls(
-            is_test=bool(data.get("is_test", False)),
-            is_verification=bool(data.get("is_verification", False)),
-            tool=data.get("tool"),
-            status=data.get("status", COMMAND_STATUS_FAILED),
+            is_test=_as_bool(data.get("is_test")),
+            is_verification=_as_bool(data.get("is_verification")),
+            tool=_as_optional_text(data.get("tool")),
+            status=_as_text(data.get("status"), COMMAND_STATUS_FAILED)
+            or COMMAND_STATUS_FAILED,
         )
 
 
@@ -189,12 +285,48 @@ class CommandData:
     # older session files simply omit these).
     git_head: Optional[str] = None
     git_changed_files: List[str] = field(default_factory=list)
+    git_fingerprints: Dict[str, str] = field(default_factory=dict)
     # Directory the command actually ran in (the user's cwd). Used to tell apart
     # same-named checks run in different directories. None for older sessions.
     invocation_cwd: Optional[str] = None
     # Unique id for this captured command, so a retried persistence cannot append
     # the same result twice. None for older sessions.
     command_id: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        self.command = _as_text(self.command)
+        self.started_at = _as_text(self.started_at)
+        self.ended_at = _as_text(self.ended_at)
+        self.duration_seconds = _as_float(self.duration_seconds, 0.0)
+        if not isinstance(self.exit_code, int) or isinstance(self.exit_code, bool):
+            self.exit_code = None
+        self.stdout_preview = _as_text(self.stdout_preview)
+        self.stderr_preview = _as_text(self.stderr_preview)
+        self.stdout_truncated = _as_bool(self.stdout_truncated)
+        self.stderr_truncated = _as_bool(self.stderr_truncated)
+        self.used_shell = _as_bool(self.used_shell)
+        if not isinstance(self.classification, CommandClassification):
+            self.classification = CommandClassification.from_dict(
+                self.classification if isinstance(self.classification, dict) else {}
+            )
+        if self.classification.status == COMMAND_STATUS_PASSED and self.exit_code != 0:
+            self.classification.status = COMMAND_STATUS_FAILED
+        if self.classification.status != COMMAND_STATUS_PASSED:
+            self.classification.is_verification = False
+        self.redacted = _as_bool(self.redacted)
+        self.git_head = _as_optional_text(self.git_head)
+        self.git_changed_files = _as_string_list(self.git_changed_files)
+        self.git_fingerprints = (
+            {
+                key: value
+                for key, value in self.git_fingerprints.items()
+                if isinstance(key, str) and isinstance(value, str)
+            }
+            if isinstance(self.git_fingerprints, dict)
+            else {}
+        )
+        self.invocation_cwd = _as_optional_text(self.invocation_cwd)
+        self.command_id = _as_optional_text(self.command_id)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -212,6 +344,7 @@ class CommandData:
             "redacted": self.redacted,
             "git_head": self.git_head,
             "git_changed_files": list(self.git_changed_files),
+            "git_fingerprints": dict(self.git_fingerprints),
             "invocation_cwd": self.invocation_cwd,
             "command_id": self.command_id,
         }
@@ -219,25 +352,37 @@ class CommandData:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CommandData":
         data = _as_dict(data)
+        exit_code = data.get("exit_code")
+        if not isinstance(exit_code, int) or isinstance(exit_code, bool):
+            exit_code = None
         return cls(
-            command=data.get("command", ""),
-            started_at=data.get("started_at", ""),
-            ended_at=data.get("ended_at", ""),
+            command=_as_text(data.get("command")),
+            started_at=_as_text(data.get("started_at")),
+            ended_at=_as_text(data.get("ended_at")),
             duration_seconds=_as_float(data.get("duration_seconds"), 0.0),
-            exit_code=data.get("exit_code"),
-            stdout_preview=data.get("stdout_preview", ""),
-            stderr_preview=data.get("stderr_preview", ""),
-            stdout_truncated=bool(data.get("stdout_truncated", False)),
-            stderr_truncated=bool(data.get("stderr_truncated", False)),
-            used_shell=bool(data.get("used_shell", False)),
+            exit_code=exit_code,
+            stdout_preview=_as_text(data.get("stdout_preview")),
+            stderr_preview=_as_text(data.get("stderr_preview")),
+            stdout_truncated=_as_bool(data.get("stdout_truncated")),
+            stderr_truncated=_as_bool(data.get("stderr_truncated")),
+            used_shell=_as_bool(data.get("used_shell")),
             classification=CommandClassification.from_dict(
                 data.get("classification", {})
             ),
-            redacted=bool(data.get("redacted", False)),
-            git_head=data.get("git_head"),
-            git_changed_files=[str(p) for p in _as_list(data.get("git_changed_files"))],
-            invocation_cwd=data.get("invocation_cwd"),
-            command_id=data.get("command_id"),
+            redacted=_as_bool(data.get("redacted")),
+            git_head=_as_optional_text(data.get("git_head")),
+            git_changed_files=_as_string_list(data.get("git_changed_files")),
+            git_fingerprints=(
+                {
+                    key: value
+                    for key, value in data.get("git_fingerprints", {}).items()
+                    if isinstance(key, str) and isinstance(value, str)
+                }
+                if isinstance(data.get("git_fingerprints", {}), dict)
+                else {}
+            ),
+            invocation_cwd=_as_optional_text(data.get("invocation_cwd")),
+            command_id=_as_optional_text(data.get("command_id")),
         )
 
 
@@ -247,6 +392,11 @@ class Event:
     timestamp: str
     data: Dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        self.type = _as_text(self.type)
+        self.timestamp = _as_text(self.timestamp)
+        self.data = _as_dict(self.data)
+
     def to_dict(self) -> Dict[str, Any]:
         return {"type": self.type, "timestamp": self.timestamp, "data": self.data}
 
@@ -254,10 +404,8 @@ class Event:
     def from_dict(cls, data: Dict[str, Any]) -> "Event":
         data = _as_dict(data)
         return cls(
-            type=data.get("type", ""),
-            timestamp=data.get("timestamp", ""),
-            # Guarantee a dict so event.data.get(...) is always safe, even for a
-            # stored payload that is null or the wrong type.
+            type=_as_text(data.get("type")),
+            timestamp=_as_text(data.get("timestamp")),
             data=_as_dict(data.get("data")),
         )
 
@@ -287,6 +435,37 @@ class Event:
         return cls(type=EventType.SNAPSHOT.value, timestamp=timestamp, data=payload)
 
 
+def valid_timestamp(value: Any) -> Optional[str]:
+    """Return a normalized ISO timestamp, or ``None`` for an invalid leaf."""
+    text = _as_optional_text(value)
+    if text is None or not text.strip():
+        return None
+    from .utils import parse_iso8601
+
+    try:
+        parse_iso8601(text)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return text.strip()
+
+
+def effective_event_timestamp(event: "Event") -> str:
+    """Return the first valid timestamp representing when an event occurred."""
+    event_type = getattr(event, "type", "")
+    event_timestamp = getattr(event, "timestamp", "")
+    data = _as_dict(getattr(event, "data", {}))
+    candidates: Tuple[Any, ...]
+    if event_type == EventType.COMMAND.value:
+        candidates = (data.get("ended_at"), event_timestamp, data.get("started_at"))
+    else:
+        candidates = (event_timestamp,)
+    for candidate in candidates:
+        timestamp = valid_timestamp(candidate)
+        if timestamp is not None:
+            return timestamp
+    return ""
+
+
 @dataclass
 class FileChange:
     """A single changed file with a name-status label (M/A/D/R)."""
@@ -294,13 +473,20 @@ class FileChange:
     status: str
     path: str
 
+    def __post_init__(self) -> None:
+        self.status = _as_text(self.status, "M") or "M"
+        self.path = _as_text(self.path)
+
     def to_dict(self) -> Dict[str, Any]:
         return {"status": self.status, "path": self.path}
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "FileChange":
         data = _as_dict(data)
-        return cls(status=data.get("status", "M"), path=data.get("path", ""))
+        return cls(
+            status=_as_text(data.get("status"), "M") or "M",
+            path=_as_text(data.get("path")),
+        )
 
 
 @dataclass
@@ -314,6 +500,25 @@ class Summary:
     commands_count: int = 0
     failed_commands_count: int = 0
     command_capture_status: str = "full"
+
+    def __post_init__(self) -> None:
+        self.modified_files = _as_string_list(self.modified_files)
+        if not isinstance(self.file_changes, list):
+            self.file_changes = []
+        else:
+            self.file_changes = [
+                change if isinstance(change, FileChange) else FileChange.from_dict(change)
+                for change in self.file_changes
+            ]
+        self.lines_added = _as_int(self.lines_added)
+        self.lines_deleted = _as_int(self.lines_deleted)
+        self.tests_run = _as_string_list(self.tests_run)
+        self.notes_count = _as_int(self.notes_count)
+        self.commands_count = _as_int(self.commands_count)
+        self.failed_commands_count = _as_int(self.failed_commands_count)
+        self.command_capture_status = _as_text(
+            self.command_capture_status, "full"
+        ) or "full"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -331,18 +536,22 @@ class Summary:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Summary":
         data = _as_dict(data)
+        file_changes = data.get("file_changes")
+        if not isinstance(file_changes, list):
+            file_changes = []
         return cls(
-            modified_files=list(data.get("modified_files", [])),
-            file_changes=[
-                FileChange.from_dict(fc) for fc in data.get("file_changes", [])
-            ],
+            modified_files=_as_string_list(data.get("modified_files")),
+            file_changes=[FileChange.from_dict(fc) for fc in file_changes],
             lines_added=_as_int(data.get("lines_added")),
             lines_deleted=_as_int(data.get("lines_deleted")),
-            tests_run=list(data.get("tests_run", [])),
+            tests_run=_as_string_list(data.get("tests_run")),
             notes_count=_as_int(data.get("notes_count")),
             commands_count=_as_int(data.get("commands_count")),
             failed_commands_count=_as_int(data.get("failed_commands_count")),
-            command_capture_status=data.get("command_capture_status", "full"),
+            command_capture_status=_as_text(
+                data.get("command_capture_status"), "full"
+            )
+            or "full",
         )
 
 
@@ -358,12 +567,56 @@ class Session:
     events: List[Event] = field(default_factory=list)
     summary: Summary = field(default_factory=Summary)
 
+    def __post_init__(self) -> None:
+        self.title = normalize_text(_as_text(self.title))
+        self.project_root = normalize_text(_as_text(self.project_root))
+        self.session_id = _as_text(self.session_id)
+        self.status = normalize_text(
+            _as_text(self.status, SessionStatus.ACTIVE.value)
+        )
+        self.warnings = (
+            [normalize_text(warning) for warning in self.warnings if isinstance(warning, str)]
+            if isinstance(self.warnings, list)
+            else []
+        )
+        if not isinstance(self.git, GitState):
+            self.git = GitState.from_dict(
+                self.git if isinstance(self.git, dict) else {}
+            )
+        if not isinstance(self.timestamps, Timestamps):
+            self.timestamps = Timestamps.from_dict(
+                self.timestamps if isinstance(self.timestamps, dict) else {}
+            )
+        if not isinstance(self.summary, Summary):
+            self.summary = Summary.from_dict(
+                self.summary if isinstance(self.summary, dict) else {}
+            )
+        if not isinstance(self.events, list):
+            self.events = []
+        else:
+            self.events = [
+                event if isinstance(event, Event) else Event.from_dict(event)
+                for event in self.events
+            ]
+
     # Accessors ---------------------------------------------------------------
     def command_events(self) -> List[Event]:
-        return [e for e in self.events if e.type == EventType.COMMAND.value]
+        if not isinstance(self.events, list):
+            return []
+        return [
+            event
+            for event in self.events
+            if isinstance(event, Event) and event.type == EventType.COMMAND.value
+        ]
 
     def note_events(self) -> List[Event]:
-        return [e for e in self.events if e.type == EventType.NOTE.value]
+        if not isinstance(self.events, list):
+            return []
+        return [
+            event
+            for event in self.events
+            if isinstance(event, Event) and event.type == EventType.NOTE.value
+        ]
 
     def add_warning(self, message: str, timestamp: str) -> None:
         """Record a warning in the warnings list and the event timeline.
@@ -372,25 +625,42 @@ class Session:
         message, or a path, so a secret must never reach disk through it. This is
         the single choke point, so every persisted warning is scrubbed.
         """
+        from .markdown import normalize_text
         from .redaction import redact_text
 
-        message, _ = redact_text(message)
+        message = normalize_text(message)
+        message, redaction_count = redact_text(message)
+        message = normalize_text(message).strip()
+        if not message:
+            return
         if message not in self.warnings:
             self.warnings.append(message)
-        self.events.append(Event.warning(message, timestamp))
+        event = Event.warning(message, timestamp)
+        if redaction_count:
+            event.data["redacted"] = True
+        self.events.append(event)
 
     # Serialization -----------------------------------------------------------
     def to_dict(self) -> Dict[str, Any]:
+        git = self.git if isinstance(self.git, GitState) else GitState()
+        timestamps = (
+            self.timestamps if isinstance(self.timestamps, Timestamps) else Timestamps()
+        )
+        summary = self.summary if isinstance(self.summary, Summary) else Summary()
+        events = self.events if isinstance(self.events, list) else []
+        warnings = self.warnings if isinstance(self.warnings, list) else []
         return {
-            "session_id": self.session_id,
-            "title": self.title,
-            "status": self.status,
-            "project_root": self.project_root,
-            "warnings": list(self.warnings),
-            "git": self.git.to_dict(),
-            "timestamps": self.timestamps.to_dict(),
-            "events": [e.to_dict() for e in self.events],
-            "summary": self.summary.to_dict(),
+            "session_id": _as_text(self.session_id),
+            "title": _as_text(self.title),
+            "status": _as_text(self.status, SessionStatus.ACTIVE.value),
+            "project_root": _as_text(self.project_root),
+            "warnings": [warning for warning in warnings if isinstance(warning, str)],
+            "git": git.to_dict(),
+            "timestamps": timestamps.to_dict(),
+            "events": [
+                event.to_dict() for event in events if isinstance(event, Event)
+            ],
+            "summary": summary.to_dict(),
         }
 
     @classmethod
@@ -412,11 +682,13 @@ class Session:
         if not isinstance(events, list):
             raise ValueError("session 'events' must be a list")
         return cls(
-            session_id=data.get("session_id", str(uuid.uuid4())),
-            title=data.get("title", ""),
-            status=data.get("status", SessionStatus.ACTIVE.value),
-            project_root=data.get("project_root", ""),
-            warnings=[str(w) for w in warnings],
+            session_id=_as_text(data.get("session_id"), str(uuid.uuid4()))
+            or str(uuid.uuid4()),
+            title=_as_text(data.get("title")),
+            status=_as_text(data.get("status"), SessionStatus.ACTIVE.value)
+            or SessionStatus.ACTIVE.value,
+            project_root=_as_text(data.get("project_root")),
+            warnings=_as_string_list(warnings),
             git=GitState.from_dict(data.get("git", {})),
             timestamps=Timestamps.from_dict(data.get("timestamps", {})),
             events=[Event.from_dict(e) for e in events],

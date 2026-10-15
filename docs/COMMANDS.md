@@ -8,15 +8,15 @@ debugbrief init                               Set up the project and show the wo
 debugbrief start "<session title>"            Start a session
 debugbrief note  <text ...>                   Record a note (quoting optional)
 debugbrief run   -- <command ...>             Execute and capture a command
-debugbrief redo                               Re-run the last captured command
-debugbrief preview [--mode pr|handoff|incident] Print the report without ending
-debugbrief end   [--mode pr|handoff|incident] Finalize and write a report
-debugbrief cancel [--yes]                     Discard the active session
+debugbrief redo [--dry-run] [--yes]            Re-run the last captured command
+debugbrief preview [--mode pr|handoff|incident] [--format md|json|html] Print without ending
+debugbrief end   [--mode pr|handoff|incident] [--include-full-path] Finalize and write
+debugbrief cancel [--yes]                     Abandon the active session
 debugbrief status                             Show the active session
 debugbrief doctor [--fix]                     Health-check the project and state
 debugbrief recover                            Repair a broken/stale active pointer
-debugbrief last                               Show the most recent report
-debugbrief open  [--last | --path PATH]       Open a report in $EDITOR
+debugbrief last [--open]                      Show or open the most recent report
+debugbrief open  [--last | --path PATH] [--html] Open in $EDITOR or the system browser
 debugbrief list  [--json]                     List recorded sessions
 debugbrief show  <session_id> [--json]        Show one session summary
 ```
@@ -100,8 +100,8 @@ The old single-argument form still works: `debugbrief run "python -m pytest"`.
   clean for piping; see "Live output" below),
 - captures the command text, start/end timestamps, duration, exit code, and
   bounded stdout/stderr previews,
-- records a lightweight per-command Git snapshot (HEAD and changed files) so the
-  report can correlate file changes with what happened,
+- records a lightweight per-command Git snapshot when the project is a repository
+  (HEAD and changed files) so the report can correlate file changes with what happened,
 - classifies whether the command is a test or a verification command,
 - marks pass/fail strictly from the exit code,
 - redacts secret-like values before writing anything to disk (see below),
@@ -223,10 +223,19 @@ debugbrief redo                                            # same test again
 ```
 
 `redo` re-executes the exact stored command with the same shell mode it was
-originally run with, streams its output live, and returns the command's own
-exit code, just like `run`. It accepts `--timeout`, `--no-redact`, and
+originally run with, streams its output live, and returns the command's own exit
+code, just like `run`. It accepts `--timeout`, `--no-redact`, and
 `--verify`. A command originally declared with `run --verify` stays a declared
 check on redo automatically; no need to retype the flag.
+
+Use `debugbrief redo --dry-run` to print the stored command and its original
+working directory without acquiring a command lease or executing anything.
+Conservative destructive commands (including removal, hard resets/cleans,
+force pushes, destructive container/Kubernetes/Terraform operations, and
+publish/deploy-style commands) require a `[y/N]` confirmation when standard
+input is available. EOF, an unreadable input stream, or any answer other than
+`y`/`yes` aborts safely. Use `debugbrief redo --yes` to bypass the confirmation;
+ordinary commands such as `pytest` and `echo` remain frictionless.
 
 If there is no active session, or the session has no captured commands yet,
 `redo` says so and exits 1. If the stored command itself had a secret masked
@@ -237,15 +246,19 @@ the placeholder is not the real command.
 
 Prints the report for the active session to stdout without ending the session
 or writing any file. Useful mid-session to check whether you have captured
-enough before finalizing. `--mode` works as on `end` (default `pr`).
+enough before finalizing. `--mode` works as on `end` (default `pr`), and
+`--format` accepts `md`, `json`, or `html`.
 
 ```bash
 debugbrief preview
 debugbrief preview --mode handoff
+debugbrief preview --format html
 ```
 
-The output carries a banner line marking it as a preview of an active session.
-The session is untouched: same status, same file, no report written.
+Markdown previews carry a banner line marking the active session; JSON and HTML
+previews stay machine-clean. The session is untouched: same status, same file, no
+report written. Reports show only the local repository basename in project-root
+metadata by default; pass `--include-full-path` when the absolute root is intentional.
 
 ## end
 
@@ -259,24 +272,26 @@ debugbrief end --mode incident
 debugbrief end --detail compact # shorter PR brief; metadata/timeline collapsed
 ```
 
-`--detail compact` (PR mode) keeps the summary, changed files, and verification
-visible and folds the metadata and timeline into a collapsible section, for a
-shorter brief. The default `--detail full` is unchanged. `preview` accepts the
-same flag.
+`--detail compact` (PR mode) keeps the summary, evidence state, changed files, and verification visible and folds the metadata and timeline into a collapsible section, for a shorter brief. The CLI defaults PR reports to `compact`; pass `--detail full` when the complete record is useful. `preview` accepts the same flag. Both `end` and `preview` hide the absolute project root by default and show the local repository basename; pass `--include-full-path` to opt in.
 
 Choose the output format with `--format` (default `md`):
 
 ```bash
-debugbrief end --format both   # writes both markdown and JSON
-debugbrief end --format json   # JSON only
+debugbrief end --format both   # Markdown and JSON
+debugbrief end --format html   # self-contained browser report
+debugbrief end --format all    # Markdown, JSON, and HTML
+debugbrief end --format html --open  # write and open the browser brief
 ```
 
-The JSON report carries the same derived fields as the markdown and is written
-next to it under `.debugbrief/reports/<id>-<mode>.json`.
+The JSON report carries the same derived fields as the markdown, including
+`line_stats`, and is written next to it under
+`.debugbrief/reports/<id>-<mode>.json`. The HTML report is self-contained, has
+no external assets, and is written as `.debugbrief/reports/<id>-<mode>.html`.
+HTML is a complete, self-contained view; `--detail` controls the Markdown report.
 
-`--stdout` prints the rendered markdown report to stdout while the files are
-still written as usual; every informational line moves to stderr so the output
-pipes cleanly. Posting a brief straight to a pull request becomes one line:
+`--stdout` prints the selected report to stdout while the files are still written
+as usual; Markdown output moves informational lines to stderr so the output pipes
+cleanly. Posting a Markdown brief straight to a pull request becomes one line:
 
 ```bash
 debugbrief end --stdout | gh pr comment --body-file -
@@ -291,20 +306,20 @@ debugbrief end --stdout | gh pr comment --body-file -
   full timeline, commands attempted, the failed attempts, current repo state, and
   next steps drawn only from your recorded notes.
 - `incident`: a chronological note. One-line summary, time window, full timeline,
-  the observed error verbatim, resolution/current state, verification, and
+  the observed error excerpt, resolution/current state, verification, and
   follow-ups.
 
 Every section is rendered only when it has real content. Nothing is invented.
 
 ## cancel
 
-Discards the active session without writing a report. The session file is kept
+Abandons the active session without writing a report. The session file is kept
 on disk with status `ABANDONED`, so nothing is silently deleted; it simply
 never becomes a brief. Useful when auto-start kicked in on a command you did
 not mean to capture.
 
 ```bash
-debugbrief cancel        # asks: Discard active session '<title>'? [y/N]
+debugbrief cancel        # asks: Abandon active session '<title>'? [y/N]
 debugbrief cancel --yes  # no prompt
 ```
 
@@ -314,8 +329,7 @@ sessions still show up in `list` and `show`.
 
 ## status
 
-Shows the active session, or reports a clear recovery path if a session looks
-interrupted (for example the active pointer exists but its session file is gone).
+Shows the active session, any currently running captured command, or reports a clear recovery path if a session looks interrupted (for example the active pointer exists but its session file is gone).
 
 ```bash
 debugbrief status
@@ -341,19 +355,24 @@ global config, or dotfiles.
 
 ## last
 
-Prints the most recent report's path, its mode, modified time, and title.
+Prints the most recent report's path, its mode, modified time, and title. Add
+`--open` to open it immediately.
 
 ```bash
 debugbrief last
+debugbrief last --open
 ```
 
 ## open
 
-Opens a report in `$EDITOR` (latest by default, or `--path PATH`). If `$EDITOR`
-is not set, it prints the path instead of guessing.
+Opens a report in `$EDITOR` (latest by default, or `--path PATH`). If the
+selected artifact is HTML, it opens in the system browser automatically. Use
+`--html` to select the newest HTML artifact explicitly. If `$EDITOR` is not set
+for a non-HTML report, it prints the path instead of guessing.
 
 ```bash
 debugbrief open
+debugbrief open --html
 debugbrief open --path .debugbrief/reports/<id>-pr.md
 ```
 
@@ -397,17 +416,21 @@ gh pr comment --body-file "$(ls -t .debugbrief/reports/*-pr.md | head -1)"
 
 An optional `.debugbrief.toml` at the project root sets defaults so you do not
 retype the same flags. It is entirely optional: a missing file is ignored, and
-lines that cannot be parsed are skipped rather than failing a command. Only
+lines that cannot be parsed are ignored as a whole rather than failing a command. Only
 these keys are read:
 
 ```toml
-default_mode    = "pr"        # default for end/preview (pr, handoff, incident)
-timeout_seconds = 600         # default for run/redo
-detail          = "full"      # default report verbosity (full or compact)
+default_mode      = "pr"        # default for end/preview (pr, handoff, incident)
+timeout_seconds   = 600         # default for run/redo
+detail            = "compact"   # optional report verbosity; CLI default is compact
 ```
 
-An explicit flag always wins over the config, and the config always wins over
-the built-in default. Parsed with the standard-library `tomllib` on Python 3.11+
+`include_full_path` is intentionally CLI-only because absolute repository paths
+are sensitive; a project config cannot enable it. Use `--include-full-path` to
+opt in for one `preview` or `end`, or `--no-include-full-path` to make the
+sensitive output explicitly false. An explicit flag always wins over the config,
+and the config always wins over the built-in default. Parsed with the
+standard-library `tomllib` on Python 3.11+
 and the `tomli` backport on 3.9/3.10; a malformed file is ignored as a whole, and
 `debugbrief doctor` flags it.
 
@@ -419,7 +442,7 @@ All state lives under the project root:
 .debugbrief/
   active_session.json            # pointer to the active session
   sessions/<session_id>.json     # the full, canonical session record
-  reports/<session_id>-<mode>.md # generated reports (and .json with --format)
+  reports/<session_id>-<mode>.md # generated reports (and .json/.html with --format)
 ```
 
 The project root is the Git repo root when inside a repo, otherwise the current
@@ -429,9 +452,9 @@ working directory.
 
 The canonical record is the session file under `.debugbrief/sessions/<id>.json`,
 rewritten after every note and command, so a crash never loses captured work.
-`active_session.json` is a small pointer removed only on a clean `end`. If the
-pointer exists but the session file is missing, `status` reports it and prints
-recovery steps.
+`active_session.json` is a small pointer removed after a clean `end`, an explicit
+`cancel`, or a recovery that clears a broken/stale pointer. If the pointer exists
+but the session file is missing, `status` reports it and prints recovery steps.
 
 ## Experimental shell mode
 

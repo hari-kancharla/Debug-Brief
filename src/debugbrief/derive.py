@@ -13,14 +13,22 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional
 
-from .markdown import code_span
+from .filters import is_non_verification_command
+from .markdown import (
+    code_span,
+    inline_path,
+    normalize_text,
+)
 from .models import (
     COMMAND_STATUS_PASSED,
     NON_SUCCESS_STATUSES,
+    CommandClassification,
     CommandData,
     Session,
+    effective_event_timestamp,
+    valid_timestamp,
 )
 from .utils import human_duration, parse_iso8601
 
@@ -56,6 +64,7 @@ class CommandRecord:
 
     command: str
     timestamp: str
+    timestamp_valid: bool
     status: str
     exit_code: Optional[int]
     duration_seconds: float
@@ -65,6 +74,7 @@ class CommandRecord:
     stderr_preview: str
     stdout_preview: str
     changed_files: List[str]
+    fingerprints: Dict[str, str]
     head_sha: Optional[str]
     redacted: bool
     invocation_cwd: Optional[str] = None
@@ -84,7 +94,10 @@ class CommandRecord:
         ``is_verification`` is only true when such a command passed; this stays
         true regardless of outcome so a failing check still counts.
         """
-        return self.is_test or self.tool is not None
+        return (
+            self.status in {COMMAND_STATUS_PASSED, *_FAIL_STATUSES}
+            and (self.is_test or self.tool is not None)
+        )
 
 
 @dataclass
@@ -94,6 +107,8 @@ class RedToGreen:
     passed_at: str
     window_seconds: float
     changed_files: List[str]
+    invocation_cwd: Optional[str] = None
+    commit_boundary: bool = False
 
 
 @dataclass
@@ -105,13 +120,17 @@ class Derivation:
     observed_error: Optional[str] = None
     ruled_out: List[CommandRecord] = field(default_factory=list)
     redaction_applied: bool = False
+    proof_state: str = "unverified"
+    proof_basis: str = ""
+    proof_command: Optional[str] = None
+    invalid_verification_commands: List[str] = field(default_factory=list)
     command_records: List[CommandRecord] = field(default_factory=list)
 
 
 def _seconds(timestamp: str) -> float:
     try:
         return parse_iso8601(timestamp).timestamp()
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, AttributeError, OverflowError):
         return 0.0
 
 
@@ -119,19 +138,25 @@ def _records(session: Session) -> List[CommandRecord]:
     records: List[CommandRecord] = []
     for event in session.command_events():
         data = CommandData.from_dict(event.data)
+        classification = data.classification
+        if is_non_verification_command(data.command):
+            classification = CommandClassification(status=classification.status)
+        timestamp = effective_event_timestamp(event)
         records.append(
             CommandRecord(
-                command=data.command,
-                timestamp=event.timestamp,
-                status=data.classification.status,
+                command=normalize_text(data.command),
+                timestamp=timestamp,
+                timestamp_valid=valid_timestamp(timestamp) is not None,
+                status=classification.status,
                 exit_code=data.exit_code,
                 duration_seconds=data.duration_seconds,
-                is_test=data.classification.is_test,
-                is_verification=data.classification.is_verification,
-                tool=data.classification.tool,
-                stderr_preview=data.stderr_preview,
-                stdout_preview=data.stdout_preview,
-                changed_files=list(data.git_changed_files),
+                is_test=classification.is_test,
+                is_verification=classification.is_verification,
+                tool=classification.tool,
+                stderr_preview=normalize_text(data.stderr_preview),
+                stdout_preview=normalize_text(data.stdout_preview),
+                changed_files=[normalize_text(path) for path in data.git_changed_files],
+                fingerprints=dict(data.git_fingerprints),
                 head_sha=data.git_head,
                 redacted=data.redacted,
                 invocation_cwd=data.invocation_cwd,
@@ -141,9 +166,24 @@ def _records(session: Session) -> List[CommandRecord]:
     return records
 
 
+def _latest_verification_records(
+    records: List[CommandRecord],
+) -> List[CommandRecord]:
+    latest: dict[tuple[str, Optional[str]], CommandRecord] = {}
+    for record in records:
+        if record.timestamp_valid and record.is_verification_candidate:
+            latest[(record.command, record.invocation_cwd)] = record
+    return list(latest.values())
+
+
 def _session_span_seconds(session: Session) -> Optional[float]:
     """Total span from the first to the last recorded event, in seconds."""
-    stamps = [_seconds(e.timestamp) for e in session.events if e.timestamp]
+    events = session.events if isinstance(session.events, list) else []
+    stamps = [
+        _seconds(effective_event_timestamp(e))
+        for e in events
+        if effective_event_timestamp(e)
+    ]
     stamps = [s for s in stamps if s > 0]
     if len(stamps) < 2:
         return None
@@ -156,7 +196,7 @@ def _detect_red_to_green(
 ) -> Optional[RedToGreen]:
     first_fail: Optional[CommandRecord] = None
     for rec in records:
-        if rec.is_verification_candidate and rec.failed:
+        if rec.timestamp_valid and rec.is_verification_candidate and rec.failed:
             first_fail = rec
             break
     if first_fail is None:
@@ -166,7 +206,8 @@ def _detect_red_to_green(
     passed: Optional[CommandRecord] = None
     for rec in records:
         if (
-            rec.is_verification_candidate
+            rec.timestamp_valid
+            and rec.is_verification_candidate
             and rec.passed
             # Only the same check turning green counts as red-to-green: the same
             # command run in the same directory, not a different command or the
@@ -186,10 +227,24 @@ def _detect_red_to_green(
         return None
     pass_seconds = _seconds(passed.timestamp)
     changed: List[str] = []
+    preexisting = session.git.initial_dirty
+    for path in first_fail.changed_files:
+        if path in preexisting:
+            fingerprint = first_fail.fingerprints.get(path)
+            if (
+                fingerprint is not None
+                and fingerprint != preexisting[path]
+                and path not in changed
+            ):
+                changed.append(path)
     for rec in records:
         ts = _seconds(rec.timestamp)
-        if fail_seconds <= ts <= pass_seconds:
+        if fail_seconds < ts <= pass_seconds:
             for path in rec.changed_files:
+                if path in preexisting:
+                    fingerprint = rec.fingerprints.get(path)
+                    if fingerprint is None or fingerprint == preexisting[path]:
+                        continue
                 if path not in changed:
                     changed.append(path)
 
@@ -199,6 +254,11 @@ def _detect_red_to_green(
         passed_at=passed.timestamp,
         window_seconds=max(0.0, pass_seconds - fail_seconds),
         changed_files=sorted(changed),
+        invocation_cwd=first_fail.invocation_cwd,
+        commit_boundary=(
+            (first_fail.head_sha is not None or passed.head_sha is not None)
+            and first_fail.head_sha != passed.head_sha
+        ),
     )
 
 
@@ -232,7 +292,7 @@ def _extract_observed_error(records: List[CommandRecord]) -> Optional[str]:
 
 
 def _pick_error_line(stderr: str) -> Optional[str]:
-    lines = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
+    lines = [ln.strip() for ln in normalize_text(stderr).splitlines() if ln.strip()]
     if not lines:
         return None
     # Prefer a line that looks like an assertion or error message.
@@ -256,7 +316,7 @@ def _files_clause(session: Session, limit: int = 3) -> Optional[str]:
     if not files:
         return None
     shown = files[:limit]
-    clause = ", ".join(shown)
+    clause = ", ".join(inline_path(path) for path in shown)
     extra = len(files) - len(shown)
     if extra > 0:
         clause += f", and {extra} more"
@@ -277,35 +337,68 @@ def _build_one_liner(
     duration = human_duration(span) if span is not None else None
     files = _files_clause(session)
 
-    if red_to_green is not None:
-        parts = [f"Failing check {code_span(red_to_green.command)} passed"]
-        parts.append(f"after {n} {_attempts_word(n)}")
-        if duration:
-            parts.append(f"over {duration}")
-        sentence = " ".join(parts)
-        if files:
-            sentence += f", changes touched {files}"
-        return sentence + "."
+    latest = _latest_verification_records(records)
+    latest_failed = [record for record in latest if record.failed]
+    latest_passed = [record for record in latest if record.passed]
+    invalid_verifications = [
+        record
+        for record in records
+        if not record.timestamp_valid and record.is_verification_candidate
+    ]
 
-    passed_verifications = [r for r in records if r.is_verification and r.passed]
-    failed_candidates = [r for r in records if r.is_verification_candidate and r.failed]
-
-    if passed_verifications:
-        cmd = passed_verifications[0].command
-        parts = [f"Verification {code_span(cmd)} passed"]
-        parts.append(f"after {n} {_attempts_word(n)}")
-        if duration:
-            parts.append(f"over {duration}")
-        sentence = " ".join(parts)
-        if files:
-            sentence += f", changes touched {files}"
-        return sentence + "."
-
-    if failed_candidates:
-        cmd = failed_candidates[0].command
+    if invalid_verifications:
+        command = invalid_verifications[-1].command
         lead = f"Recorded {n} command {_attempts_word(n)}"
         if duration:
             lead += f" over {duration}"
+        return f"{lead}; verification {code_span(command)} has no valid timestamp."
+
+    if red_to_green is not None:
+        later_failure = next(
+            (
+                record
+                for record in latest_failed
+                if record.command == red_to_green.command
+                and record.invocation_cwd == red_to_green.invocation_cwd
+                and _seconds(record.timestamp) > _seconds(red_to_green.passed_at)
+            ),
+            None,
+        )
+        if later_failure is None:
+            parts = [f"Failing check {code_span(red_to_green.command)} passed"]
+        else:
+            parts = [
+                f"Check {code_span(red_to_green.command)} turned green, but the "
+                "latest recorded run still failed"
+            ]
+        parts.append(f"after {n} {_attempts_word(n)}")
+        if duration:
+            parts.append(f"over {duration}")
+        sentence = " ".join(parts)
+        if files:
+            sentence += f", changes touched {files}"
+        return sentence + "."
+
+    if latest_passed:
+        cmd = latest_passed[0].command
+        parts = [f"Verification {code_span(cmd)} passed"]
+        if latest_failed:
+            parts.append("but another verification is still failing")
+        parts.append(f"after {n} {_attempts_word(n)}")
+        if duration:
+            parts.append(f"over {duration}")
+        sentence = " ".join(parts)
+        if files:
+            sentence += f", changes touched {files}"
+        return sentence + "."
+
+    if latest_failed:
+        cmd = latest_failed[0].command
+        lead = f"Recorded {n} command {_attempts_word(n)}"
+        if duration:
+            lead += f" over {duration}"
+        if any(record.passed for record in records):
+            return f"{lead}; verification {code_span(cmd)} is still failing after an earlier pass."
         return f"{lead}; verification {code_span(cmd)} failed and none passed."
 
     if n > 0:
@@ -325,6 +418,43 @@ def _build_one_liner(
     return None
 
 
+def _proof_state(
+    records: List[CommandRecord], red_to_green: Optional[RedToGreen]
+) -> tuple[str, str, Optional[str]]:
+    current = _latest_verification_records(records)
+    invalid = next(
+        (
+            record
+            for record in records
+            if record.is_verification_candidate and not record.timestamp_valid
+        ),
+        None,
+    )
+    if invalid is not None:
+        return (
+            "unverified",
+            f"{invalid.command} has no valid recorded timestamp",
+            invalid.command,
+        )
+    failed = next((record for record in current if record.failed), None)
+    if failed is not None:
+        return (
+            "unverified",
+            f"{failed.command} is still failing in the latest recorded run",
+            failed.command,
+        )
+    passed = next((record for record in current if record.passed), None)
+    if passed is not None:
+        if red_to_green is not None and passed.command == red_to_green.command:
+            return (
+                "verified",
+                "the same recorded check failed and later passed",
+                passed.command,
+            )
+        return "verified", f"{passed.command} exited 0", passed.command
+    return "unverified", "no verification command passed", None
+
+
 def next_step_notes(session: Session) -> List[str]:
     """Return recorded notes that read as forward-looking next steps.
 
@@ -333,7 +463,8 @@ def next_step_notes(session: Session) -> List[str]:
     """
     out: List[str] = []
     for event in session.note_events():
-        text = (event.data or {}).get("text", "").strip()
+        data = event.data if isinstance(event.data, dict) else {}
+        text = normalize_text(data.get("text", "")).strip()
         if not text:
             continue
         if _NEXT_STEP_RE.search(text):
@@ -346,15 +477,47 @@ def derive(session: Session) -> Derivation:
     red_to_green = _detect_red_to_green(session, records)
 
     reproduce = next(
-        (r.command for r in records if r.is_verification_candidate and r.failed), None
+        (
+            r.command
+            for r in reversed(records)
+            if r.timestamp_valid and r.is_verification_candidate and r.failed
+        ),
+        None,
     )
-    verify = next(
-        (r.command for r in records if r.is_verification_candidate and r.passed), None
+    verify_record = next(
+        (
+            record
+            for record in reversed(records)
+            if red_to_green is not None
+            and record.command == red_to_green.command
+            and record.invocation_cwd == red_to_green.invocation_cwd
+            and record.timestamp_valid
+            and record.passed
+        ),
+        None,
     )
+    if verify_record is None:
+        verify_record = next(
+            (
+                r
+                for r in reversed(records)
+                if r.timestamp_valid and r.is_verification_candidate and r.passed
+            ),
+            None,
+        )
+    verify = verify_record.command if verify_record is not None else None
 
-    notes_redacted = any(
-        bool((e.data or {}).get("redacted")) for e in session.note_events()
+    redaction_applied = any(
+        isinstance(event.data, dict) and bool(event.data.get("redacted"))
+        for event in session.events
+        if event.type in {"note", "warning"}
     )
+    proof_state, proof_basis, proof_command = _proof_state(records, red_to_green)
+    invalid_verification_commands = [
+        record.command
+        for record in records
+        if record.is_verification_candidate and not record.timestamp_valid
+    ]
 
     return Derivation(
         one_liner=_build_one_liner(session, records, red_to_green),
@@ -363,6 +526,10 @@ def derive(session: Session) -> Derivation:
         red_to_green=red_to_green,
         observed_error=_extract_observed_error(records),
         ruled_out=[r for r in records if r.failed],
-        redaction_applied=any(r.redacted for r in records) or notes_redacted,
+        redaction_applied=any(r.redacted for r in records) or redaction_applied,
+        proof_state=proof_state,
+        proof_basis=proof_basis,
+        proof_command=proof_command,
+        invalid_verification_commands=invalid_verification_commands,
         command_records=records,
     )

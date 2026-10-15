@@ -64,6 +64,26 @@ def _session(is_repo=True, modified=None, start=0, end=10):
 
 
 # one-liner ----------------------------------------------------------------
+def test_empty_tool_does_not_create_a_verification_claim():
+    s = _session()
+    data = CommandData(
+        command="custom-check",
+        started_at=_ts(0),
+        ended_at=_ts(1),
+        duration_seconds=1,
+        exit_code=0,
+        classification=CommandClassification(
+            status=COMMAND_STATUS_PASSED,
+            is_verification=True,
+            tool="",
+        ),
+    )
+    s.events.append(Event.command(data, _ts(1)))
+    d = derive(s)
+    assert d.proof_state == "unverified"
+    assert d.verify_command is None
+
+
 def test_one_liner_all_present():
     s = _session(modified=["src/auth.py"])
     s.events.append(Event.snapshot({"phase": "start"}, _ts(0)))
@@ -109,7 +129,73 @@ def test_one_liner_notes_only():
     assert "no commands were run" in d.one_liner
 
 
+def test_malformed_verification_timestamp_cannot_prove_success():
+    s = _session()
+    s.events.append(
+        _cmd("pytest", COMMAND_STATUS_PASSED, "not-a-timestamp", 0, is_test=True, is_verification=True, tool="pytest")
+    )
+    d = derive(s)
+    assert d.proof_state == "unverified"
+    assert d.verify_command is None
+    assert d.one_liner == "Recorded 1 command attempt; verification `pytest` has no valid timestamp."
+
+
+def test_malformed_later_failure_blocks_an_earlier_valid_pass():
+    s = _session()
+    s.events.append(_cmd("pytest", COMMAND_STATUS_PASSED, _ts(0), 0, is_test=True, is_verification=True, tool="pytest"))
+    s.events.append(_cmd("pytest", COMMAND_STATUS_FAILED, "not-a-timestamp", 1, is_test=True, tool="pytest"))
+    d = derive(s)
+    assert d.proof_state == "unverified"
+    assert d.invalid_verification_commands == ["pytest"]
+
+
+def test_latest_failure_invalidates_a_historical_pass_in_summaries():
+    s = _session()
+    s.events.append(_cmd("pytest", COMMAND_STATUS_FAILED, _ts(0), 1, is_test=True, tool="pytest"))
+    s.events.append(_cmd("pytest", COMMAND_STATUS_PASSED, _ts(5), 0, is_test=True, is_verification=True, tool="pytest"))
+    s.events.append(_cmd("pytest", COMMAND_STATUS_FAILED, _ts(10), 1, is_test=True, tool="pytest"))
+    d = derive(s)
+    assert "latest recorded run still failed" in d.one_liner
+    assert d.proof_state == "unverified"
+
+
 # red to green -------------------------------------------------------------
+def test_proof_state_tracks_the_latest_check_outcome():
+    s = _session()
+    s.events.append(
+        _cmd(
+            "pytest",
+            COMMAND_STATUS_PASSED,
+            _ts(0),
+            0,
+            is_test=True,
+            is_verification=True,
+            tool="pytest",
+        )
+    )
+    s.events.append(
+        _cmd(
+            "pytest",
+            COMMAND_STATUS_FAILED,
+            _ts(30),
+            1,
+            is_test=True,
+            tool="pytest",
+        )
+    )
+    derivation = derive(s)
+    assert derivation.proof_state == "unverified"
+    assert "still failing" in derivation.proof_basis
+
+
+def test_red_to_green_compares_structured_command_whitespace_exactly():
+    s = _session()
+    command = "python -c \"print('a  b')\""
+    s.events.append(_cmd(command, COMMAND_STATUS_FAILED, _ts(0), 1, is_test=True, tool="pytest"))
+    s.events.append(_cmd(command, COMMAND_STATUS_PASSED, _ts(5), 0, is_test=True, is_verification=True, tool="pytest"))
+    assert derive(s).red_to_green is not None
+
+
 def test_red_to_green_detected_with_files():
     s = _session(modified=["a.py", "b.py"])
     s.events.append(_cmd("pytest", COMMAND_STATUS_FAILED, _ts(0), 1, ["a.py"], is_test=True, tool="pytest"))
@@ -119,6 +205,116 @@ def test_red_to_green_detected_with_files():
     assert d.red_to_green.command == "pytest"
     assert d.red_to_green.window_seconds == 30
     assert d.red_to_green.changed_files == ["a.py", "b.py"]
+
+
+def test_red_to_green_records_a_commit_boundary_when_snapshots_have_no_file_changes():
+    s = _session()
+    failure = _cmd(
+        "pytest",
+        COMMAND_STATUS_FAILED,
+        _ts(0),
+        1,
+        is_test=True,
+        tool="pytest",
+    )
+    failure.data["git_head"] = "commit-a"
+    passed = _cmd(
+        "pytest",
+        COMMAND_STATUS_PASSED,
+        _ts(5),
+        0,
+        is_test=True,
+        is_verification=True,
+        tool="pytest",
+    )
+    passed.data["git_head"] = "commit-b"
+    s.events.extend([failure, passed])
+    result = derive(s).red_to_green
+    assert result is not None
+    assert result.commit_boundary is True
+    assert result.changed_files == []
+
+
+def test_red_to_green_records_a_first_commit_boundary_from_an_unborn_repo():
+    s = _session()
+    failure = _cmd(
+        "pytest", COMMAND_STATUS_FAILED, _ts(0), 1, is_test=True, tool="pytest"
+    )
+    passed = _cmd(
+        "pytest",
+        COMMAND_STATUS_PASSED,
+        _ts(5),
+        0,
+        is_test=True,
+        is_verification=True,
+        tool="pytest",
+    )
+    passed.data["git_head"] = "first-commit"
+    s.events.extend([failure, passed])
+    result = derive(s).red_to_green
+    assert result is not None
+    assert result.commit_boundary is True
+
+
+def test_red_to_green_includes_a_pre_existing_file_changed_during_the_window():
+    s = _session(modified=["old-dirty.py"])
+    s.git.initial_dirty = {"old-dirty.py": "baseline"}
+    failure = _cmd("pytest", COMMAND_STATUS_FAILED, _ts(0), 1, ["old-dirty.py"], is_test=True, tool="pytest")
+    failure.data["git_fingerprints"] = {"old-dirty.py": "changed"}
+    s.events.append(failure)
+    s.events.append(_cmd("pytest", COMMAND_STATUS_PASSED, _ts(5), 0, ["old-dirty.py"], is_test=True, is_verification=True, tool="pytest"))
+    assert derive(s).red_to_green.changed_files == ["old-dirty.py"]
+
+
+def test_red_to_green_excludes_pre_existing_dirty_files():
+    s = _session(modified=["new.py"])
+    s.git.initial_dirty = {"old-dirty.py": "baseline"}
+    s.events.append(
+        _cmd(
+            "pytest",
+            COMMAND_STATUS_FAILED,
+            _ts(0),
+            1,
+            ["old-dirty.py", "new.py"],
+            is_test=True,
+            tool="pytest",
+        )
+    )
+    s.events.append(
+        _cmd(
+            "pytest",
+            COMMAND_STATUS_PASSED,
+            _ts(5),
+            0,
+            ["old-dirty.py", "new.py"],
+            is_test=True,
+            is_verification=True,
+            tool="pytest",
+        )
+    )
+    assert derive(s).red_to_green.changed_files == ["new.py"]
+
+
+def test_red_to_green_excludes_files_seen_only_on_the_failure_snapshot():
+    s = _session()
+    s.events.append(
+        _cmd("pytest", COMMAND_STATUS_FAILED, _ts(0), 1, ["before.py"], is_test=True, tool="pytest")
+    )
+    s.events.append(
+        _cmd("pytest", COMMAND_STATUS_PASSED, _ts(5), 0, ["during.py"], is_test=True, is_verification=True, tool="pytest")
+    )
+    assert derive(s).red_to_green.changed_files == ["during.py"]
+
+
+def test_red_to_green_keeps_a_change_reverted_before_end():
+    s = _session(modified=[])
+    s.events.append(
+        _cmd("pytest", COMMAND_STATUS_FAILED, _ts(0), 1, ["temp.py"], is_test=True, tool="pytest")
+    )
+    s.events.append(
+        _cmd("pytest", COMMAND_STATUS_PASSED, _ts(5), 0, ["temp.py"], is_test=True, is_verification=True, tool="pytest")
+    )
+    assert derive(s).red_to_green.changed_files == ["temp.py"]
 
 
 def test_red_to_green_no_transition():

@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en" data-theme="ink">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b0e0d">
+  <meta name="description" content="DebugBrief command reference: capture a debugging loop, generate evidence-backed reports, and keep local debugging state safe.">
+  <title>Docs — DebugBrief</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="docs-page">
+  <a class="skip-link" href="#docs-main">Skip to content</a>
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="brand" href="index.html" aria-label="DebugBrief home">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        <span>debugbrief</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">
+        <span class="sr-only">Open navigation</span>
+        <span></span><span></span>
+      </button>
+      <nav class="primary-nav" id="primary-nav" aria-label="Primary navigation">
+        <a href="index.html#proof-loop">How it works</a>
+        <a href="index.html#reports">Reports</a>
+        <a href="docs.html" aria-current="page">Docs</a>
+        <a href="https://github.com/harihkk/Debug-Brief/blob/main/examples/sample-pr.md">Examples ↗</a>
+        <a href="https://github.com/harihkk/Debug-Brief/blob/main/SECURITY.md">Security ↗</a>
+      </nav>
+      <div class="header-actions">
+        <button class="theme-toggle" type="button" aria-pressed="true">Paper</button>
+        <a class="button button-small" href="index.html#install">Install</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="docs-layout shell" id="docs-main">
+    <aside class="docs-sidebar" aria-label="Documentation navigation">
+      <label class="docs-search-label" for="docs-search">Find a command</label>
+      <div class="docs-search-wrap">
+        <input id="docs-search" type="search" placeholder="run, redo, report…" autocomplete="off" data-docs-search>
+        <kbd>/</kbd>
+      </div>
+      <nav class="docs-nav" aria-label="Documentation sections">
+        <p>Start here</p>
+        <a href="#quickstart">Quickstart</a>
+        <a href="#install">Install</a>
+        <p>Capture</p>
+        <a href="#run">run</a>
+        <a href="#note">note</a>
+        <a href="#redo">redo</a>
+        <a href="#checks">Checks and verification</a>
+        <p>Reports</p>
+        <a href="#end">end</a>
+        <a href="#modes">Report modes</a>
+        <a href="#formats">Output formats</a>
+        <p>Operate</p>
+        <a href="#review">review and share</a>
+        <a href="#status">status and recovery</a>
+        <a href="#privacy">Privacy and redaction</a>
+        <a href="#limitations">Limitations</a>
+      </nav>
+      <p class="docs-no-results" data-docs-empty aria-live="polite">No matching command.</p>
+    </aside>
+
+    <article class="docs-article">
+      <div class="breadcrumbs"><a href="index.html">DebugBrief</a><span aria-hidden="true">/</span><span>Docs</span></div>
+      <p class="eyebrow"><span class="eyebrow-mark" aria-hidden="true"></span> command reference</p>
+      <h1>Run the loop.<br><em>Keep the proof.</em></h1>
+      <p class="docs-lede">DebugBrief is deliberately small: run a command, record what you noticed, repeat it after a change, and end with a report. This page is the fast reference.</p>
+
+      <section class="docs-section" id="quickstart" data-doc-item>
+        <div class="docs-section-heading"><span>01</span><h2>Quickstart</h2></div>
+        <p>Start is optional. The first <code>run</code> or <code>note</code> starts a session automatically.</p>
+        <div class="docs-code-block">
+          <div class="code-block-bar"><span>shell</span><button class="copy-button" type="button" data-copy="pipx install debugbrief">Copy install</button></div>
+          <pre><code>pipx install debugbrief
+debugbrief run -- pytest -q test_calc.py
+# make the fix
+debugbrief redo
+debugbrief end --format html --open</code></pre>
+        </div>
+        <div class="docs-callout"><span>today's loop</span><p>The command stays yours. DebugBrief records the command, exit code, duration, bounded output preview, and Git state when available.</p></div>
+      </section>
+
+      <section class="docs-section" id="install" data-doc-item>
+        <div class="docs-section-heading"><span>02</span><h2>Install</h2></div>
+        <p>Python 3.9 or newer. Linux and macOS are tested. The project you are debugging does not need to be Python.</p>
+        <div class="docs-command-table">
+          <div><code>pipx install debugbrief</code><span>recommended for a standalone CLI</span></div>
+          <div><code>uv tool install debugbrief</code><span>if you use uv tools</span></div>
+          <div><code>python -m pip install debugbrief</code><span>inside an existing environment</span></div>
+        </div>
+      </section>
+
+      <section class="docs-section" id="run" data-doc-item>
+        <div class="docs-section-heading"><span>03</span><h2>run</h2></div>
+        <p>Put DebugBrief flags before <code>--</code>, then the command exactly as you would normally type it.</p>
+        <div class="docs-code-block"><div class="code-block-bar"><span>shell</span><button class="copy-button" type="button" data-copy="debugbrief run -- pytest -q">Copy</button></div><pre><code>debugbrief run -- pytest -q</code></pre></div>
+        <div class="flag-grid"><div><code>--timeout SECONDS</code><span>stop a long-running command</span></div><div><code>--verify</code><span>declare a custom check</span></div><div><code>--shell</code><span>enable pipes and redirection</span></div><div><code>--no-redact</code><span>store raw output, with care</span></div></div>
+      </section>
+
+      <section class="docs-section" id="note" data-doc-item>
+        <div class="docs-section-heading"><span>04</span><h2>note</h2></div>
+        <p>Record an observation without interrupting the loop. Quoting is optional for plain prose.</p>
+        <div class="docs-code-block"><div class="code-block-bar"><span>shell</span><button class="copy-button" type="button" data-copy="debugbrief note &quot;the shared state is the suspect&quot;">Copy</button></div><pre><code>debugbrief note "the shared state is the suspect"</code></pre></div>
+      </section>
+
+      <section class="docs-section" id="redo" data-doc-item>
+        <div class="docs-section-heading"><span>05</span><h2>redo</h2></div>
+        <p>Re-run the latest captured command in its original directory. It is the shortest path from a failing check to a passing check.</p>
+        <div class="docs-code-block"><div class="code-block-bar"><span>shell</span><button class="copy-button" type="button" data-copy="debugbrief redo">Copy</button></div><pre><code>debugbrief redo</code></pre></div>
+        <div class="docs-callout docs-callout-warn"><span>safe replay</span><p><code>--dry-run</code> previews without executing. Ambiguous or destructive commands ask for confirmation; <code>--yes</code> is an explicit bypass.</p></div>
+      </section>
+
+      <section class="docs-section" id="checks" data-doc-item>
+        <div class="docs-section-heading"><span>06</span><h2>Checks and verification</h2></div>
+        <p>Recognized test, build, lint, and typecheck runners are classified automatically. A check is verified only when its real exit code is zero. Use <code>--verify</code> for a custom script.</p>
+        <div class="runner-list"><span>pytest</span><span>vitest</span><span>go test</span><span>cargo test</span><span>make check</span><span>npm run build</span><span>tsc --noEmit</span><span>dotnet test</span></div>
+      </section>
+
+      <section class="docs-section" id="end" data-doc-item>
+        <div class="docs-section-heading"><span>07</span><h2>end</h2></div>
+        <p>Finalize the session and write the selected report. PR reports are compact by default; <code>--detail full</code> keeps the complete record.</p>
+        <div class="docs-code-block"><div class="code-block-bar"><span>shell</span><button class="copy-button" type="button" data-copy="debugbrief end --mode pr">Copy</button></div><pre><code>debugbrief end --mode pr
+debugbrief end --mode handoff
+debugbrief end --mode incident</code></pre></div>
+      </section>
+
+      <section class="docs-section" id="modes" data-doc-item>
+        <div class="docs-section-heading"><span>08</span><h2>Report modes</h2></div>
+        <div class="docs-mode-table"><div><strong>PR</strong><span>Reproduce, verify, red → green, files, failures.</span></div><div><strong>Handoff</strong><span>Current state, notes, timeline, next steps.</span></div><div><strong>Incident</strong><span>Time window, observed error, resolution, follow-up.</span></div></div>
+      </section>
+
+      <section class="docs-section" id="formats" data-doc-item>
+        <div class="docs-section-heading"><span>09</span><h2>Output formats</h2></div>
+        <div class="docs-command-table"><div><code>--format md</code><span>default Markdown brief</span></div><div><code>--format json</code><span>structured evidence</span></div><div><code>--format both</code><span>Markdown and JSON artifacts</span></div><div><code>--format html</code><span>self-contained browser report</span></div><div><code>--format all</code><span>all three artifacts</span></div></div>
+        <p>Every report exposes an explicit <strong>verified</strong> or <strong>unverified</strong> state and says when a root cause was not inferred.</p>
+      </section>
+
+      <section class="docs-section" id="review" data-doc-item>
+        <div class="docs-section-heading"><span>10</span><h2>Review and share</h2></div>
+        <p>After <code>end</code>, the proof is local. Inspect the artifact before sending it anywhere. <code>preview --format html</code> lets you inspect the same self-contained view before finalizing.</p>
+        <div class="docs-code-block"><div class="code-block-bar"><span>shell</span><button class="copy-button" type="button" data-copy="debugbrief end --format html --open">Copy</button></div><pre><code>debugbrief end --format html --open
+debugbrief open --html
+debugbrief last --open</code></pre></div>
+        <p><code>open --html</code> selects the newest HTML brief explicitly. HTML artifacts also open in the system browser automatically; non-HTML reports open in <code>$EDITOR</code>.</p>
+      </section>
+
+      <section class="docs-section" id="status" data-doc-item>
+        <div class="docs-section-heading"><span>11</span><h2>status and recovery</h2></div>
+        <p><code>status</code> shows the active session and any running captured command. If a process crashes, <code>recover</code> repairs stale state without deleting the session.</p>
+        <div class="docs-code-block"><div class="code-block-bar"><span>shell</span><button class="copy-button" type="button" data-copy="debugbrief status">Copy</button></div><pre><code>debugbrief status
+debugbrief doctor --fix
+debugbrief recover</code></pre></div>
+      </section>
+
+      <section class="docs-section" id="privacy" data-doc-item>
+        <div class="docs-section-heading"><span>12</span><h2>Privacy and redaction</h2></div>
+        <p>Reports hide the absolute project root by default and show the repository basename. Pass <code>--include-full-path</code> only when the full local path is intentional.</p>
+        <p>Commands, output previews, titles, and notes pass through conservative redaction before persistence. Review every report before sharing it.</p>
+      </section>
+
+      <section class="docs-section" id="limitations" data-doc-item>
+        <div class="docs-section-heading"><span>13</span><h2>Limitations</h2></div>
+        <ul class="docs-limit-list"><li>No full-screen TUI capture such as <code>vim</code> or <code>htop</code>.</li><li>No passive shell-history capture.</li><li>No guaranteed secret detection.</li><li>No native Windows or PowerShell support.</li><li>No inferred root cause.</li></ul>
+      </section>
+
+      <footer class="docs-footer"><span>Need the long form?</span><a href="https://github.com/harihkk/Debug-Brief/blob/main/docs/COMMANDS.md">Read the complete command reference ↗</a></footer>
+    </article>
+
+    <aside class="docs-toc" aria-label="On this page">
+      <p>On this page</p>
+      <a href="#quickstart">Quickstart</a>
+      <a href="#run">run</a>
+      <a href="#redo">redo</a>
+      <a href="#end">end</a>
+      <a href="#formats">Formats</a>
+      <a href="#review">Review</a>
+      <a href="#privacy">Privacy</a>
+    </aside>
+  </main>
+
+  <footer class="site-footer">
+    <div class="shell footer-inner">
+      <div class="footer-brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>debugbrief</span></div>
+      <p>Record what happened. Share what you can prove.</p>
+      <div class="footer-links"><a href="index.html">Home</a><a href="https://github.com/harihkk/Debug-Brief">Repository ↗</a><a href="https://github.com/harihkk/Debug-Brief/blob/main/SECURITY.md">Security ↗</a></div>
+    </div>
+    <div class="shell footer-bottom"><span>Local-first debugging ledger</span><span>Built from explicit evidence</span></div>
+  </footer>
+  <div class="toast" role="status" aria-live="polite" data-toast></div>
+  <script src="app.js"></script>
+</body>
+</html>

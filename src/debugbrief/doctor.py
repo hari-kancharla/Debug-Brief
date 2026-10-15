@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from . import config, git_utils
+from .models import Session
 from .paths import (
     DEBUGBRIEF_DIRNAME,
     ProjectPaths,
@@ -354,6 +355,46 @@ def _active_session_checks(
         )
         return
 
+    if not isinstance(session_data, dict):
+        checks.append(
+            CheckResult(
+                FAIL,
+                "Session integrity",
+                "session file must contain a JSON object.",
+            )
+        )
+        return
+
+    try:
+        parsed_session = Session.from_dict(session_data)
+    except (TypeError, ValueError, OSError) as exc:
+        checks.append(
+            CheckResult(
+                FAIL,
+                "Session integrity",
+                f"session file is malformed ({exc}).",
+            )
+        )
+        return
+    if parsed_session.session_id != session_id:
+        checks.append(
+            CheckResult(
+                FAIL,
+                "Session integrity",
+                "session file body id does not match active_session.json.",
+            )
+        )
+        return
+    if not isinstance(session_data.get("events"), list):
+        checks.append(
+            CheckResult(
+                FAIL,
+                "Session integrity",
+                "session file events must be a JSON array.",
+            )
+        )
+        return
+
     status = session_data.get("status")
     if status != "ACTIVE":
         checks.append(
@@ -368,10 +409,13 @@ def _active_session_checks(
 
     # 11. points to current project root?
     session_root = session_data.get("project_root", "")
-    try:
-        same = Path(session_root).resolve() == Path(paths.project_root).resolve()
-    except (OSError, ValueError):
-        same = session_root == str(paths.project_root)
+    if isinstance(session_root, str):
+        try:
+            same = Path(session_root).resolve() == Path(paths.project_root).resolve()
+        except (OSError, ValueError):
+            same = session_root == str(paths.project_root)
+    else:
+        same = False
     if same:
         checks.append(
             CheckResult(PASS, "Session project root", "matches current project")

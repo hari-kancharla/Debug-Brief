@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Reports now expose an explicit `verified` or `unverified` evidence state and
+  preserve the important caveat that DebugBrief does not infer a root cause.
+- `end --format html` writes a self-contained browser report, and `--format all`
+  writes Markdown, JSON, and HTML together. HTML mode sections now follow the
+  selected reader and omit sections with no evidence.
+- The static product site lives in `site/` and presents the real workflow,
+  report modes, trust boundary, and limitations without external assets.
+- `end --format html --open` writes and opens a self-contained HTML brief, `open --html` opens
+  the newest HTML report, and `last --open` provides a one-step review path.
+- `preview --format html|json` renders machine-readable or browser-ready proofs
+  without finalizing the active session.
+- PR and HTML reports now expose the verification scope and the captured failure
+  excerpt, not only a pass/fail headline.
+- The product site now opens in a dark proof-loop mode with a stateful run → edit
+  → redo → review demo, report-mode switcher, stronger install CTA, and no-JS
+  fallbacks that preserve the full content.
+
+### Changed
+
+- CLI PR reports default to compact detail so the useful evidence stays visible;
+  pass `--detail full` for the complete record.
+
 ### Fixed
 
 - A dangling symlink at `.debugbrief/active_session.json` is now treated as an
@@ -17,6 +41,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/COMMANDS.md` now states that `run` executes the command from the
   directory it is invoked in, not the project root, while DebugBrief state still
   lives at the project root.
+- Redo confirmation now fails closed for ambiguous shell, substitution, `eval`,
+  nested Docker, and nested Kubernetes command forms; `redo --dry-run` reports
+  the same provenance and preflight result without taking a lease or executing.
+- Reports and JSON output now normalize untrusted legacy text without allowing
+  modified filenames or tainted command/error fields to break Markdown structure.
+  JSON scalar values remain plain, `last` handles malformed report files, and
+  absolute project paths are a CLI-only opt-in.
+- Invalid command end timestamps fall back to validated event or start timestamps,
+  malformed persisted leaves degrade to controlled values, and multiline notes
+  remain intact in storage while being escaped at report-rendering time.
+- Metadata-only runner invocations such as `--help`, `--version`, collection,
+  and list modes no longer become verification claims, even with `--verify`.
+- Evidence state follows the latest outcome for each check, so a later failure
+  cannot be hidden by an earlier pass; compact PR reports keep the transition
+  and failed attempts visible.
+- Session line statistics subtract the baseline dirty delta, and HTML-only
+  reports are discoverable through `list` and `show`.
+- Persisted display fields and lease previews are terminal-safe before they
+  reach status, list, show, doctor, or recovery output.
+- Persisted JSON nesting is capped consistently across supported Python versions,
+  and first-commit Git tests configure their own author identity.
+- Escape clears the docs search and restores every section without a script error.
 
 ## [1.3.0] - 2026-06-17
 

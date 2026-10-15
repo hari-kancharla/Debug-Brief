@@ -13,17 +13,20 @@ import fcntl
 import os
 import stat
 import uuid
+from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from . import git_utils
 from .command_runner import RunResult
+from .markdown import normalize_free_text, normalize_text
 from .models import (
-    NON_SUCCESS_STATUSES,
+    COMMAND_STATUS_PASSED,
     CommandData,
     Event,
     FileChange,
     Session,
     SessionStatus,
+    valid_timestamp,
 )
 from .paths import ProjectPaths, UnsafeStateDirectory, is_valid_session_id
 from .redaction import redact_text
@@ -180,6 +183,8 @@ class SessionManager:
         self, session: Session, command_id: str, preview: str, invocation_cwd: str
     ) -> None:
         redacted_preview, _ = redact_text(preview or "")
+        redacted_preview = normalize_free_text(redacted_preview)
+        safe_cwd = normalize_free_text(str(invocation_cwd))
         atomic_write_json(
             self.paths.active_command_file,
             {
@@ -187,7 +192,7 @@ class SessionManager:
                 "session_id": session.session_id,
                 "command_id": command_id,
                 "command_preview": redacted_preview[:200],
-                "invocation_cwd": str(invocation_cwd),
+                "invocation_cwd": safe_cwd,
                 "pid": os.getpid(),
                 "started_at": now_iso8601(),
             },
@@ -250,7 +255,8 @@ class SessionManager:
         lease behind. event.data is always a dict (see Event.from_dict).
         """
         return any(
-            event.data.get("command_id") == command_id
+            isinstance(event.data, dict)
+            and event.data.get("command_id") == command_id
             for event in session.command_events()
         )
 
@@ -511,17 +517,25 @@ class SessionManager:
                 f"No active DebugBrief session. Cannot {action}. "
                 'Start one with: debugbrief start "<title>"'
             )
+        if session.status != SessionStatus.ACTIVE.value:
+            raise SessionError(
+                f"The active pointer references a {session.status} session. "
+                f"Cannot {action}; run 'debugbrief recover' first."
+            )
         return session
 
     # Lifecycle ---------------------------------------------------------------
     def start(self, title: str) -> Session:
-        clean_title = title.strip()
+        clean_title = normalize_free_text(title)
         if not clean_title:
             raise SessionError("Session title must not be empty.")
         # The title can come straight from a command line (auto-start seeds it
         # from the raw command), so scrub secrets before it is persisted to the
         # session file and the active pointer, the same as command output.
         clean_title, _ = redact_text(clean_title)
+        clean_title = normalize_free_text(clean_title)
+        if not clean_title:
+            raise SessionError("Session title must not be empty.")
 
         # Decide and create under the repo lock so two simultaneous starts cannot
         # both pass the "already active" check and create two active sessions.
@@ -551,6 +565,9 @@ class SessionManager:
                 # final report counts only what the session actually changed.
                 git_state.initial_dirty = git_utils.working_tree_fingerprints(
                     self.paths.project_root
+                )
+                git_state.initial_dirty_stats = git_utils.working_tree_numstat(
+                    self.paths.project_root, git_state.initial_sha
                 )
 
             session = Session(
@@ -599,13 +616,16 @@ class SessionManager:
         return self.start(f"Auto session {stamp}: {snippet}")
 
     def add_note(self, text: str) -> Session:
-        clean = text.strip()
+        clean = normalize_text(text).strip()
         if not clean:
             raise SessionError("Note text must not be empty.")
         # Notes are persisted to the session JSON and surfaced in reports, so a
         # secret pasted into a note (an env var, a log line) must be scrubbed
         # before it ever reaches disk, the same as captured command output.
         clean, n_redacted = redact_text(clean)
+        clean = normalize_text(clean).strip()
+        if not clean:
+            raise SessionError("Note text must not be empty.")
         with self._repo_lock():
             session = self.require_active("add a note")
             note_event = Event.note(clean, now_iso8601())
@@ -626,6 +646,12 @@ class SessionManager:
             cwd = self.paths.project_root
             result.command_data.git_head = git_utils.current_short_sha(cwd)
             result.command_data.git_changed_files = git_utils.changed_files(cwd)
+            fingerprints = git_utils.working_tree_fingerprints(cwd)
+            result.command_data.git_fingerprints = {
+                path: fingerprints[path]
+                for path in result.command_data.git_changed_files
+                if path in fingerprints
+            }
         result.command_data.command_id = command_id
         with self._repo_lock():
             # Record against the session that owns the lease, not whatever is
@@ -642,8 +668,12 @@ class SessionManager:
             if command_id is not None and self._command_recorded(session, command_id):
                 self._clear_command_lease_if(command_id)
                 return session
+            ended_at = valid_timestamp(result.command_data.ended_at)
+            if ended_at is None:
+                ended_at = valid_timestamp(result.command_data.started_at)
+            result.command_data.ended_at = ended_at or now_iso8601()
             session.events.append(
-                Event.command(result.command_data, result.command_data.started_at)
+                Event.command(result.command_data, result.command_data.ended_at)
             )
             # add_warning redacts the text, so error/warning messages that echo
             # the command or its output are scrubbed before they reach disk.
@@ -665,11 +695,17 @@ class SessionManager:
                 self._clear_command_lease_if(command_id)
             return session
 
-    def end(self, mode: str, report_format: str = "md", detail: str = "full") -> Session:
+    def end(
+        self,
+        mode: str,
+        report_format: str = "md",
+        detail: str = "full",
+        include_full_path: bool = False,
+    ) -> Session:
         # Local imports avoid an import cycle with the reporters package.
         import json
 
-        from .reporters import render_report, render_report_json
+        from .reporters import render_report, render_report_html, render_report_json
         from .utils import write_text
 
         with self._repo_lock():
@@ -708,40 +744,104 @@ class SessionManager:
             # session active and recoverable, never completed without its report
             # or pointing at a half-written file.
             artifacts: List[Tuple[Any, str]] = []
-            if report_format in ("md", "both"):
+            if report_format in ("md", "both", "all"):
                 artifacts.append(
                     (
                         self.paths.report_file(session.session_id, mode),
-                        render_report(session, mode, detail),
+                        (
+                            render_report(
+                                session, mode, detail, include_full_path=True
+                            )
+                            if include_full_path
+                            else render_report(session, mode, detail)
+                        ),
                     )
                 )
-            if report_format in ("json", "both"):
-                payload = render_report_json(session, mode)
+            if report_format in ("json", "both", "all"):
+                payload = (
+                    render_report_json(session, mode, include_full_path=True)
+                    if include_full_path
+                    else render_report_json(session, mode)
+                )
                 artifacts.append(
                     (
                         self.paths.report_json_file(session.session_id, mode),
                         json.dumps(payload, indent=2) + "\n",
                     )
                 )
-            for path, text in artifacts:
-                write_text(path, text)
+            if report_format in ("html", "all"):
+                artifacts.append(
+                    (
+                        self.paths.report_html_file(session.session_id, mode),
+                        render_report_html(
+                            session, mode, include_full_path=include_full_path
+                        ),
+                    )
+                )
+            backups: Dict[Path, Optional[str]] = {}
+            for path, _text in artifacts:
+                if os.path.lexists(path) and not is_regular_file(path):
+                    raise SessionError(
+                        f"Refusing to overwrite a non-regular report path: {path}"
+                    )
+                if is_regular_file(path):
+                    try:
+                        backups[path] = path.read_text(encoding="utf-8")
+                    except (OSError, UnicodeError) as exc:
+                        raise SessionError(
+                            f"Could not read the existing report {path}: {exc}"
+                        ) from exc
+                else:
+                    backups[path] = None
 
-            self.save_session(session)
+            written: List[Path] = []
+            try:
+                for path, text in artifacts:
+                    write_text(path, text)
+                    written.append(path)
+                self.save_session(session)
+            except BaseException:
+                for path in reversed(written):
+                    backup = backups.get(path)
+                    try:
+                        if backup is None:
+                            path.unlink(missing_ok=True)
+                        else:
+                            write_text(path, backup)
+                    except OSError:
+                        pass
+                raise
+
             self._clear_active_pointer()
             return session
 
-    def preview(self, mode: str, detail: str = "full") -> str:
+    def preview(
+        self,
+        mode: str,
+        detail: str = "full",
+        include_full_path: bool = False,
+        report_format: str = "md",
+    ) -> str:
         """Render a report for the active session without mutating anything.
 
         Works on a deep copy (via the dict round trip), so the live session
         keeps its status, timestamps, and file exactly as they are; no report
         file is written. The summary is finalized on the copy only.
         """
-        from .reporters import render_report  # local import avoids a cycle
+        from .reporters import render_report, render_report_html, render_report_json
 
         session = self.require_active("preview the report")
         copy = Session.from_dict(session.to_dict())
         self._finalize_summary(copy)
+        if report_format == "json":
+            import json
+
+            payload = render_report_json(copy, mode, include_full_path=include_full_path)
+            return json.dumps(payload, indent=2) + "\n"
+        if report_format == "html":
+            return render_report_html(copy, mode, include_full_path=include_full_path)
+        if include_full_path:
+            return render_report(copy, mode, detail, include_full_path=True)
         return render_report(copy, mode, detail)
 
     def cancel(self) -> Session:
@@ -839,7 +939,12 @@ class SessionManager:
                     result["corrupt"].append(path.name)
                     continue
                 try:
-                    Session.from_dict(read_json_safe(path))
+                    stored_session = Session.from_dict(read_json_safe(path))
+                    if (
+                        not is_valid_session_id(stored_session.session_id)
+                        or stored_session.session_id != path.stem
+                    ):
+                        raise ValueError("session id does not match filename")
                 except (ValueError, OSError, TypeError):
                     result["corrupt"].append(path.name)
         return result
@@ -858,45 +963,79 @@ class SessionManager:
             and self._command_is_active()
         )
 
+    def _active_command_metadata(self) -> Optional[Dict[str, Any]]:
+        if not os.path.lexists(self.paths.active_command_file):
+            return None
+        if not is_regular_file(self.paths.active_command_file):
+            return {"state": "unsafe", "detail": "lease is not a regular file"}
+        try:
+            data = read_json_safe(self.paths.active_command_file)
+        except (OSError, ValueError, TypeError):
+            return {"state": "unreadable", "detail": "lease could not be read"}
+        if not isinstance(data, dict):
+            return {"state": "unreadable", "detail": "lease is not an object"}
+        state = "running" if self._command_is_active() else "stale"
+        result: Dict[str, Any] = {"state": state}
+        for key in ("command_id", "command_preview", "invocation_cwd", "pid", "started_at"):
+            value = data.get(key)
+            if isinstance(value, (str, int)) and not isinstance(value, bool):
+                result[key] = normalize_free_text(value) if isinstance(value, str) else value
+        return result
+
     def build_status(self) -> Dict[str, Any]:
         """Return a structured status payload for the CLI to render."""
         pointer = self._read_active_pointer()
         background_lock = self._background_lock_held()
         if pointer is None:
-            return {"active": False, "background_lock": background_lock}
+            no_pointer_status: Dict[str, Any] = {
+                "active": False,
+                "background_lock": background_lock,
+            }
+            command = self._active_command_metadata()
+            if command is not None:
+                no_pointer_status["active_command"] = command
+            return no_pointer_status
 
         session_id = pointer.get("session_id", "")
         path = self.paths.session_file(session_id)
         if not path.exists():
-            return {
+            missing_status: Dict[str, Any] = {
                 "active": True,
                 "interrupted": True,
                 "session_id": session_id,
-                "title": pointer.get("title"),
+                "title": normalize_free_text(pointer.get("title", "")),
                 "reason": "Session file is missing.",
                 "background_lock": background_lock,
             }
+            command = self._active_command_metadata()
+            if command is not None:
+                missing_status["active_command"] = command
+            return missing_status
 
         session = self.load_session_file(session_id)
         self._recompute_counts(session)
         interrupted = session.status != SessionStatus.ACTIVE.value
-        return {
+        active_status: Dict[str, Any] = {
             "active": True,
             "interrupted": interrupted,
             "session_id": session.session_id,
-            "title": session.title,
-            "status": session.status,
-            "project_root": session.project_root,
-            "start": session.timestamps.start,
+            "title": normalize_free_text(session.title),
+            "status": normalize_free_text(session.status),
+            "project_root": normalize_free_text(session.project_root),
+            "start": normalize_free_text(session.timestamps.start or ""),
             "notes_count": session.summary.notes_count,
             "commands_count": session.summary.commands_count,
             "failed_commands_count": session.summary.failed_commands_count,
-            "branch": session.git.branch,
+            "branch": normalize_free_text(session.git.branch or ""),
             "detached_head": session.git.detached_head,
             "is_repo": session.git.is_repo,
-            "warnings": list(session.warnings),
+            "warnings": [normalize_free_text(warning) for warning in session.warnings],
             "background_lock": background_lock,
         }
+        command = self._active_command_metadata()
+        if command is not None:
+            active_status["active_command"] = command
+        return active_status
 
     # Internal helpers --------------------------------------------------------
     def _recompute_counts(self, session: Session) -> None:
@@ -904,8 +1043,8 @@ class SessionManager:
         notes = session.note_events()
         failed = 0
         for event in commands:
-            status = (event.data.get("classification") or {}).get("status")
-            if status in NON_SUCCESS_STATUSES:
+            data = CommandData.from_dict(event.data)
+            if data.classification.status != COMMAND_STATUS_PASSED:
                 failed += 1
         session.summary.notes_count = len(notes)
         session.summary.commands_count = len(commands)
@@ -926,6 +1065,7 @@ class SessionManager:
                 self.paths.project_root,
                 session.git.initial_sha,
                 session.git.initial_dirty,
+                session.git.initial_dirty_stats,
             )
             session.summary.file_changes = [
                 FileChange(status=label, path=path) for label, path in pairs

@@ -14,7 +14,7 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Tuple
+from typing import Any, Iterable, Tuple
 
 # Default preview limits for captured command output. We store previews, not
 # unbounded logs, so a single noisy command can never balloon a session file.
@@ -185,8 +185,27 @@ def read_json_safe(path: Any) -> Any:
     special file (see :func:`open_regular_text`). Raises :class:`UnsafeStateFile`
     for a non-regular target, ``OSError`` for I/O, or ``ValueError`` for bad JSON.
     """
-    with open_regular_text(path) as handle:
-        return json.load(handle)
+    try:
+        with open_regular_text(path) as handle:
+            data = json.load(handle)
+    except RecursionError as exc:
+        raise ValueError("JSON nesting is too deep") from exc
+    # Decoder recursion limits vary across Python versions. Keep persisted state
+    # shallow enough for the model and reporting layers on every supported runtime.
+    pending = [(data, 0)]
+    while pending:
+        value, depth = pending.pop()
+        if depth > 128:
+            raise ValueError("JSON nesting is too deep")
+        children: Iterable[Any]
+        if isinstance(value, dict):
+            children = value.values()
+        elif isinstance(value, list):
+            children = value
+        else:
+            continue
+        pending.extend((child, depth + 1) for child in children)
+    return data
 
 
 def write_text(path: Path, text: str) -> None:

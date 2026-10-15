@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
-from .models import Session
-from .paths import ProjectPaths
+from .models import COMMAND_STATUS_PASSED, CommandData, Session
+from .paths import ProjectPaths, is_valid_session_id
 from .reporters import VALID_MODES, build_context
 from .utils import is_regular_file, parse_iso8601, read_json_safe
 
@@ -20,8 +20,19 @@ def _start_seconds(session: Session) -> float:
         return 0.0
     try:
         return parse_iso8601(start).timestamp()
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, AttributeError, OverflowError):
         return 0.0
+
+
+def normalize_session_counts(session: Session) -> None:
+    commands = session.command_events()
+    session.summary.notes_count = len(session.note_events())
+    session.summary.commands_count = len(commands)
+    session.summary.failed_commands_count = sum(
+        CommandData.from_dict(event.data).classification.status
+        != COMMAND_STATUS_PASSED
+        for event in commands
+    )
 
 
 def load_all_sessions(paths: ProjectPaths) -> List[Session]:
@@ -42,29 +53,36 @@ def load_all_sessions(paths: ProjectPaths) -> List[Session]:
         if not is_regular_file(path):
             continue
         try:
-            sessions.append(Session.from_dict(read_json_safe(path)))
+            session = Session.from_dict(read_json_safe(path))
         except (ValueError, OSError, TypeError):
             continue  # corrupt or unreadable: skip without blocking other sessions
+        if not is_valid_session_id(session.session_id) or session.session_id != path.stem:
+            continue
+        normalize_session_counts(session)
+        sessions.append(session)
     sessions.sort(key=lambda s: (_start_seconds(s), s.session_id), reverse=True)
     return sessions
 
 
 def report_modes_for(paths: ProjectPaths, session_id: str) -> List[str]:
     """Return the report modes that have been generated for ``session_id``."""
-    modes = []
+    modes: List[str] = []
+    if not is_valid_session_id(session_id):
+        return modes
     for mode in VALID_MODES:
         # is_regular_file, not exists(): a symlinked report must not count.
         if (
             is_regular_file(paths.report_file(session_id, mode))
             or is_regular_file(paths.report_json_file(session_id, mode))
+            or is_regular_file(paths.report_html_file(session_id, mode))
         ):
             modes.append(mode)
     return modes
 
 
 def is_verified(session: Session) -> bool:
-    """True if at least one verification command passed during the session."""
-    return len(build_context(session).verification_commands) > 0
+    """True if the latest recorded verification state is verified."""
+    return build_context(session).derivation.proof_state == "verified"
 
 
 def resolve_session_id(

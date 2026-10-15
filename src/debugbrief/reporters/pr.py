@@ -20,10 +20,12 @@ class PRReporter(BaseReporter):
         return join_sections(
             [self.title_line()],
             self.one_liner_section(),
+            self.evidence_section(),
             self.metadata_lines(),
             self.warnings_section(),
             self.reproduce_verify_section(),
             self.red_to_green_section(),
+            self.observed_error_section(),
             self.changed_files_section(),
             self.timeline_section("## Timeline", condensed=True),
             self.verification_section(),
@@ -34,17 +36,14 @@ class PRReporter(BaseReporter):
     def _render_compact(self) -> str:
         """A scannable summary with the heavier sections collapsed.
 
-        The same information as the full report, but only the summary, changed
-        files, and verification stay open; metadata, the timeline, and the rest
-        move into a collapsible section so the brief is short by default.
+        The same information as the full report, with metadata and the timeline
+        collapsed. Evidence, warnings, the red-to-green transition, and failed
+        attempts stay visible because they are the parts a reviewer needs before
+        trusting the summary.
         """
         heavy = join_sections(
             self.metadata_lines(),
-            self.warnings_section(),
-            self.reproduce_verify_section(),
-            self.red_to_green_section(),
             self.timeline_section("## Timeline", condensed=True),
-            self.ruled_out_section(),
         )
         details: List[str] = []
         if heavy.strip():
@@ -59,8 +58,14 @@ class PRReporter(BaseReporter):
         return join_sections(
             [self.title_line()],
             self.one_liner_section(),
+            self.evidence_section(),
+            self.warnings_section(),
+            self.reproduce_verify_section(),
+            self.red_to_green_section(),
+            self.observed_error_section(),
             self.changed_files_section(),
             self.verification_section(),
+            self.ruled_out_section(),
             details,
             self.footer(),
         )

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from debugbrief.markdown import code_span, fenced_code
+from debugbrief.markdown import code_span, fenced_code, inline_path, plain_markdown
 from debugbrief.models import (
     COMMAND_STATUS_FAILED,
     CommandClassification,
@@ -16,6 +16,15 @@ from debugbrief.models import (
     Timestamps,
 )
 from debugbrief.reporters import render_report
+
+
+def test_plain_markdown_removes_delimiters_but_keeps_literal_backticks():
+    assert plain_markdown("Run " + code_span("echo `date`") + " now") == "Run echo `date` now"
+
+
+def test_plain_markdown_unescapes_html_once_and_paths_preserve_spaces():
+    assert plain_markdown("changed &lt;tag&gt;.py") == "changed <tag>.py"
+    assert inline_path("dir/  spaced name.py") == "dir/  spaced name.py"
 
 
 # code_span -------------------------------------------------------------------
@@ -117,5 +126,35 @@ def test_report_with_backtick_command_and_output_stays_balanced():
     incident = render_report(session, "incident")
     assert error_line in incident
     lines = incident.splitlines()
-    fence_open = lines[lines.index("Quoted verbatim from real command output:") + 2]
+    fence_open = lines[lines.index("Excerpt from recorded command output:") + 2]
     assert set(fence_open) == {"`"} and len(fence_open) >= 4
+
+
+def test_modified_filenames_and_legacy_command_error_data_are_safe():
+    session = _session_with(
+        command="echo legacy\n## command heading\x1b[2J",
+        stdout="ok\n``` injected fence\x00",
+        path="safe\n## filename <script>alert(1)</script>`name.py",
+    )
+    session.summary.file_changes[0].status = "M\n## status"
+    session.events[0].data["stderr_preview"] = (
+        "trace\n```\n\x1b[31merror\x00\n</script>\nAssertionError: ``` fence"
+    )
+    for mode in ("pr", "handoff", "incident"):
+        report = render_report(session, mode)
+        assert "\n## filename" not in report
+        assert "\n## command" not in report
+        assert "\x1b" not in report
+        assert "\x00" not in report
+        if "## Modified files" in report:
+            assert "safe ## filename" in report
+    incident = render_report(session, "incident")
+    fence_open = incident.splitlines()[
+        incident.splitlines().index("Excerpt from recorded command output:") + 2
+    ]
+    assert len(fence_open) >= 4
+
+
+def test_code_helpers_accept_non_text_and_strip_controls():
+    assert "\x1b" not in code_span({"command": "echo\x1b[2J"})
+    assert "\x1b" not in fenced_code({"error": "line\x00\n```"})

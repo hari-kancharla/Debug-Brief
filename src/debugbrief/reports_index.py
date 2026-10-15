@@ -6,15 +6,18 @@ never require an active session and never open files themselves.
 
 from __future__ import annotations
 
+import html
+import re
 from pathlib import Path
 from typing import List, Optional
 
+from .markdown import normalize_free_text
 from .reporters import VALID_MODES
 from .utils import is_regular_file, open_regular_text
 
 
 def list_reports(reports_dir: Path) -> List[Path]:
-    """Return generated report files (Markdown and JSON), newest first.
+    """Return generated report files (Markdown, JSON, and HTML), newest first.
 
     Only verified regular files are returned: is_regular_file (lstat) is the
     security check, since Path.is_file follows symlinks. A symlinked or special
@@ -22,13 +25,21 @@ def list_reports(reports_dir: Path) -> List[Path]:
     """
     if not reports_dir.is_dir():
         return []
-    reports = [
-        p
-        for p in reports_dir.iterdir()
-        if is_regular_file(p) and p.suffix in (".md", ".json")
-    ]
-    reports.sort(key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
-    return reports
+    reports: List[tuple[float, str, Path]] = []
+    try:
+        entries = reports_dir.iterdir()
+        for path in entries:
+            if not is_regular_file(path) or path.suffix not in (".md", ".json", ".html"):
+                continue
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            reports.append((mtime, path.name, path))
+    except OSError:
+        return []
+    reports.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [item[2] for item in reports]
 
 
 def latest_report(reports_dir: Path) -> Optional[Path]:
@@ -45,30 +56,42 @@ def infer_mode(report_path: Path) -> Optional[str]:
     return None
 
 
-def first_title(report_path: Path) -> Optional[str]:
-    """Return the report title (a markdown H1, or a JSON report's ``title``).
+def _plain_title(value: str) -> str:
+    text = html.unescape(value)
+    text = re.sub(r"\\([\\`*_{}\[\]|~#>+\-.])", r"\1", text)
+    return normalize_free_text(text)
 
-    Reads only a verified regular file (never follows a symlink), so a planted
-    report link cannot redirect this read to an external file.
-    """
+
+def first_title(report_path: Path) -> Optional[str]:
+    """Return a useful plain title from a verified report file."""
     if report_path.suffix == ".json":
         import json
 
         try:
             with open_regular_text(report_path) as handle:
                 data = json.load(handle)
-        except (OSError, ValueError):
+        except (OSError, UnicodeError, ValueError, TypeError, RecursionError):
             return None
         title = data.get("title") if isinstance(data, dict) else None
-        return title if isinstance(title, str) else None
+        return _plain_title(title) if isinstance(title, str) else None
+    if report_path.suffix == ".html":
+        try:
+            with open_regular_text(report_path) as handle:
+                text = handle.read()
+        except (OSError, UnicodeError):
+            return None
+        match = re.search(r"<h1[^>]*>(.*?)</h1>", text, re.IGNORECASE | re.DOTALL)
+        if match:
+            return _plain_title(re.sub(r"<[^>]+>", "", match.group(1)))
+        return None
     try:
         with open_regular_text(report_path) as handle:
             for line in handle:
                 stripped = line.strip()
                 if stripped.startswith("# "):
-                    return stripped[2:].strip()
+                    return _plain_title(stripped[2:].strip())
                 if stripped.startswith("#"):
-                    return stripped.lstrip("#").strip()
-    except OSError:
+                    return _plain_title(stripped.lstrip("#").strip())
+    except (OSError, UnicodeError, ValueError, TypeError):
         return None
     return None

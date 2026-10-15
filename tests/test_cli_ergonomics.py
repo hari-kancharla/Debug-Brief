@@ -36,7 +36,7 @@ def test_redo_reruns_last_command(paths, capsys):
     assert rc == 0
     capsys.readouterr()
 
-    rc = cli.main(["redo"])
+    rc = cli.main(["redo", "--yes"])
     assert rc == 0
     captured = capsys.readouterr()
     assert "again please" in captured.out  # the rerun streamed its output
@@ -50,7 +50,7 @@ def test_redo_reruns_last_command(paths, capsys):
 
 def test_redo_propagates_failure_exit_code(paths):
     cli.main(["run", "--", PY, "-c", "import sys; sys.exit(3)"])
-    assert cli.main(["redo"]) == 3
+    assert cli.main(["redo", "--yes"]) == 3
 
 
 def test_redo_without_session_errors(paths, capsys):
@@ -92,7 +92,7 @@ def test_redo_refuses_redacted_command(paths, capsys):
 def test_redo_keeps_original_shell_mode(paths):
     rc = cli.main(["run", "--shell", "echo from-the-shell | tr a-z A-Z"])
     assert rc == 0
-    assert cli.main(["redo"]) == 0
+    assert cli.main(["redo", "--yes"]) == 0
     events = _active_session(paths).command_events()
     assert len(events) == 2
     assert events[1].data["used_shell"] is True
@@ -111,7 +111,7 @@ def test_redo_runs_in_original_directory(paths, tmp_path, monkeypatch, capsys):
     capsys.readouterr()
 
     monkeypatch.chdir(dir_b)
-    assert cli.main(["redo"]) == 0
+    assert cli.main(["redo", "--yes"]) == 0
     out = capsys.readouterr().out
     assert run_cwd in out  # the rerun printed the ORIGINAL directory, not dir_b
     assert _active_session(paths).command_events()[-1].data["invocation_cwd"] == run_cwd
@@ -145,7 +145,7 @@ def test_redo_warns_when_directory_not_recorded(paths, capsys):
     sm.save_session(session)
     capsys.readouterr()
 
-    rc = cli.main(["redo"])
+    rc = cli.main(["redo", "--yes"])
     assert rc == 0
     assert "directory was not recorded" in capsys.readouterr().err
 
@@ -157,6 +157,9 @@ def test_end_defaults_to_pr_mode(paths, capsys):
     rc = cli.main(["end"])
     assert rc == 0
     assert paths.report_file(session_id, "pr").exists()
+    report = paths.report_file(session_id, "pr").read_text(encoding="utf-8")
+    assert "<details>" in report
+    assert "## Evidence status" in report
     assert "mode:      pr" in capsys.readouterr().out
 
 

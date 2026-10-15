@@ -1,0 +1,13 @@
+recursive-include site *
+include CHANGELOG.md
+include CONTRIBUTING.md
+include SECURITY.md
+recursive-include docs *.md
+include docs/demo.gif
+include docs/demo.tape
+recursive-include examples *.md
+recursive-include tests *.py
+recursive-include tests/snapshots *.md
+include .github/CODEOWNERS
+recursive-include .github/ISSUE_TEMPLATE *.yml
+recursive-include .github/workflows *.yml

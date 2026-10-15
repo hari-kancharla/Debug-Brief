@@ -185,8 +185,11 @@ def read_json_safe(path: Any) -> Any:
     special file (see :func:`open_regular_text`). Raises :class:`UnsafeStateFile`
     for a non-regular target, ``OSError`` for I/O, or ``ValueError`` for bad JSON.
     """
-    with open_regular_text(path) as handle:
-        return json.load(handle)
+    try:
+        with open_regular_text(path) as handle:
+            return json.load(handle)
+    except RecursionError as exc:
+        raise ValueError("JSON nesting is too deep") from exc
 
 
 def write_text(path: Path, text: str) -> None:

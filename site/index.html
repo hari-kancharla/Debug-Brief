@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f3f1e8">
+  <meta name="description" content="DebugBrief records the checks you ran, the files that changed, and the evidence behind the fix.">
+  <meta property="og:title" content="DebugBrief — Debug with evidence">
+  <meta property="og:description" content="A local debugging ledger for pull requests, handoffs, and incidents.">
+  <meta property="og:type" content="website">
+  <title>DebugBrief — Debug with evidence</title>
+  <link rel="stylesheet" href="ledger.css">
+</head>
+<body class="report-site">
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="report-header">
+    <div class="report-shell report-header-inner">
+      <a class="report-brand" href="#top" aria-label="DebugBrief home"><span class="report-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>DebugBrief</span></a>
+      <nav class="report-nav" id="report-nav" aria-label="Primary navigation"><a href="#proof">The proof</a><a href="#runners">Runners</a><a href="#limits">Limits</a><a href="docs.html">Docs</a></nav>
+      <div class="report-header-status"><i aria-hidden="true"></i><span>local / no network</span></div>
+      <button class="report-menu" type="button" aria-expanded="false" aria-controls="report-nav"><span class="sr-only">Open navigation</span><i aria-hidden="true"></i><i aria-hidden="true"></i></button>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="report-hero" id="top">
+      <div class="report-shell">
+        <div class="hero-grid">
+          <div class="hero-copy">
+            <p class="eyebrow"><span>01</span> local debugging evidence</p>
+            <h1>Debug with<br><em>evidence.</em></h1>
+            <p class="hero-lede">Record the checks, files, and pass behind your fix. One session your teammate can inspect.</p>
+            <div class="hero-actions"><a class="report-button report-button-dark" href="#install">Install the CLI <span aria-hidden="true">↘</span></a><a class="report-button" href="#proof">See the proof <span aria-hidden="true">↓</span></a></div>
+            <div class="command-box" aria-label="Recommended installation command"><span>macOS / Linux</span><code>pipx install debugbrief</code><button type="button" data-copy="pipx install debugbrief">Copy</button></div>
+            <div class="hero-facts"><span><b>01</b> No account</span><span><b>02</b> No telemetry</span><span><b>03</b> Explicit scope</span></div>
+          </div>
+
+          <div class="report-window">
+            <div class="report-window-bar"><span><i aria-hidden="true"></i> actual generated report</span><a href="sample-report.html">open full report <span aria-hidden="true">→</span></a></div>
+            <iframe src="sample-report.html" title="Actual DebugBrief generated pull request report" loading="eager"></iframe>
+            <div class="report-window-caption"><span>fig. 01</span><span>Fix token refresh race · local HTML artifact</span><a href="sample-report.html">inspect <span aria-hidden="true">→</span></a></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="report-section proof-section" id="proof">
+      <div class="report-shell">
+        <div class="section-intro"><div class="section-index">02 / THE PROOF</div><div><h2>Red to green,<br>in the order it happened.</h2><p>The useful part is not a diagnosis. It is the narrow, reviewable path from what failed to what changed to what passed.</p></div><div class="section-aside"><span>RECORDED SESSION</span><strong>2026-01-01 · 12:02:08—12:02:22</strong><small>2 recorded runs · 1 failed attempt</small></div></div>
+        <div class="proof-layout">
+          <div class="proof-timeline" aria-label="Recorded command timeline">
+            <div class="proof-event proof-fail"><time>12:02:10</time><div><strong>failed</strong><code>pytest -q</code></div><small>exit 1 · 0.181s</small></div>
+            <div class="proof-note"><span>note</span><p>Token refreshed twice for the same session.</p></div>
+            <div class="proof-change"><span>observed between checks</span><strong>2 files changed</strong><code>src/auth/refresh.py · tests/test_auth.py</code></div>
+            <div class="proof-event proof-pass"><time>12:02:11</time><div><strong>passed</strong><code>pytest -q</code></div><small>exit 0 · 0.126s</small></div>
+            <button class="replay-proof" type="button" data-replay-proof><span class="replay-mark" aria-hidden="true">↻</span><span data-replay-label>Replay the proof</span></button>
+          </div>
+          <aside class="review-questions"><div class="review-questions-head"><span>review questions</span><strong>for the next person</strong></div><strong class="review-questions-title">Can a teammate answer these without asking you?</strong><ol><li><span>Did the same check fail first?</span><b>yes</b></li><li><span>What changed between runs?</span><b>2 files</b></li><li><span>What does this not prove?</span><b>root cause</b></li></ol><p>That is the handoff: evidence first, interpretation second.</p></aside>
+        </div>
+      </div>
+    </section>
+
+    <section class="report-section runners-section" id="runners">
+      <div class="report-shell">
+        <div class="section-intro"><div class="section-index">03 / RUNNERS</div><div><h2>Works with the runner<br>you already trust.</h2><p>DebugBrief classifies the check from the command you run. Any command works; recognized runners get verification language automatically.</p></div><div class="section-aside"><span>LANGUAGE AGNOSTIC</span><strong>one recorder · many ecosystems</strong><small>no plugin required</small></div></div>
+        <div class="runner-tabs" role="tablist" aria-label="Supported test runners"><button type="button" role="tab" aria-selected="true" aria-controls="runner-pytest" id="runner-tab-pytest" data-runner-tab="pytest" class="is-active">pytest</button><button type="button" role="tab" aria-selected="false" aria-controls="runner-vitest" id="runner-tab-vitest" data-runner-tab="vitest" tabindex="-1">vitest</button><button type="button" role="tab" aria-selected="false" aria-controls="runner-go" id="runner-tab-go" data-runner-tab="go" tabindex="-1">go test</button><button type="button" role="tab" aria-selected="false" aria-controls="runner-cargo" id="runner-tab-cargo" data-runner-tab="cargo" tabindex="-1">cargo test</button><button type="button" role="tab" aria-selected="false" aria-controls="runner-make" id="runner-tab-make" data-runner-tab="make" tabindex="-1">make check</button></div>
+        <div class="runner-panels">
+          <article class="runner-panel is-active" id="runner-pytest" role="tabpanel" aria-labelledby="runner-tab-pytest" data-runner-panel="pytest"><div class="runner-panel-head"><span>classification / pytest</span><strong>recognized from the command</strong></div><div class="runner-panel-body"><div class="runner-command"><span>record</span><code>debugbrief run -- pytest -q</code><button type="button" data-copy="debugbrief run -- pytest -q">Copy</button></div><div class="runner-result runner-classification"><div><span>detected</span><strong class="result-neutral">pytest</strong><small>runner signature</small></div><i aria-hidden="true"></i><div><span>verification</span><strong>exit 0 only</strong><small>real status</small></div></div></div></article>
+          <article class="runner-panel" id="runner-vitest" role="tabpanel" aria-labelledby="runner-tab-vitest" data-runner-panel="vitest" hidden><div class="runner-panel-head"><span>classification / vitest</span><strong>recognized from the command</strong></div><div class="runner-panel-body"><div class="runner-command"><span>record</span><code>debugbrief run -- npm test -- --run</code><button type="button" data-copy="debugbrief run -- npm test -- --run">Copy</button></div><div class="runner-result runner-classification"><div><span>detected</span><strong class="result-neutral">vitest</strong><small>runner signature</small></div><i aria-hidden="true"></i><div><span>verification</span><strong>exit 0 only</strong><small>real status</small></div></div></div></article>
+          <article class="runner-panel" id="runner-go" role="tabpanel" aria-labelledby="runner-tab-go" data-runner-panel="go" hidden><div class="runner-panel-head"><span>classification / go test</span><strong>recognized from the command</strong></div><div class="runner-panel-body"><div class="runner-command"><span>record</span><code>debugbrief run -- go test ./...</code><button type="button" data-copy="debugbrief run -- go test ./...">Copy</button></div><div class="runner-result runner-classification"><div><span>detected</span><strong class="result-neutral">go test</strong><small>runner signature</small></div><i aria-hidden="true"></i><div><span>verification</span><strong>exit 0 only</strong><small>real status</small></div></div></div></article>
+          <article class="runner-panel" id="runner-cargo" role="tabpanel" aria-labelledby="runner-tab-cargo" data-runner-panel="cargo" hidden><div class="runner-panel-head"><span>classification / cargo test</span><strong>recognized from the command</strong></div><div class="runner-panel-body"><div class="runner-command"><span>record</span><code>debugbrief run -- cargo test</code><button type="button" data-copy="debugbrief run -- cargo test">Copy</button></div><div class="runner-result runner-classification"><div><span>detected</span><strong class="result-neutral">cargo test</strong><small>runner signature</small></div><i aria-hidden="true"></i><div><span>verification</span><strong>exit 0 only</strong><small>real status</small></div></div></div></article>
+          <article class="runner-panel" id="runner-make" role="tabpanel" aria-labelledby="runner-tab-make" data-runner-panel="make" hidden><div class="runner-panel-head"><span>classification / make check</span><strong>recognized from the command</strong></div><div class="runner-panel-body"><div class="runner-command"><span>record</span><code>debugbrief run -- make check</code><button type="button" data-copy="debugbrief run -- make check">Copy</button></div><div class="runner-result runner-classification"><div><span>detected</span><strong class="result-neutral">make check</strong><small>runner signature</small></div><i aria-hidden="true"></i><div><span>verification</span><strong>exit 0 only</strong><small>real status</small></div></div></div></article>
+        </div>
+        <div class="runner-footer"><span>Any other command still records output, exit state, duration, and notes.</span><a href="docs.html">See the full command model <span aria-hidden="true">→</span></a></div>
+      </div>
+    </section>
+
+    <section class="limits-band" id="limits">
+      <div class="report-shell limits-grid">
+        <div class="limits-index">04 / LIMITS</div>
+        <div class="limits-copy"><p class="eyebrow"><span>●</span> the honest part</p><h2>What it<br>won’t claim.</h2><p>DebugBrief is an explicit foreground recorder. It does not watch your machine, call a model, or turn a file diff into a diagnosis.</p></div>
+        <div class="limits-list"><div><b>01</b><strong>No inferred root cause</strong><p>The report says what was recorded, not what you meant.</p></div><div><b>02</b><strong>No background watcher</strong><p>You choose the command. Nothing runs behind your back.</p></div><div><b>03</b><strong>No silent uploads</strong><p>Sessions and reports stay under your project’s <code>.debugbrief/</code> directory.</p></div></div>
+        <div class="limits-files"><div class="file-row file-head"><span>~/project/.debugbrief</span><span>local</span></div><div class="file-row"><b>▾</b><strong>sessions</strong><small>canonical records</small></div><div class="file-row"><b>◇</b><code>8df2…json</code><small>0600</small></div><div class="file-row"><b>▾</b><strong>reports</strong><small>reviewable artifacts</small></div><div class="file-row"><b>◇</b><code>8df2-pr.html</code><small>ready</small></div></div>
+      </div>
+    </section>
+
+    <section class="install-band" id="install">
+      <div class="report-shell install-grid"><div><span class="section-index">05 / START</span><h2>Keep your editor.<br>Keep your runner.<br><em>Add the evidence.</em></h2><p>Python 3.9+ · Linux and macOS · no account, daemon, or model key.</p></div><div class="install-command-large"><span>next step</span><strong>Read the docs, then run the command above.</strong><div class="install-panel-links"><a href="docs.html">Read the docs <span aria-hidden="true">→</span></a><a href="https://github.com/harihkk/Debug-Brief">View on GitHub <span aria-hidden="true">↗</span></a></div></div></div>
+    </section>
+  </main>
+
+  <footer class="report-footer"><div class="report-shell"><div><a class="report-brand" href="#top"><span class="report-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>DebugBrief</span></a><p>Debug with evidence.</p></div><div class="footer-links"><a href="#proof">The proof</a><a href="#runners">Runners</a><a href="#limits">Limits</a><a href="docs.html">Docs</a></div><small>MIT licensed · local-first · built from explicit evidence</small></div></footer>
+  <div class="report-toast" role="status" aria-live="polite" data-toast></div>
+  <script src="ledger.js"></script>
+</body>
+</html>

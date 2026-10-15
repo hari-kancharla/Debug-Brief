@@ -7,7 +7,7 @@ import sys
 import pytest
 
 from debugbrief.command_runner import run_command
-from debugbrief.models import Session, SessionStatus
+from debugbrief.models import Event, Session, SessionStatus
 from debugbrief.session_manager import SessionError, SessionManager
 from debugbrief.utils import read_json
 
@@ -58,11 +58,50 @@ def test_counts_update(nogit_paths):
     assert status["failed_commands_count"] == 1
 
 
+def test_counts_normalize_malformed_passed_command_events(nogit_paths):
+    manager = SessionManager(nogit_paths)
+    session = manager.start("malformed counts")
+    session.events.append(
+        Event(
+            type="command",
+            timestamp="2026-01-01T00:00:00Z",
+            data={
+                "command": "custom-check",
+                "classification": {"status": "passed"},
+                "exit_code": 1,
+            },
+        )
+    )
+    session.events.append(
+        Event(
+            type="command",
+            timestamp="2026-01-01T00:00:01Z",
+            data={"command": "another-check", "classification": {"status": "unknown"}},
+        )
+    )
+    manager.save_session(session)
+    status = manager.build_status()
+    assert status["commands_count"] == 2
+    assert status["failed_commands_count"] == 2
+
+
 def test_start_while_active_raises(nogit_paths):
     manager = SessionManager(nogit_paths)
     manager.start("one")
     with pytest.raises(SessionError):
         manager.start("two")
+
+
+def test_stale_pointer_to_finished_session_cannot_be_mutated(nogit_paths):
+    manager = SessionManager(nogit_paths)
+    session = manager.start("finished but pointed")
+    session.status = SessionStatus.COMPLETED.value
+    manager.save_session(session)
+    with pytest.raises(SessionError, match="recover"):
+        manager.add_note("must not append")
+    result = manager.recover()
+    assert result["action"] == "cleared_stale_pointer"
+    assert manager.has_active() is False
 
 
 def test_note_without_active_raises(nogit_paths):
@@ -144,6 +183,15 @@ def test_no_active_status(nogit_paths):
     manager = SessionManager(nogit_paths)
     status = manager.build_status()
     assert status == {"active": False, "background_lock": False}
+
+
+def test_status_exposes_active_command_metadata(nogit_paths):
+    manager = SessionManager(nogit_paths)
+    manager.start("running")
+    with manager.command_lease("pytest -q", str(nogit_paths.project_root)):
+        status = manager.build_status()
+    assert status["active_command"]["state"] == "running"
+    assert status["active_command"]["command_preview"] == "pytest -q"
 
 
 def test_end_format_both_writes_md_and_json(nogit_paths):

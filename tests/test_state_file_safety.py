@@ -163,6 +163,13 @@ def test_read_json_safe_reads_regular_and_rejects_non_regular(tmp_path):
         read_json_safe(tmp_path / "fifo.json")
 
 
+def test_read_json_safe_converts_deep_nesting_to_value_error(tmp_path):
+    deep = tmp_path / "deep.json"
+    deep.write_text("[" * 2000 + "]" * 2000, encoding="utf-8")
+    with pytest.raises(ValueError, match="nesting"):
+        read_json_safe(deep)
+
+
 def test_open_regular_binary_rejects_non_regular(tmp_path):
     # The binary reader used by dirty-file fingerprinting refuses a symlink (via
     # O_NOFOLLOW) and a FIFO (via O_NONBLOCK + fstat), closing the lstat race.

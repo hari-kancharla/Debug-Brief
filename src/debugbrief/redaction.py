@@ -46,12 +46,16 @@ _Replacement = Union[str, Callable[["re.Match[str]"], str]]
 
 
 def _kv_repl(match: "re.Match[str]") -> str:
-    # Preserve the key, separator and any surrounding quotes; mask the value.
-    open_quote = match.group("q") or ""
-    return f"{match.group('key')}{open_quote}{PLACEHOLDER}{open_quote}"
+    return f"{match.group('key')}{PLACEHOLDER}"
 
 
-# Order matters: multi-line and structured shapes first, broad key/value last.
+def _quoted_kv_repl(match: "re.Match[str]") -> str:
+    quote = match.group("q")
+    return f"{match.group('key')}{quote}{PLACEHOLDER}{quote}"
+
+
+# Order matters: multi-line and structured shapes first, then quoted and
+# delimiter-bounded key/value forms, then the broad fallback.
 _RULES: List[Tuple["re.Pattern[str]", _Replacement]] = [
     # PEM-style private key blocks (any key type), including the body.
     (
@@ -80,10 +84,23 @@ _RULES: List[Tuple["re.Pattern[str]", _Replacement]] = [
     (re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}\b"), PLACEHOLDER),  # OpenAI-style
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), PLACEHOLDER),  # AWS access key id
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"), PLACEHOLDER),  # GitHub tokens
-    # Generic key/value pairs whose key name looks sensitive.
+    # Quoted values may contain spaces and escaped quotes; capture the complete
+    # quoted value before replacing it.
     (
         re.compile(
-            r"(?i)" + _SENSITIVE_KEY_NAME + r"(?P<q>[\"'])?(?P<val>[^\s\"',;]+)(?P=q)?"
+            r"(?i)"
+            + _SENSITIVE_KEY_NAME
+            + r"(?P<q>[\"'])(?P<val>(?:\\.|(?!(?P=q)).)*)(?P=q)"
+        ),
+        _quoted_kv_repl,
+    ),
+    # Unquoted values are bounded by line/shell delimiters. If a value contains
+    # spaces, the complete remainder is masked rather than leaving a secret tail.
+    (
+        re.compile(
+            r"(?i)"
+            + _SENSITIVE_KEY_NAME
+            + r"(?P<val>[^\s\r\n\"',;&|][^\r\n\"',;&|]*)"
         ),
         _kv_repl,
     ),

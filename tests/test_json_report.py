@@ -73,7 +73,9 @@ def test_json_has_expected_keys():
         "title",
         "git",
         "counts",
+        "line_stats",
         "one_liner",
+        "evidence",
         "reproduce_command",
         "verify_command",
         "red_to_green",
@@ -84,9 +86,14 @@ def test_json_has_expected_keys():
         "verification",
         "notes",
         "redaction_applied",
+        "command_capture_status",
     ]:
         assert key in payload, key
     assert payload["mode"] == "pr"
+    assert payload["evidence"]["state"] == "verified"
+    assert payload["evidence"]["root_cause"] == "not_inferred"
+    assert "recorded check" in payload["evidence"]["scope"]
+    assert payload["command_capture_status"] == "full"
 
 
 def test_json_matches_markdown_derived_content():
@@ -94,9 +101,9 @@ def test_json_matches_markdown_derived_content():
     payload = render_report_json(session, "pr")
     ctx = build_context(session)
 
-    # The derived one-liner is identical in both formats.
-    assert payload["one_liner"] == ctx.derivation.one_liner
-    assert payload["one_liner"] and payload["one_liner"] in render_to_md(session)
+    assert payload["one_liner"] and "`" not in payload["one_liner"]
+    assert "pytest" in payload["one_liner"]
+    assert payload["one_liner"] in render_to_md(session).replace("`", "")
 
     # Reproduce/verify and observed error agree with the derivation.
     assert payload["reproduce_command"] == ctx.derivation.reproduce_command
@@ -109,7 +116,25 @@ def test_json_matches_markdown_derived_content():
 
     # Counts and changed files line up with the summary.
     assert payload["counts"]["commands"] == 2
+    assert payload["line_stats"] == {"added": 5, "deleted": 1}
     assert payload["changed_files"] == [{"status": "M", "path": "src/x.py"}]
+
+
+def test_json_preserves_structured_command_and_path_whitespace():
+    session = _session()
+    session.events[-1].data["command"] = "echo  a   b"
+    session.summary.modified_files = ["dir/  spaced name.py"]
+    session.summary.file_changes = [FileChange("M", "dir/  spaced name.py")]
+    payload = render_report_json(session, "pr")
+    assert payload["verify_command"] == "echo  a   b"
+    assert payload["changed_files"][0]["path"] == "dir/  spaced name.py"
+
+
+def test_json_summary_preserves_literal_backticks_in_commands():
+    session = _session()
+    session.events[-1].data["command"] = "echo `date`"
+    payload = render_report_json(session, "pr")
+    assert "echo `date`" in payload["one_liner"]
 
 
 def render_to_md(session):

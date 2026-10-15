@@ -12,7 +12,7 @@ DebugBrief intentionally does NOT:
 - make network calls at runtime,
 - capture shell history,
 - run a background daemon,
-- ship a web UI or TUI,
+- ship a runtime web UI or TUI (the repository may contain a static product site),
 - add new runtime dependencies. DebugBrief uses the standard library and native
   `git`, plus one conditional dependency: the `tomli` TOML parser on Python 3.9
   and 3.10, where the standard-library `tomllib` is not yet available.

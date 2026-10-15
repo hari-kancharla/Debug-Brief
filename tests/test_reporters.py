@@ -112,7 +112,9 @@ def test_pr_required_sections():
         "## Failed attempts",
     ]:
         assert header in report, header
-    # Derived one-liner reflects the real transition, not a templated overview.
+    assert "## Evidence status" in report
+    assert "**State:** verified" in report
+    assert "**Root cause:** Not inferred by DebugBrief." in report
     assert "Failing check `pytest tests/test_auth.py` passed" in report
     # Verification passed once: must be reflected, not fabricated.
     assert "[passed] test (pytest)" in report
@@ -122,12 +124,42 @@ def test_pr_required_sections():
     assert "No outstanding risks were detected" not in report
 
 
+def test_historical_pass_is_labeled_when_a_later_check_fails():
+    session = _rich_session()
+    timestamp = session.timestamps.end
+    session.events.insert(
+        -1,
+        _command_event(
+            "pytest tests/test_auth.py",
+            COMMAND_STATUS_FAILED,
+            timestamp,
+            1,
+            is_test=True,
+            tool="pytest",
+        ),
+    )
+    report = render_report(session, "pr")
+    assert "Verify (earlier pass; overall unverified)" in report
+    assert "**State:** unverified" in report
+    assert "[passed] test" not in report
+
+
 def test_pr_red_to_green_correlates_files():
     report = render_report(_rich_session(), "pr")
     assert "correlation, not proven cause" in report
     assert "`src/auth.py`" in report
     # Honest phrasing: never claims the files fixed it.
     assert "fixed" not in report.lower()
+
+
+def test_red_to_green_reports_a_commit_boundary_instead_of_no_changes():
+    session = _rich_session()
+    for index, event in enumerate(session.command_events()):
+        event.data["git_head"] = "commit-a" if index == 0 else "commit-b"
+        event.data["git_changed_files"] = []
+    report = render_report(session, "pr")
+    assert "commit boundary was recorded" in report
+    assert "No tracked file changes were recorded" not in report
 
 
 def test_handoff_required_sections():
@@ -169,7 +201,7 @@ def test_no_notes_does_not_fabricate():
     session.events = [e for e in session.events if e.type != "note"]
     session.summary.notes_count = 0
     report = render_report(session, "pr")
-    # The report still renders and never invents findings.
+    assert "**State:** verified" in report
     assert report.startswith("# Fix auth token refresh race")
     assert "## Timeline" in report
 
@@ -189,6 +221,7 @@ def test_no_verification_is_honest():
     )
     session.summary = Summary(commands_count=1, command_capture_status="full")
     report = render_report(session, "pr")
+    assert "**State:** unverified" in report
     assert "no verification commands were run" in report.lower()
     assert "No verification commands" in report
 
@@ -222,6 +255,9 @@ def test_compact_pr_report_collapses_heavy_sections():
     assert "<details>" in compact
     head = compact.split("<details>")[0]
     assert "## Summary" in head  # the derived one-liner stays up top
+    assert "## Evidence status" in head
+    assert "## Red to green" in head
+    assert "## Failed attempts" in head
     assert "## Session metadata" not in head  # metadata is folded in
     assert "## Session metadata" in compact  # but still present, just collapsed
     # The visible (non-collapsed) part is much shorter than the full report.
@@ -233,6 +269,8 @@ def test_failed_command_is_listed_as_a_failed_attempt():
     # The failing pytest run is surfaced under "Failed attempts" (a failed
     # command is an attempt that did not pass, not a proven ruled-out cause).
     assert "## Failed attempts" in report
+    assert "## Observed error" in report
+    assert "AssertionError: token mismatch" in report
     assert "pytest tests/test_auth.py` -> failed (exit 1)" in report
 
 

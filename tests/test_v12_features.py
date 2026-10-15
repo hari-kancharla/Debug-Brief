@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 
 import pytest
@@ -203,6 +204,16 @@ def test_end_is_transactional_on_report_write_failure(paths, monkeypatch):
     assert not paths.reports_dir.exists() or not list(paths.reports_dir.glob("*"))
 
 
+def test_status_shows_active_command(paths, capsys):
+    manager = SessionManager(paths)
+    manager.start("running command")
+    with manager.command_lease("pytest -q", str(paths.project_root)):
+        assert cli.main(["status"]) == 0
+    output = capsys.readouterr().out
+    assert "command:  running" in output
+    assert "pytest -q" in output
+
+
 def test_init_sets_up_storage_and_prints_guidance(paths, capsys):
     rc = cli.main(["init"])
     assert rc == 0
@@ -277,6 +288,20 @@ def test_preview_renders_without_mutating(paths, capsys):
     assert paths.session_file(session.session_id).read_bytes() == before
     assert manager.load_active().status == "ACTIVE"
     assert not paths.reports_dir.exists() or not list(paths.reports_dir.glob("*"))
+
+
+def test_preview_html_and_json_are_clean_machine_outputs(paths, capsys):
+    manager = SessionManager(paths)
+    manager.start("format preview")
+    manager.add_note("a finding")
+    capsys.readouterr()
+    assert cli.main(["preview", "--format", "html"]) == 0
+    html = capsys.readouterr().out
+    assert html.startswith("<!doctype html>")
+    assert "Preview of an active session" not in html
+    assert cli.main(["preview", "--format", "json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["title"] == "format preview"
 
 
 def test_preview_mid_session_with_commands(paths, capsys):

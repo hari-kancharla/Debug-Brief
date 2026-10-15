@@ -2,11 +2,13 @@
 
 [![CI](https://github.com/harihkk/Debug-Brief/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/harihkk/Debug-Brief/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/debugbrief?cacheSeconds=3600)](https://pypi.org/project/debugbrief/)
 
-Record what you do while debugging and turn it into an evidence-backed Markdown report for a pull request, a handoff, or an incident note.
+Record what you do while debugging and turn it into an evidence-backed report for a pull request, a handoff, or an incident note.
 
 ![A failing test streams live, the fix lands, redo passes, and the generated report appears](https://raw.githubusercontent.com/harihkk/Debug-Brief/main/docs/demo.gif)
 
 DebugBrief captures the notes you write and the commands you run, then builds a report from what actually happened: what you tried, what failed, what passed, and which files changed in between. It does not use AI and does not infer a root cause or report a test result you did not get.
+
+The product site is a static, dependency-free walkthrough of the workflow: [open the site source](https://github.com/harihkk/Debug-Brief/tree/main/site), or serve `site/index.html` locally. It is included in the source distribution and is intentionally repository/deployment content rather than runtime wheel data.
 
 ## Install
 
@@ -21,15 +23,13 @@ Plain `pip install debugbrief` works too. DebugBrief needs Python 3.9 or newer. 
 ## Quickstart
 
 ```bash
-debugbrief start "Fix add() returning wrong result"
-debugbrief note "add() subtracts instead of adds; the test expects 5."
-debugbrief run -- python -m pytest -q test_calc.py   # fails
-# make your fix
+debugbrief run -- pytest -q test_calc.py             # auto-starts a local session
+# make the fix
 debugbrief redo                                      # same test, now passes
-debugbrief end                                       # writes the PR report
+debugbrief end --format html --open                 # review the proof in your browser
 ```
 
-Everything after `--` runs exactly as you typed it, with its output streaming live to your terminal. DebugBrief flags (`--timeout`, `--shell`, `--no-redact`, `--verify`) go before the `--`. `redo` re-runs the last captured command, and `end` defaults to the `pr` report mode.
+A session title and notes are optional; add them when the output tells you something worth keeping. Everything after `--` runs exactly as you typed it, with its output streaming live to your terminal. DebugBrief flags (`--timeout`, `--shell`, `--no-redact`, `--verify`) go before the `--`. `redo` re-runs the last captured command; use `redo --dry-run` to preview it without a lease or execution. Conservative destructive redos ask for confirmation, and `--yes` bypasses that prompt. `end` defaults to the `pr` report mode.
 
 Tip: a one-line alias makes the capture prefix disappear in daily use.
 
@@ -59,10 +59,12 @@ Full samples: [PR](https://github.com/harihkk/Debug-Brief/blob/main/examples/sam
 
 ## How it works
 
-- `run` executes a command under a pseudo-terminal so its output streams live, then records the real exit code, a bounded output preview, the duration, and a per-command `git` snapshot.
-- Pass or fail comes only from the exit code. A command counts as verified only when a recognized test, build, lint, or typecheck runner actually exits 0.
+- `run` executes a command under a pseudo-terminal so its output streams live, then records the real exit code, a bounded output preview, the duration, and a per-command `git` snapshot when the project is a repository.
+- Pass or fail comes only from the exit code. A command counts as verified when a recognized test, build, lint, or typecheck runner exits 0, or when you explicitly declare another command with `--verify` and its exit status is trustworthy.
 - It works with any language. A recognized runner (pytest, jest, vitest, go test, cargo test, dotnet test, make check, and more) is classified automatically. Any other command is still captured, and you mark it a check with `--verify`.
-- `end` derives the report from those events: the red-to-green window, the reproduce and verify commands, a timeline, the observed error, and the failed attempts. Empty sections are omitted.
+- `end` derives the report from those events: an explicit evidence state, the red-to-green window, the reproduce and verify commands, a timeline, the observed error, and the failed attempts. PR reports are compact by default; pass `--detail full` for the complete record. Empty sections are omitted.
+- `end --format html` writes a self-contained browser view; `end --format all` writes Markdown, JSON, and HTML together. Review it with `debugbrief open --html`, or use `debugbrief last --open` for a one-step handoff.
+- Generated reports show only the local repository basename by default; pass `--include-full-path` to `end` or `preview` when the absolute project root is intentional.
 - Secrets are redacted before anything is written to disk. Redaction is best effort; `--no-redact` opts out for a single command.
 
 Full command reference and the complete recognized-runner list: [docs/COMMANDS.md](https://github.com/harihkk/Debug-Brief/blob/main/docs/COMMANDS.md). Security model and redaction details: [SECURITY.md](https://github.com/harihkk/Debug-Brief/blob/main/SECURITY.md).
@@ -75,15 +77,16 @@ debugbrief end --stdout | gh pr comment --body-file -
 
 ## Commands
 
-The five you use most:
+The six you use most:
 
 | Command | What it does |
 | --- | --- |
 | `start "<title>"` | Start a session |
 | `note <text>` | Record an observation |
 | `run -- <command>` | Run and capture a command |
-| `redo` | Re-run the last captured command |
-| `end [--mode pr\|handoff\|incident]` | Finalize and write a report (default `pr`) |
+| `redo [--dry-run] [--yes]` | Re-run the last captured command, with a safe preview/confirmation gate |
+| `end [--mode pr\|handoff\|incident] [--format md\|json\|html\|both\|all]` | Finalize and write a report (default `pr`, Markdown) |
+| `open --html` / `last --open` | Review the saved proof in a browser or editor |
 
 The rest:
 
@@ -91,8 +94,8 @@ The rest:
 | --- | --- |
 | `init` | Set up the project and show the workflow |
 | `status` | Show the active session |
-| `preview [--mode ...]` | Print the report without ending the session |
-| `cancel [--yes]` | Discard the active session, no report |
+| `preview [--mode ...] [--format md\|json\|html]` | Print a report preview without ending the session |
+| `cancel [--yes]` | Abandon the active session; no report, local record retained |
 | `doctor [--fix]` | Health-check the project and state |
 | `recover` | Repair a broken session pointer after a crash |
 | `last` | Show the most recent report path |

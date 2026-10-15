@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import List
 
 from ..derive import next_step_notes
-from ..markdown import code_span
+from ..markdown import code_span, inline_text, normalize_free_text
 from .base import BaseReporter, join_sections
 
 
@@ -16,6 +16,7 @@ class HandoffReporter(BaseReporter):
         return join_sections(
             [self.title_line()],
             self.one_liner_section(),
+            self.evidence_section(),
             self.metadata_lines(),
             self.warnings_section(),
             self._current_status_section(),
@@ -30,7 +31,7 @@ class HandoffReporter(BaseReporter):
 
     def _current_status_section(self) -> List[str]:
         lines = ["## Current status", ""]
-        verified = len(self.ctx.verification_commands) > 0
+        verified = self.ctx.derivation.proof_state == "verified"
         failed = len(self.ctx.currently_failing)
 
         if verified and failed == 0:
@@ -60,7 +61,7 @@ class HandoffReporter(BaseReporter):
             )
             return lines
         for _timestamp, text in self.ctx.notes:
-            lines.append(f"- {text}")
+            lines.append(f"- {inline_text(text)}")
         return lines
 
     def _repo_state_section(self) -> List[str]:
@@ -73,8 +74,13 @@ class HandoffReporter(BaseReporter):
         )
         lines.append(f"- Branch: {code_span(branch)}")
         lines.append(f"- HEAD at session end: {code_span(_sha(s.git.final_sha))}")
+        modified_files = (
+            s.summary.modified_files
+            if isinstance(s.summary.modified_files, list)
+            else []
+        )
         lines.append(
-            f"- Uncommitted changes: {len(s.summary.modified_files)} file(s), "
+            f"- Session changes: {len(modified_files)} file(s), "
             f"+{s.summary.lines_added} / -{s.summary.lines_deleted} lines."
         )
         return lines
@@ -87,11 +93,12 @@ class HandoffReporter(BaseReporter):
         lines = ["## Suggested next steps", ""]
         lines.append("_Based only on the notes you recorded:_")
         for note in steps:
-            lines.append(f"- {note}")
+            lines.append(f"- {inline_text(note)}")
         return lines
 
 
 def _sha(value):
-    if not value:
+    text = normalize_free_text(value)
+    if not text:
         return "n/a"
-    return value[:12]
+    return text[:12]

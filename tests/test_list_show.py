@@ -9,6 +9,7 @@ import pytest
 
 from debugbrief import cli, sessions_index
 from debugbrief.models import (
+    COMMAND_STATUS_FAILED,
     COMMAND_STATUS_PASSED,
     CommandClassification,
     CommandData,
@@ -88,10 +89,111 @@ def test_list_json(paths, capsys):
     assert "report_modes" in payload[0]
 
 
+def test_list_normalizes_malformed_stored_command_counts(paths, capsys):
+    session = _make_session(
+        paths,
+        "aaaaaaaa-0000-4000-8000-000000000001",
+        "Malformed counts",
+        "2026-01-01T00:00:00.000Z",
+    )
+    session.events.append(
+        Event(
+            type="command",
+            timestamp="2026-01-01T00:00:01.000Z",
+            data={
+                "command": "pytest --version",
+                "classification": {"status": "passed"},
+                "exit_code": 1,
+            },
+        )
+    )
+    session.summary.commands_count = 0
+    session.summary.failed_commands_count = 0
+    atomic_write_json(paths.session_file(session.session_id), session.to_dict())
+    assert cli.cmd_list(argparse.Namespace(json=True)) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload[0]["commands_count"] == 2
+    assert payload[0]["failed_commands_count"] == 1
+
+
+def test_show_json_normalizes_malformed_stored_command_counts(paths, capsys):
+    session = _make_session(
+        paths,
+        "aaaaaaaa-0000-4000-8000-000000000001",
+        "Malformed show counts",
+        "2026-01-01T00:00:00.000Z",
+    )
+    session.events.append(
+        Event(
+            type="command",
+            timestamp="2026-01-01T00:00:01.000Z",
+            data={
+                "command": "pytest --version",
+                "classification": {"status": "passed"},
+                "exit_code": 1,
+            },
+        )
+    )
+    session.summary.commands_count = 0
+    session.summary.failed_commands_count = 0
+    atomic_write_json(paths.session_file(session.session_id), session.to_dict())
+    assert cli.cmd_show(
+        argparse.Namespace(session_id=session.session_id, json=True)
+    ) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["summary"]["commands_count"] == 2
+    assert payload["summary"]["failed_commands_count"] == 1
+
+
+def test_show_json_canonicalizes_nonfinite_command_data(paths, capsys):
+    session = _make_session(
+        paths,
+        "aaaaaaaa-0000-4000-8000-000000000001",
+        "Nonfinite command",
+        "2026-01-01T00:00:00.000Z",
+    )
+    session.events[-1].data["duration_seconds"] = float("nan")
+    session.events.append(
+        Event(type="snapshot", timestamp="2026-01-01T00:00:02.000Z", data={"value": float("nan")})
+    )
+    atomic_write_json(paths.session_file(session.session_id), session.to_dict())
+    assert cli.cmd_show(
+        argparse.Namespace(session_id=session.session_id, json=True)
+    ) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["events"][-2]["data"]["duration_seconds"] == 0.0
+    assert payload["events"][-1]["data"]["value"] is None
+
+
 def test_list_json_empty(paths, capsys):
     rc = cli.cmd_list(argparse.Namespace(json=True))
     assert rc == 1
     assert capsys.readouterr().out.strip() == "[]"
+
+
+def test_is_verified_uses_latest_check_outcome(paths):
+    session = _make_session(
+        paths,
+        "aaaaaaaa-0000-4000-8000-000000000001",
+        "Later failure",
+        "2026-01-01T00:00:00.000Z",
+    )
+    session.events.append(
+        Event.command(
+            CommandData(
+                command="python -m pytest",
+                started_at="2026-01-01T00:00:02.000Z",
+                ended_at="2026-01-01T00:00:03.000Z",
+                duration_seconds=0.1,
+                exit_code=1,
+                classification=CommandClassification(
+                    is_test=True, tool="pytest", status=COMMAND_STATUS_FAILED
+                ),
+            ),
+            "2026-01-01T00:00:03.000Z",
+        )
+    )
+    assert sessions_index.is_verified(session) is False
 
 
 # show ---------------------------------------------------------------------
@@ -142,6 +244,19 @@ def test_show_json(paths, capsys):
 
 
 # sessions_index -----------------------------------------------------------
+def test_load_all_sessions_requires_body_id_to_match_filename(paths):
+    filename_id = "aaaaaaaa-0000-4000-8000-000000000001"
+    body_id = "bbbbbbbb-0000-4000-8000-000000000002"
+    session = _make_session(paths, body_id, "Wrong binding", "2026-01-01T00:00:00.000Z")
+    paths.ensure_directories()
+    paths.session_file(filename_id).write_text(
+        json.dumps(session.to_dict()), encoding="utf-8"
+    )
+    paths.session_file(body_id).unlink()
+    assert sessions_index.load_all_sessions(paths) == []
+    assert sessions_index.report_modes_for(paths, "../../outside") == []
+
+
 def test_resolve_session_id(paths):
     _make_session(paths, "abc11111-0000-4000-8000-000000000001", "First", "2026-01-01T00:00:00.000Z")
     _make_session(paths, "abc22222-0000-4000-8000-000000000002", "Second", "2026-02-01T00:00:00.000Z")

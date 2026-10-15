@@ -6,6 +6,8 @@ All state lives under ``<project_root>/.debugbrief/``:
         active_session.json
         sessions/<session_id>.json
         reports/<session_id>-<mode>.md
+        reports/<session_id>-<mode>.json
+        reports/<session_id>-<mode>.html
 
 The project root is the enclosing Git repo root when inside a repo, otherwise
 the current working directory.
@@ -120,6 +122,19 @@ class ProjectPaths:
     def report_json_file(self, session_id: str, mode: str) -> Path:
         return self.reports_dir / f"{session_id}-{mode}.json"
 
+    def report_html_file(self, session_id: str, mode: str) -> Path:
+        return self.reports_dir / f"{session_id}-{mode}.html"
+
+    def existing_report_file(self, session_id: str, mode: str) -> Optional[Path]:
+        for path in (
+            self.report_file(session_id, mode),
+            self.report_json_file(session_id, mode),
+            self.report_html_file(session_id, mode),
+        ):
+            if is_regular_file(path):
+                return path
+        return None
+
     def assert_state_dirs_safe(self) -> None:
         """Fail if any existing state directory is a symlink or not a directory.
 
@@ -176,16 +191,48 @@ def ensure_local_ignore(paths: ProjectPaths) -> Tuple[bool, List[str]]:
         return False, warnings
 
     git_dir = paths.repo_root / ".git"
-    # Handle worktrees / submodules where .git is a file pointing elsewhere.
-    if git_dir.is_file():
+    try:
+        git_info = os.lstat(git_dir)
+    except OSError:
+        git_info = None
+    if git_info is None:
+        warnings.append(
+            "Could not locate real Git metadata for .git/info/exclude; "
+            ".debugbrief/ may not be ignored automatically."
+        )
+        return False, warnings
+    if stat.S_ISREG(git_info.st_mode):
         warnings.append(
             "Could not update .git/info/exclude (this looks like a git worktree "
             "or submodule). .debugbrief/ may not be ignored automatically; add it "
             "to your ignore rules manually if desired."
         )
         return False, warnings
+    if git_info is not None and (
+        stat.S_ISLNK(git_info.st_mode) or not stat.S_ISDIR(git_info.st_mode)
+    ):
+        warnings.append(
+            "Could not update .git/info/exclude (.git is not a real directory). "
+            "Add .debugbrief/ to your ignore rules manually if desired."
+        )
+        return False, warnings
 
     info_dir = git_dir / "info"
+    if os.path.lexists(info_dir):
+        try:
+            info_stat = os.lstat(info_dir)
+        except OSError:
+            info_stat = None
+        if (
+            info_stat is None
+            or stat.S_ISLNK(info_stat.st_mode)
+            or not stat.S_ISDIR(info_stat.st_mode)
+        ):
+            warnings.append(
+                "Could not update .git/info/exclude (info is not a real directory). "
+                "Add .debugbrief/ to your ignore rules manually if desired."
+            )
+            return False, warnings
     exclude_file = info_dir / "exclude"
     entry = f"{DEBUGBRIEF_DIRNAME}/"
 
@@ -209,7 +256,9 @@ def ensure_local_ignore(paths: ProjectPaths) -> Tuple[bool, List[str]]:
             if entry in existing_lines or DEBUGBRIEF_DIRNAME in existing_lines:
                 return False, warnings
             prefix = "" if existing.endswith("\n") or existing == "" else "\n"
-            with open(exclude_file, "a", encoding="utf-8") as handle:
+            flags = os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(exclude_file, flags)
+            with os.fdopen(fd, "a", encoding="utf-8") as handle:
                 handle.write(f"{prefix}{entry}\n")
             return True, warnings
         info_dir.mkdir(parents=True, exist_ok=True)

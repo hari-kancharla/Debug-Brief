@@ -82,6 +82,22 @@ def test_doctor_session_root_mismatch_warns(git_paths):
     assert _find(report.checks, "Session project root").level == WARN
 
 
+def test_doctor_rejects_session_body_id_mismatch(git_paths):
+    import json
+
+    manager = SessionManager(git_paths)
+    session = manager.start("body mismatch")
+    data = session.to_dict()
+    data["session_id"] = "bbbbbbbb-0000-4000-8000-000000000002"
+    git_paths.session_file(session.session_id).write_text(
+        json.dumps(data), encoding="utf-8"
+    )
+    report = run_doctor(git_paths)
+    check = _find(report.checks, "Session integrity")
+    assert check.level == FAIL
+    assert "body id" in check.detail
+
+
 def test_doctor_return_codes_distinct():
     assert EXIT_READY == 0
     assert EXIT_WARN == 1
@@ -143,3 +159,14 @@ def test_doctor_rejects_traversal_session_id(nogit_paths):
     report = run_doctor(nogit_paths)  # must not read the traversal target
     check = _find(report.checks, "Active session JSON")
     assert check.level == FAIL and "invalid session_id" in check.detail
+
+
+def test_doctor_handles_non_object_session_state(nogit_paths):
+    import json
+
+    manager = SessionManager(nogit_paths)
+    session = manager.start("malformed doctor")
+    session_path = nogit_paths.session_file(session.session_id)
+    session_path.write_text(json.dumps(["not", "an", "object"]), encoding="utf-8")
+    report = run_doctor(nogit_paths)
+    assert _find(report.checks, "Session integrity").level == FAIL

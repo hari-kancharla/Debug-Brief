@@ -23,6 +23,7 @@ from .models import (
     CommandClassification,
     CommandData,
     Event,
+    effective_event_timestamp,
 )
 from .utils import parse_iso8601
 
@@ -92,6 +93,44 @@ _BOOLEAN_FLAGS = frozenset(
         "--no-interaction", "--sync", "--no-root",
     }
 )
+
+_NON_VERIFICATION_FLAGS = frozenset(
+    {
+        "--help",
+        "-h",
+        "--version",
+        "-V",
+        "--collect-only",
+        "--co",
+        "--fixtures",
+        "--markers",
+        "--trace-config",
+        "--showconfig",
+        "--debugpytest",
+        "--fixtures-per-test",
+        "--listTests",
+        "--list-tests",
+        "-N",
+        "-list",
+        "--list",
+    }
+)
+
+
+def _has_non_verification_flag(tokens: List[str]) -> bool:
+    return any(token in _NON_VERIFICATION_FLAGS for token in tokens[1:])
+
+
+def _is_non_verification_command(tokens: List[str]) -> bool:
+    effective = _effective_tokens(tokens)
+    return _has_non_verification_flag(effective) or (
+        len(effective) > 1 and effective[0] == "vitest" and effective[1] == "list"
+    )
+
+
+def is_non_verification_command(command: str) -> bool:
+    return _is_non_verification_command(_tokenize(command))
+
 
 # (pattern_tokens, tool, category) for build/lint/typecheck detection.
 _BUILD_PATTERNS: List[Tuple[List[str], str, str]] = [
@@ -215,6 +254,8 @@ def _effective_tokens(tokens: List[str]) -> List[str]:
 
 def _match_test(tokens: List[str]) -> Optional[str]:
     eff = _effective_tokens(tokens)
+    if _is_non_verification_command(tokens):
+        return None
     for pattern, tool in _TEST_PATTERNS:
         if eff[: len(pattern)] == pattern:
             return tool
@@ -223,6 +264,8 @@ def _match_test(tokens: List[str]) -> Optional[str]:
 
 def _match_build(tokens: List[str]) -> Optional[Tuple[str, str]]:
     eff = _effective_tokens(tokens)
+    if _is_non_verification_command(tokens):
+        return None
     for pattern, tool, category in _BUILD_PATTERNS:
         if eff[: len(pattern)] == pattern:
             return tool, category
@@ -468,6 +511,37 @@ def _has_shell_negation(command: str) -> bool:
     return False
 
 
+def _has_shell_substitution(command: str) -> bool:
+    """True if the command performs shell substitution outside single quotes."""
+    in_single = in_double = False
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if char == "\\" and not in_single:
+            index += 2
+            continue
+        if char == "'" and not in_double:
+            in_single = not in_single
+        elif char == '"' and not in_single:
+            in_double = not in_double
+        elif not in_single and (
+            char == "`"
+            or (
+                char in "<>"
+                and index + 1 < len(command)
+                and command[index + 1] == "("
+            )
+            or (
+                char == "$"
+                and index + 1 < len(command)
+                and command[index + 1] == "("
+            )
+        ):
+            return True
+        index += 1
+    return False
+
+
 def _reliable_shell(command: str, pipefail: bool) -> bool:
     """True if the overall exit code reliably reflects every stage.
 
@@ -478,7 +552,7 @@ def _reliable_shell(command: str, pipefail: bool) -> bool:
     stage, the check included, passed; a nonzero exit proves some stage failed,
     though not necessarily which one.
     """
-    if _has_shell_negation(command):
+    if _has_shell_substitution(command) or _has_shell_negation(command):
         return False
     if _has_failure_masking_operator(command):
         return False
@@ -546,6 +620,12 @@ def shell_command_warning(
     """
     if not use_shell:
         return None
+    if force_verification and _has_shell_substitution(command):
+        return (
+            "This command performs shell substitution, so its exit code does not "
+            "verify a single recorded check; --verify was not recorded as a "
+            "verification."
+        )
     if force_verification and _has_shell_negation(command):
         # Covers a simple negated command too (which is otherwise not compound).
         return (
@@ -659,7 +739,7 @@ def classify_command(
             status=status,
         )
 
-    if force_verification:
+    if force_verification and not _is_non_verification_command(tokens):
         return CommandClassification(
             is_test=False,
             is_verification=passed,
@@ -687,11 +767,15 @@ def _classify_shell_command(
     generic = CommandClassification(
         is_test=False, is_verification=False, tool=None, status=status
     )
+    if _has_shell_substitution(command):
+        return generic
 
     # A simple command (one stage) is classified directly: the exit code is its
     # own, so a recognized check passes or fails honestly.
     if not _is_compound_shell(command):
         toks = _tokenize(command)
+        if _is_non_verification_command(toks):
+            return generic
         test_tool = _match_test(toks)
         if test_tool is not None:
             return CommandClassification(
@@ -716,6 +800,11 @@ def _classify_shell_command(
     # compound can yield is a user-declared whole-command check via --verify, and
     # only when the exit code is reliable (no failure-masking operator, and a
     # pipeline has pipefail). Everything else is a generic command.
+    if force_verification and any(
+        _is_non_verification_command(_tokenize(segment))
+        for segment in _split_shell_segments(command)
+    ):
+        return generic
     if force_verification and _reliable_shell(command, pipefail):
         return CommandClassification(
             is_test=False, is_verification=passed, tool="custom", status=status
@@ -761,8 +850,8 @@ class ReportCommand:
 
 def _event_seconds(event: Event) -> float:
     try:
-        return parse_iso8601(event.timestamp).timestamp()
-    except (ValueError, TypeError):
+        return parse_iso8601(effective_event_timestamp(event)).timestamp()
+    except (ValueError, TypeError, AttributeError, OverflowError):
         return 0.0
 
 
@@ -784,13 +873,15 @@ def build_report_commands(
         data = CommandData.from_dict(event.data)
         command_text = data.command
         cls = data.classification
+        if is_non_verification_command(command_text):
+            cls = CommandClassification(status=cls.status)
         status = cls.status
         is_failure = status in NON_SUCCESS_STATUSES
 
         if drop_noise and is_noise_command(command_text) and not is_failure:
             continue
 
-        ts = event.timestamp
+        ts = effective_event_timestamp(event)
         ts_seconds = _event_seconds(event)
 
         merged = False

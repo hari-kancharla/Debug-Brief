@@ -39,7 +39,10 @@ def repo(tmp_path):
     _git(["config", "user.name", "E2E"], tmp_path)
     _git(["checkout", "-q", "-b", "main"], tmp_path)
     (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
-    _git(["add", "app.py"], tmp_path)
+    (tmp_path / "test_smoke.py").write_text(
+        "def test_smoke():\n    assert True\n", encoding="utf-8"
+    )
+    _git(["add", "app.py", "test_smoke.py"], tmp_path)
     _git(["commit", "-q", "-m", "init"], tmp_path)
     return tmp_path
 
@@ -59,7 +62,7 @@ def test_full_cli_flow(repo):
     passing = _cli(["run", f"{sys.executable} -c 'print(123)'"], repo)
     assert passing.returncode == 0, passing.stderr
 
-    verify = _cli(["run", f"{sys.executable} -m pytest --version"], repo)
+    verify = _cli(["run", f"{sys.executable} -m pytest -q"], repo)
     assert verify.returncode == 0, verify.stderr
 
     end = _cli(["end", "--mode", "pr"], repo)
@@ -83,7 +86,7 @@ def test_full_cli_flow(repo):
     assert "exit 0" in content
     # Modified file
     assert "app.py" in content
-    # Verification section (pytest --version is a passing verification command)
+    # Verification section (the real pytest command exited 0)
     assert "## Verification and tests" in content
     assert "[passed]" in content
 

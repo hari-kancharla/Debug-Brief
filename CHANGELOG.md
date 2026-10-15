@@ -62,6 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reach status, list, show, doctor, or recovery output.
 - Persisted JSON nesting is capped consistently across supported Python versions,
   and first-commit Git tests configure their own author identity.
+- Escape clears the docs search and restores every section without a script error.
 
 ## [1.3.0] - 2026-06-17
 

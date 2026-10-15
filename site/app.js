@@ -189,6 +189,12 @@ if (docsSearch && docItems.length) {
     if (docsEmpty) docsEmpty.classList.toggle('is-visible', visible === 0);
   };
   docsSearch.addEventListener('input', filterDocs);
+  docsSearch.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      docsSearch.value = '';
+      filterDocs();
+    }
+  });
 }
 
 document.addEventListener('keydown', (event) => {
@@ -203,10 +209,6 @@ document.addEventListener('keydown', (event) => {
   ) {
     event.preventDefault();
     docsSearch.focus();
-  }
-  if (docsSearch && event.key === 'Escape' && document.activeElement === docsSearch) {
-    docsSearch.value = '';
-    filterDocs();
   }
 });
 

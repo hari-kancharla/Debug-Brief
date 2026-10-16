@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "debugbrief"
-version = "1.4.0"
+version = "1.4.1"
 description = "Records debugging commands, outcomes, notes, and Git changes, then generates evidence-backed reports for pull requests, handoffs, and incidents."
 readme = "README.md"
 requires-python = ">=3.9"

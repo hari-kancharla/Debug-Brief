@@ -1,7 +1,7 @@
 # DebugBrief commands
 
-Full reference for every command. The README has the short version; this is the
-detail.
+Reference for DebugBrief 1.4 and newer. The README covers the daily workflow;
+this page describes flags, recorded evidence and recovery.
 
 ```text
 debugbrief init                               Set up the project and show the workflow
@@ -68,8 +68,7 @@ debugbrief note remember to check the lock ordering
 debugbrief note "Token refresh fails when two requests retry at once."
 ```
 
-A note that begins with a dash would be read as a flag, so quote it or put
-`--` first:
+Use `--` before a note that begins with a dash so it cannot be parsed as a flag:
 
 ```bash
 debugbrief note -- --force was the wrong call here
@@ -164,7 +163,25 @@ debugbrief run --verify -- ./scripts/integration.sh
 A declared check counts as verification only when it actually exits 0; a
 failing one is recorded as a failed check, which is exactly what feeds the
 reproduce line and the red-to-green window. On a recognized runner the flag is
-a no-op: the automatic classification wins. Help, version, collection-only and test-listing invocations never qualify, even with `--verify`. A valid passing check can verify evidence without a prior failure, provided no check has a current failed or invalid result. This does not establish correctness beyond the recorded checks.
+a no-op: the automatic classification wins.
+
+Help, version, collection-only and test-listing invocations never qualify, even
+with `--verify`. A report can be verified without a prior failure, but at least
+one eligible check must pass, no check may currently fail, and every recorded
+verification candidate must have a valid timestamp. An invalid timestamp in an
+older attempt still prevents verification. This says nothing about checks that
+were not recorded.
+
+Build, lint and typecheck recognition includes `npm run build`, `pnpm build` and
+`pnpm run build`, `yarn build`, the corresponding npm/pnpm/yarn lint and typecheck
+scripts, `mypy`, `ruff check`, `black --check` and `tsc --noEmit`. Test recognition
+also accepts `py.test`, package-manager `run test` forms and supported wrappers
+such as `python -m`, `uv run`, `poetry run`, `npx` and `bundle exec`.
+
+A red-to-green window requires a Git repository and the same command to fail and
+later pass in the same recorded directory. It is historical evidence: a later
+failure still makes the current report unverified. Changed files in the window
+are a correlation, not an inferred root cause.
 
 ### Timeouts, interrupts, and background processes
 
@@ -257,7 +274,8 @@ If there is no active session, or the session has no captured commands yet,
 (it contains the `[redacted]` placeholder), `redo` refuses to re-run it, since
 the placeholder is not the real command.
 
-`redo` is a fresh execution against the current files, environment and dependencies. It does not recreate an earlier environment.
+`redo` is a fresh execution against the current files, environment and dependencies.
+It does not recreate an earlier environment.
 
 ## preview
 
@@ -275,7 +293,9 @@ debugbrief preview --format html
 Markdown previews carry a banner line marking the active session; JSON and HTML
 previews stay machine-clean. The session is untouched: same status, same file, no
 report written. Reports show only the local repository basename in project-root
-metadata by default; pass `--include-full-path` when the absolute root is intentional. Paths typed into commands, notes and output can still appear; this flag controls the project-root field only.
+metadata by default; pass `--include-full-path` when the absolute root is
+intentional. Paths typed into commands, notes and output can still appear;
+this flag controls the project-root field only.
 
 ## end
 
@@ -289,7 +309,11 @@ debugbrief end --mode incident
 debugbrief end --detail compact # shorter PR brief; metadata/timeline collapsed
 ```
 
-`--detail compact` (PR mode) keeps the summary, evidence state, changed files, and verification visible and folds the metadata and timeline into a collapsible section, for a shorter brief. The CLI defaults PR reports to `compact`; pass `--detail full` when the complete record is useful. `preview` accepts the same flag. Both `end` and `preview` hide the absolute project root by default and show the local repository basename; pass `--include-full-path` to opt in.
+PR Markdown defaults to `--detail compact`: summary, evidence state, changed files
+and verification stay visible while metadata and timeline fold into a collapsible
+section. Use `--detail full` for the full record. `preview` accepts the same flag.
+Both commands hide the absolute project-root field by default; use
+`--include-full-path` to include it deliberately.
 
 Choose the output format with `--format` (default `md`):
 
@@ -306,9 +330,16 @@ The JSON report carries the same derived fields as the markdown, including
 no external assets, and is written as `.debugbrief/reports/<id>-<mode>.html`.
 HTML is a complete, self-contained view; `--detail` controls the Markdown report.
 
-`--stdout` prints the selected report to stdout while the files are still written
-as usual; Markdown output moves informational lines to stderr so the output pipes
-cleanly. Posting a Markdown brief straight to a pull request becomes one line:
+Current JSON reports include per-attempt commands, exit codes, bounded output
+previews, truncation and redaction flags, current failures and project-relative
+working directories. Export a report with `--format json` for the website's
+Evidence Explorer. `show --json` prints raw session state instead and is not an
+Explorer report. The Explorer accepts one file up to 5 MiB and 2,000 entries per
+list; missing fields in older supported reports remain explicitly unknown.
+
+`--stdout` prints the report while still writing the requested files. It emits
+HTML for `--format html`, JSON for `--format json`, and Markdown for `md`, `both`
+or `all`. Informational lines go to stderr so the report pipes cleanly. Posting a Markdown brief straight to a pull request becomes one line:
 
 ```bash
 debugbrief end --stdout | gh pr comment --body-file -
@@ -370,6 +401,22 @@ debugbrief doctor --fix
 adds `.debugbrief/` to `.git/info/exclude`. It never touches `.gitignore`,
 global config, or dotfiles.
 
+## recover
+
+Repair a broken active-session pointer or clear stale command metadata after an
+interruption. Saved sessions are preserved, including unreadable files that need
+manual attention. A healthy active session is left alone.
+
+```bash
+debugbrief status
+debugbrief recover
+```
+
+A held command lock is not stale. If cleanup is still running, wait briefly and
+retry. Recovery does not kill an unrelated process or invent an outcome for a
+command that stopped recording. Use `doctor` to inspect broader project health;
+`doctor --fix` only creates local directories and the Git ignore entry.
+
 ## last
 
 Prints the most recent report's path, its mode, modified time, and title. Add
@@ -385,12 +432,13 @@ debugbrief last --open
 Opens a report in `$EDITOR` (latest by default, or `--path PATH`). If the
 selected artifact is HTML, it opens in the system browser automatically. Use
 `--html` to select the newest HTML artifact explicitly. If `$EDITOR` is not set
-for a non-HTML report, it prints the path instead of guessing.
+for a non-HTML report, it prints the path instead of guessing. Replace
+`SESSION_ID` below with the id of the report you want to open.
 
 ```bash
 debugbrief open
 debugbrief open --html
-debugbrief open --path .debugbrief/reports/<id>-pr.md
+debugbrief open --path ".debugbrief/reports/SESSION_ID-pr.md"
 ```
 
 ## list
@@ -425,8 +473,7 @@ The markdown report is plain text, so posting it as a PR comment with the GitHub
 CLI is a one-liner (`gh` is optional and never required by DebugBrief):
 
 ```bash
-debugbrief end --mode pr
-gh pr comment --body-file "$(ls -t .debugbrief/reports/*-pr.md | head -1)"
+debugbrief end --mode pr --stdout | gh pr comment --body-file -
 ```
 
 ## Project configuration
@@ -468,7 +515,8 @@ working directory.
 ## Recovery for interrupted sessions
 
 The canonical record is the session file under `.debugbrief/sessions/<id>.json`,
-rewritten after every note and command, so a crash never loses captured work.
+rewritten atomically after each saved note and command. Saved events survive a
+crash, but a command still in progress may have no recorded outcome.
 `active_session.json` is a small pointer removed after a clean `end`, an explicit
 `cancel`, or a recovery that clears a broken/stale pointer. If the pointer exists
 but the session file is missing, `status` reports it and prints recovery steps.
@@ -481,7 +529,8 @@ incomplete or fabricated history, `start --shell` is not implemented. Running it
 prints a clear message pointing to the reliable model: explicit `debugbrief run`.
 
 This is different from `run --shell`, which runs a single command through the
-system shell and is fully supported.
+shell and is supported. Prefer Bash, which lets DebugBrief enable `pipefail`;
+a fallback shell may not provide a trustworthy pipeline status.
 
 ## Snapshot-tested reports
 

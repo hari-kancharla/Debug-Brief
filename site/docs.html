@@ -97,7 +97,7 @@
 <div><code>uv tool install debugbrief</code><span>if you use uv tools</span></div>
 <div><code>python -m pip install debugbrief</code><span>inside an existing environment</span></div>
 </div>
-<p>Already installed? Run <code>pipx upgrade debugbrief</code>, <code>uv tool upgrade debugbrief</code>, or <code>python -m pip install --upgrade debugbrief</code> with the installer you used. PyPI 1.3.0 supports Markdown and JSON; HTML reports, browser-opening flags and the structured command history shown here require 1.4.0 or newer.</p>
+<p>Already installed? Run <code>pipx upgrade debugbrief</code>, <code>uv tool upgrade debugbrief</code>, or <code>python -m pip install --upgrade debugbrief</code> with the installer you used. HTML reports, browser-opening flags and the structured command history shown here require 1.4.0 or newer.</p>
 <p>For a source checkout, run <code>pipx install .</code> from the directory containing <code>pyproject.toml</code>.</p>
 </section>
 
@@ -145,8 +145,8 @@ Noted locally · 1 note · session 3f8a1c2d</code></pre></div>
 
 <section class="doc-section" id="checks" data-doc-item>
 <h2>Checks and verification</h2>
-<p>Recognized test, build, lint and typecheck runners are classified automatically. A passing check needs a trustworthy zero exit code and a valid recorded timestamp. Evidence is verified when at least one eligible check passed and no check has a current failed or invalid result. A prior failure is not required. This verifies only the recorded checks, not the whole issue. Use <code>--verify</code> for a custom check.</p>
-<p>Help, version, collection-only and test-listing invocations never count as verification, even with <code>--verify</code>. A red-to-green window needs the same command to fail and later pass in the same directory; changed-file correlation additionally needs Git evidence. A later failure keeps the report unverified even if a historical window exists.</p>
+<p>Recognized test, build, lint and typecheck runners are classified automatically. A passing check needs a trustworthy zero exit code and a valid recorded timestamp. Evidence is verified when at least one eligible check passed, no check currently fails, and every recorded verification candidate has a valid timestamp. An invalid timestamp in an older attempt still prevents verification. A prior failure is not required. This verifies only the recorded checks, not the whole issue. Use <code>--verify</code> for a custom check.</p>
+<p>Help, version, collection-only and test-listing invocations never count as verification, even with <code>--verify</code>. A red-to-green window needs a Git repository and the same command to fail and later pass in the same directory. Changed files in that window are a correlation, not a proven cause. A later failure keeps the report unverified even if a historical window exists.</p>
 <p class="mono-list"><span>pytest</span> · <span>vitest</span> · <span>jest</span> · <span>bun test</span> · <span>deno test</span> · <span>node --test</span> · <span>go test</span> · <span>cargo test</span> · <span>npm/pnpm/yarn test</span> · <span>npm run build</span> · <span>tsc --noEmit</span> · <span>ruff</span> · <span>make check</span> · <span>tox</span> · <span>unittest</span> · <span>dotnet test</span> · <span>ctest</span> · <span>phpunit</span> · <span>mix test</span> · <span>swift test</span> · <span>rspec</span> · <span>mvn test</span> · <span>gradle test</span></p>
 </section>
 
@@ -245,7 +245,7 @@ detail = "compact"</code></pre></div>
 <li>No native Windows or PowerShell support.</li>
 <li>No inferred root cause or independent correctness audit.</li>
 <li>No reproducible environment capture: <code>redo</code> uses the current environment.</li>
-<li>Outside a Git repository, commands and notes still work, but Git state, changed files and Git-based correlation are unavailable.</li>
+<li>Outside a Git repository, commands and notes still work, but Git state, changed files and red-to-green windows are unavailable.</li>
 </ul>
 </section>
 

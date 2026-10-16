@@ -1,69 +1,86 @@
 # Maintainer notes
 
-Repository protection for `main` and for release tags. These are GitHub
-settings, not code, so they are configured in the repository settings rather
-than applied from this file. The exact configuration is recorded here so it can
-be reviewed and reproduced.
+The settings below were checked on 2026-10-16. GitHub settings are separate from
+the source tree; verify the live configuration before changing protections or
+publishing a release.
 
-## Branch ruleset: Protect main
+## Current main protection
 
-Create a repository ruleset named `Protect main`, targeting the `main` branch,
-with status Active and these rules:
+The active `Protect main` ruleset targets the default branch. It requires a pull
+request, resolved review conversations and the configured status checks. It
+blocks force pushes and branch deletion. No bypass actors are configured.
 
-- Require a pull request before merging.
-- Require status checks to pass before merging, with "Require branches to be up
-  to date before merging" enabled.
-- Require conversation resolution before merging.
-- Block force pushes.
-- Restrict deletions (block branch deletion).
-- Require linear history.
-- Restrict who can push to matching branches, so normal contributors cannot push
-  to `main` directly and must go through a pull request.
+Required approvals are zero for the single-maintainer repository. Code-owner
+review and linear history are not required, and branches do not have to be
+up to date before merging. Do not describe these as enabled protections.
 
-### Required status checks
-
-These are the exact check names produced by the current CI workflow
-(`.github/workflows/ci.yml`). All of them must be required:
+The required checks currently are:
 
 - `lint`
-- `test (ubuntu-latest, 3.9)`
-- `test (ubuntu-latest, 3.10)`
-- `test (ubuntu-latest, 3.11)`
-- `test (ubuntu-latest, 3.12)`
-- `test (ubuntu-latest, 3.13)`
-- `test (ubuntu-latest, 3.14)`
 - `test (macos-latest, 3.9)`
 - `test (macos-latest, 3.10)`
 - `test (macos-latest, 3.11)`
 - `test (macos-latest, 3.12)`
 - `test (macos-latest, 3.13)`
 - `test (macos-latest, 3.14)`
+- `test (ubuntu-latest, 3.10)`
+- `test (ubuntu-latest, 3.11)`
+- `test (ubuntu-latest, 3.12)`
+- `test (ubuntu-latest, 3.13)`
 
-If the CI matrix (operating systems or Python versions) changes, update this
-list to match the new check names.
+CI also runs Ubuntu Python 3.9 and 3.14, plus the separate `website` check.
+Those jobs are not required by the current ruleset. Before a release, wait for
+all 13 CI jobs and the website job to pass, not just the enforced subset. Verify
+the checks belong to the exact commit being merged, then check the new main runs
+as well. Outside contributions are reviewed by the owner before merging.
 
-### Approvals and bypass
+Private vulnerability reporting is enabled. The private report form linked from
+`SECURITY.md` is the intended channel for security issues, not public issues.
 
-While there is a single maintainer, required pull request approvals are not
-enabled, because a sole maintainer cannot approve their own pull request and
-would be unable to merge. Repository administrator bypass stays enabled for the
-same reason, so the maintainer is not locked out.
+## PyPI publishing
 
-Outside contributor pull requests are reviewed manually by the owner before
-merge (see [CODEOWNERS](../.github/CODEOWNERS) and the Review and merge section
-of [CONTRIBUTING.md](../CONTRIBUTING.md)).
+The existing `debugbrief` project trusts the GitHub repository
+`hari-kancharla/Debug-Brief`, workflow `release.yml`, environment `pypi`.
+The workflow uses short-lived OpenID Connect credentials; it does not need a
+stored `PYPI_API_TOKEN` secret. Only the publishing job receives `id-token: write`.
+A separate job builds and checks the wheel and source archive, then the publishing
+job downloads those artifacts and uploads them.
 
-Once a second trusted maintainer is added, switch to requiring one approval,
-dismiss stale approvals on new commits, and require review from code owners.
+The `pypi` environment allows tags matching `v*`, not branch deployments. This
+restricts which refs can use the environment. It does not make tags immutable:
+there is currently no separate tag-protection ruleset. Protecting release tags
+against updates and deletion is a recommended additional setting, not an enabled
+one.
 
-## Tag protection: v*
+See the official [PyPI setup guide](https://docs.pypi.org/trusted-publishers/adding-a-publisher/)
+and [security considerations](https://docs.pypi.org/trusted-publishers/security-model/)
+when changing the publisher. Changing a repository owner, workflow filename or
+environment requires checking both the workflow and the PyPI configuration.
 
-Protect release tags matching `v*` so a published version cannot be moved or
-removed:
+## Release procedure
 
-- Block tag deletion.
-- Block tag updates after creation.
-- Allow only repository administrators or the release workflow to create them.
+1. Update the version in `pyproject.toml` and `src/debugbrief/__init__.py`, and add
+   the dated changelog entry. Review the README, command reference, security
+   policy and install examples against the actual behavior.
+2. Run the tests, fixture/link checks and package build. Install the built wheel
+   in a clean environment and exercise capture, replay and report generation.
+3. Open a pull request. Wait for every CI and website job, inspect failures, then
+   merge the tested revision into main. Delete the temporary branch and verify
+   the local checkout matches remote main.
+4. Publish a GitHub Release with a version tag pointing to that main commit. The
+   workflow starts on a published release, not on a plain push or tag creation.
+   It refuses a tag that disagrees with the package version.
+5. Watch both release jobs through completion. If publishing fails, read the log
+   and check PyPI before retrying; a partial upload is not a completed release.
+6. Verify the public PyPI version, wheel and source hashes against the build
+   artifacts. Install the version from official PyPI in another clean environment,
+   run the CLI checks, and verify the public README renders correctly.
 
-Tags drive the release workflow (`.github/workflows/release.yml`), which
-publishes to PyPI only when a GitHub Release is published.
+Do not move a published version tag or overwrite release files. PyPI retains the
+metadata submitted for a version, so a corrected packaged README needs a new
+release. Keep historical failed attempts visible; confirm the current retry and
+current main checks actually passed.
+
+When another trusted maintainer joins, review approval requirements, code owners,
+required checks and release permissions together. Avoid changing protections
+without checking that maintainers can still complete the intended workflow.

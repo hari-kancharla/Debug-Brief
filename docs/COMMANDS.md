@@ -102,6 +102,7 @@ The old single-argument form still works: `debugbrief run "python -m pytest"`.
   bounded stdout/stderr previews,
 - records a lightweight per-command Git snapshot when the project is a repository
   (HEAD and changed files) so the report can correlate file changes with what happened,
+- retains the working directory for replay and exports its project-relative location with command history and reproduction/verification instructions; older records without that location remain explicitly unknown,
 - classifies whether the command is a test or a verification command,
 - marks pass/fail strictly from the exit code,
 - redacts secret-like values before writing anything to disk (see below),
@@ -163,12 +164,12 @@ debugbrief run --verify -- ./scripts/integration.sh
 A declared check counts as verification only when it actually exits 0; a
 failing one is recorded as a failed check, which is exactly what feeds the
 reproduce line and the red-to-green window. On a recognized runner the flag is
-a no-op: the automatic classification wins.
+a no-op: the automatic classification wins. Help, version, collection-only and test-listing invocations never qualify, even with `--verify`. A valid passing check can verify evidence without a prior failure, provided no check has a current failed or invalid result. This does not establish correctness beyond the recorded checks.
 
 ### Timeouts, interrupts, and background processes
 
-The command runs in its own process group, so termination reaches the group,
-not just the immediate process.
+The command runs in a process group owned by an independent supervisor, so
+termination reaches ordinary descendants as well as the immediate process.
 
 The default timeout is 300 seconds. Override with `--timeout`:
 
@@ -180,7 +181,21 @@ On timeout the process group is terminated (SIGTERM then SIGKILL), the event is
 recorded with status `timed_out` and a `null` exit code, and a nonzero code is
 returned. Ordinary background children are cleaned up; a child that detaches
 into its own session (`setsid`) can still outlive the command, which is reported
-as a warning.
+as a warning when it retains a captured output stream. A detached child that
+also closes its output cannot be detected this way.
+
+If the recorder itself is killed, including with `SIGKILL`, the supervisor
+detects its closed lifetime pipe and stops the owned process group. It allows
+half a second for termination before escalating to `SIGKILL`. This works with
+PTYs and the pipe fallback and does not depend on command output. A surviving
+detached process remains outside this guarantee. The supervisor is reaped on
+normal completion; ordinary background descendants are stopped then, too.
+
+After cleanup settles, `debugbrief recover` releases stale session metadata and
+preserves the recorded work. If called during cleanup it can still report the
+command as running; retry after cleanup. It never clears a held command lock or
+invents an exit code for a capture lost in a crash. The report remains explicit
+about that missing outcome.
 
 Ctrl-C terminates the group the same way and records the command with an
 `interrupted` status, so an aborted attempt still appears in the report. The
@@ -242,6 +257,8 @@ If there is no active session, or the session has no captured commands yet,
 (it contains the `[redacted]` placeholder), `redo` refuses to re-run it, since
 the placeholder is not the real command.
 
+`redo` is a fresh execution against the current files, environment and dependencies. It does not recreate an earlier environment.
+
 ## preview
 
 Prints the report for the active session to stdout without ending the session
@@ -258,7 +275,7 @@ debugbrief preview --format html
 Markdown previews carry a banner line marking the active session; JSON and HTML
 previews stay machine-clean. The session is untouched: same status, same file, no
 report written. Reports show only the local repository basename in project-root
-metadata by default; pass `--include-full-path` when the absolute root is intentional.
+metadata by default; pass `--include-full-path` when the absolute root is intentional. Paths typed into commands, notes and output can still appear; this flag controls the project-root field only.
 
 ## end
 

@@ -1,0 +1,46 @@
+name: Deploy website (manual)
+
+# Local work does not deploy. Once reviewed and pushed, an authorized maintainer
+# must explicitly run this workflow on main. Pull requests cannot deploy.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/main' && github.repository == 'hari-kancharla/Debug-Brief'
+    uses: ./.github/workflows/site.yml
+
+  build:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/configure-pages@v5
+      - name: Package static website
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy reviewed website artifact
+        id: deployment
+        uses: actions/deploy-pages@v5

@@ -11,3 +11,5 @@ recursive-include tests/snapshots *.md
 include .github/CODEOWNERS
 recursive-include .github/ISSUE_TEMPLATE *.yml
 recursive-include .github/workflows *.yml
+
+recursive-include scripts *.py

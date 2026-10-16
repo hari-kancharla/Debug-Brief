@@ -1,195 +1,305 @@
 <!doctype html>
-<html lang="en" data-theme="ink">
+<html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#0b0e0d">
-  <meta name="description" content="DebugBrief command reference: capture a debugging loop, generate evidence-backed reports, and keep local debugging state safe.">
-  <title>Docs — DebugBrief</title>
-  <link rel="stylesheet" href="styles.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docs | DebugBrief</title>
+<meta name="description" content="Install DebugBrief, record a debugging session and export local, evidence-backed reports. Commands, flags, privacy and recovery.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="DebugBrief">
+<meta property="og:title" content="Docs | DebugBrief">
+<meta property="og:image" content="social-preview.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Red, then green. DebugBrief">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#F3F2EE">
+<script>
+(function () {
+  var theme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  try { var saved = localStorage.getItem("debugbrief-theme"); if (saved === "light" || saved === "dark") theme = saved; } catch (e) {}
+  document.documentElement.dataset.theme = theme;
+  document.querySelector('meta[name="theme-color"]').content = theme === "dark" ? "#0D0D0C" : "#F3F2EE";
+})();
+</script>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource-variable/mona-sans@5.3.0/wdth.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/monaspace-neon@5.3.0/400.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/monaspace-neon@5.3.0/600.css">
+<link rel="stylesheet" href="site.css">
+<script defer src="site.js"></script>
 </head>
-<body class="docs-page">
-  <a class="skip-link" href="#docs-main">Skip to content</a>
-  <header class="site-header">
-    <div class="shell header-inner">
-      <a class="brand" href="index.html" aria-label="DebugBrief home">
-        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-        <span>debugbrief</span>
-      </a>
-      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">
-        <span class="sr-only">Open navigation</span>
-        <span></span><span></span>
-      </button>
-      <nav class="primary-nav" id="primary-nav" aria-label="Primary navigation">
-        <a href="index.html#proof-loop">How it works</a>
-        <a href="index.html#reports">Reports</a>
-        <a href="docs.html" aria-current="page">Docs</a>
-        <a href="https://github.com/harihkk/Debug-Brief/blob/main/examples/sample-pr.md">Examples ↗</a>
-        <a href="https://github.com/harihkk/Debug-Brief/blob/main/SECURITY.md">Security ↗</a>
-      </nav>
-      <div class="header-actions">
-        <button class="theme-toggle" type="button" aria-pressed="true">Paper</button>
-        <a class="button button-small" href="index.html#install">Install</a>
-      </div>
-    </div>
-  </header>
+<body>
+<a class="skip-link" href="#docs-main">Skip to content</a>
 
-  <main class="docs-layout shell" id="docs-main">
-    <aside class="docs-sidebar" aria-label="Documentation navigation">
-      <label class="docs-search-label" for="docs-search">Find a command</label>
-      <div class="docs-search-wrap">
-        <input id="docs-search" type="search" placeholder="run, redo, report…" autocomplete="off" data-docs-search>
-        <kbd>/</kbd>
-      </div>
-      <nav class="docs-nav" aria-label="Documentation sections">
-        <p>Start here</p>
-        <a href="#quickstart">Quickstart</a>
-        <a href="#install">Install</a>
-        <p>Capture</p>
-        <a href="#run">run</a>
-        <a href="#note">note</a>
-        <a href="#redo">redo</a>
-        <a href="#checks">Checks and verification</a>
-        <p>Reports</p>
-        <a href="#end">end</a>
-        <a href="#modes">Report modes</a>
-        <a href="#formats">Output formats</a>
-        <p>Operate</p>
-        <a href="#review">review and share</a>
-        <a href="#status">status and recovery</a>
-        <a href="#privacy">Privacy and redaction</a>
-        <a href="#limitations">Limitations</a>
-      </nav>
-      <p class="docs-no-results" data-docs-empty aria-live="polite">No matching command.</p>
-    </aside>
+<header class="site-header" data-state="neutral">
+<div class="header-inner">
+<a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true"><span class="brand-bracket">[</span>db<span class="brand-bracket">]</span></span><span>DebugBrief</span></a>
+<nav class="primary-nav" aria-label="Primary"><a href="docs.html" aria-current="page">Docs</a><a href="explorer.html">Explorer</a><a href="index.html#reports">Reports</a><a href="https://github.com/hari-kancharla/Debug-Brief">GitHub</a></nav>
+<button class="theme-toggle" type="button" data-theme-toggle aria-pressed="false" aria-label="Switch color theme" disabled>light</button>
+</div>
+</header>
 
-    <article class="docs-article">
-      <div class="breadcrumbs"><a href="index.html">DebugBrief</a><span aria-hidden="true">/</span><span>Docs</span></div>
-      <p class="eyebrow"><span class="eyebrow-mark" aria-hidden="true"></span> command reference</p>
-      <h1>Run the loop.<br><em>Keep the proof.</em></h1>
-      <p class="docs-lede">DebugBrief is deliberately small: run a command, record what you noticed, repeat it after a change, and end with a report. This page is the fast reference.</p>
+<main class="docs" id="docs-main">
+<aside class="docs-side" aria-label="Documentation navigation">
+<button class="filter-open" type="button" data-doc-filter-open disabled><span>Find a section</span><kbd>/</kbd></button>
+<details class="docs-menu" open>
+<summary>Sections</summary>
+<nav class="docs-nav" aria-label="Documentation sections">
+<p>start</p>
+<a href="#quickstart">quickstart</a>
+<a href="#install">install</a>
+<a href="#session">init, start, cancel</a>
+<p>capture</p>
+<a href="#run">run</a>
+<a href="#note">note</a>
+<a href="#redo">redo</a>
+<a href="#checks">checks and verification</a>
+<p>reports</p>
+<a href="#end">end</a>
+<a href="#modes">report modes</a>
+<a href="#formats">output formats</a>
+<a href="#review">review and share</a>
+<a href="#explorer">evidence explorer</a>
+<p>operate</p>
+<a href="#status">status and recovery</a>
+<a href="#privacy">privacy and redaction</a>
+<a href="#config">configuration</a>
+<a href="#limitations">limitations</a>
+<a href="#reference">command reference</a>
+<a href="#troubleshooting">troubleshooting</a>
+</nav>
+</details>
+</aside>
 
-      <section class="docs-section" id="quickstart" data-doc-item>
-        <div class="docs-section-heading"><span>01</span><h2>Quickstart</h2></div>
-        <p>Start is optional. The first <code>run</code> or <code>note</code> starts a session automatically.</p>
-        <div class="docs-code-block">
-          <div class="code-block-bar"><span>shell</span><button class="copy-button" type="button" data-copy="pipx install debugbrief">Copy install</button></div>
-          <pre><code>pipx install debugbrief
-debugbrief run -- pytest -q test_calc.py
-# make the fix
-debugbrief redo
-debugbrief end --format html --open</code></pre>
-        </div>
-        <div class="docs-callout"><span>today's loop</span><p>The command stays yours. DebugBrief records the command, exit code, duration, bounded output preview, and Git state when available.</p></div>
-      </section>
+<article class="docs-article">
+<h1>Documentation</h1>
+<p class="docs-lead">For DebugBrief 1.4.0 and newer. Record a debugging session and export the report. Press <kbd>/</kbd> to find a section.</p>
 
-      <section class="docs-section" id="install" data-doc-item>
-        <div class="docs-section-heading"><span>02</span><h2>Install</h2></div>
-        <p>Python 3.9 or newer. Linux and macOS are tested. The project you are debugging does not need to be Python.</p>
-        <div class="docs-command-table">
-          <div><code>pipx install debugbrief</code><span>recommended for a standalone CLI</span></div>
-          <div><code>uv tool install debugbrief</code><span>if you use uv tools</span></div>
-          <div><code>python -m pip install debugbrief</code><span>inside an existing environment</span></div>
-        </div>
-      </section>
+<section class="doc-section" id="quickstart" data-doc-item>
+<h2>Quickstart</h2>
+<p>Starting a session is optional. The first <code>run</code> or <code>note</code> starts one automatically.</p>
+<div class="code-block"><div class="code-bar"><span>shell</span><button class="copy-button" type="button" data-copy="pipx install debugbrief&#10;debugbrief run -- pytest -q&#10;debugbrief redo&#10;debugbrief end --format html --open" disabled>Copy</button></div>
+<pre><code><span class="prompt">$</span> pipx install debugbrief
+<span class="prompt">$</span> debugbrief run -- pytest -q
+<span class="comment"># make the fix</span>
+<span class="prompt">$</span> debugbrief redo
+<span class="prompt">$</span> debugbrief end --format html --open</code></pre></div>
+<div class="note-box"><span class="note-label">note</span><p>Each run saves the command, exit code, duration, a bounded output preview and Git state when available.</p></div>
+</section>
 
-      <section class="docs-section" id="run" data-doc-item>
-        <div class="docs-section-heading"><span>03</span><h2>run</h2></div>
-        <p>Put DebugBrief flags before <code>--</code>, then the command exactly as you would normally type it.</p>
-        <div class="docs-code-block"><div class="code-block-bar"><span>shell</span><button class="copy-button" type="button" data-copy="debugbrief run -- pytest -q">Copy</button></div><pre><code>debugbrief run -- pytest -q</code></pre></div>
-        <div class="flag-grid"><div><code>--timeout SECONDS</code><span>stop a long-running command</span></div><div><code>--verify</code><span>declare a custom check</span></div><div><code>--shell</code><span>enable pipes and redirection</span></div><div><code>--no-redact</code><span>store raw output, with care</span></div></div>
-      </section>
+<section class="doc-section" id="install" data-doc-item>
+<h2>Install</h2>
+<p>Python 3.9 or newer on Linux or macOS. The project you debug does not need to be Python. These examples require DebugBrief 1.4.0 or newer; check with <code>debugbrief --version</code>.</p>
+<div class="rows">
+<div><code>pipx install debugbrief</code><span>recommended for a standalone CLI</span></div>
+<div><code>uv tool install debugbrief</code><span>if you use uv tools</span></div>
+<div><code>python -m pip install debugbrief</code><span>inside an existing environment</span></div>
+</div>
+<p>Already installed? Run <code>pipx upgrade debugbrief</code>, <code>uv tool upgrade debugbrief</code>, or <code>python -m pip install --upgrade debugbrief</code> with the installer you used. PyPI 1.3.0 supports Markdown and JSON; HTML reports, browser-opening flags and the structured command history shown here require 1.4.0 or newer.</p>
+<p>For a source checkout, run <code>pipx install .</code> from the directory containing <code>pyproject.toml</code>.</p>
+</section>
 
-      <section class="docs-section" id="note" data-doc-item>
-        <div class="docs-section-heading"><span>04</span><h2>note</h2></div>
-        <p>Record an observation without interrupting the loop. Quoting is optional for plain prose.</p>
-        <div class="docs-code-block"><div class="code-block-bar"><span>shell</span><button class="copy-button" type="button" data-copy="debugbrief note &quot;the shared state is the suspect&quot;">Copy</button></div><pre><code>debugbrief note "the shared state is the suspect"</code></pre></div>
-      </section>
+<section class="doc-section" id="session" data-doc-item>
+<h2>init, start and cancel</h2>
+<p><code>init</code> creates the local directories, checks project health and suggests an optional alias. It does not start a session or write a report. <code>start</code> sets a title and records the initial Git state.</p>
+<div class="code-block"><div class="code-bar"><span>shell</span><button class="copy-button" type="button" data-copy="debugbrief init&#10;debugbrief start &quot;Handle an expired cache entry&quot;&#10;alias db=&quot;debugbrief run --&quot;&#10;db pytest -q" disabled>Copy</button></div>
+<pre><code><span class="prompt">$</span> debugbrief init
+<span class="prompt">$</span> debugbrief start "Handle an expired cache entry"
+<span class="comment"># optional shortcut for captured commands</span>
+<span class="prompt">$</span> alias db="debugbrief run --"
+<span class="prompt">$</span> db pytest -q</code></pre></div>
+<p>Setup adds <code>.debugbrief/</code> to the local <code>.git/info/exclude</code> when available. It never changes the shared <code>.gitignore</code>.</p>
+<p><code>cancel</code> abandons the active session without writing a report. It asks for confirmation; <code>--yes</code> skips the prompt. The abandoned session stays on disk and still appears in <code>list</code> and <code>show</code>.</p>
+</section>
 
-      <section class="docs-section" id="redo" data-doc-item>
-        <div class="docs-section-heading"><span>05</span><h2>redo</h2></div>
-        <p>Re-run the latest captured command in its original directory. It is the shortest path from a failing check to a passing check.</p>
-        <div class="docs-code-block"><div class="code-block-bar"><span>shell</span><button class="copy-button" type="button" data-copy="debugbrief redo">Copy</button></div><pre><code>debugbrief redo</code></pre></div>
-        <div class="docs-callout docs-callout-warn"><span>safe replay</span><p><code>--dry-run</code> previews without executing. Ambiguous or destructive commands ask for confirmation; <code>--yes</code> is an explicit bypass.</p></div>
-      </section>
+<section class="doc-section" id="run" data-doc-item>
+<h2>run</h2>
+<p>Put DebugBrief flags before <code>--</code>, then the command exactly as you would normally type it. Output streams live while the command, exit code, duration, output preview and Git snapshot are recorded. Commands execute from the directory where you invoke <code>run</code>, including project subdirectories; state stays at the project root.</p>
+<div class="code-block"><div class="code-bar"><span>shell</span><button class="copy-button" type="button" data-copy="debugbrief run -- pytest -q" disabled>Copy</button></div>
+<pre><code><span class="prompt">$</span> debugbrief run -- pytest -q</code></pre></div>
+<div class="rows">
+<div><code>--timeout SECONDS</code><span>stop a long-running command (default 300)</span></div>
+<div><code>--verify</code><span>declare a custom command as a check</span></div>
+<div><code>--shell</code><span>run through the shell, for pipes and redirection</span></div>
+<div><code>--no-redact</code><span>store raw output for this command</span></div>
+</div>
+</section>
 
-      <section class="docs-section" id="checks" data-doc-item>
-        <div class="docs-section-heading"><span>06</span><h2>Checks and verification</h2></div>
-        <p>Recognized test, build, lint, and typecheck runners are classified automatically. A check is verified only when its real exit code is zero. Use <code>--verify</code> for a custom script.</p>
-        <div class="runner-list"><span>pytest</span><span>vitest</span><span>go test</span><span>cargo test</span><span>make check</span><span>npm run build</span><span>tsc --noEmit</span><span>dotnet test</span></div>
-      </section>
+<section class="doc-section" id="note" data-doc-item>
+<h2>note</h2>
+<p>Record an observation without leaving the loop. Quoting is optional for plain prose.</p>
+<div class="code-block"><div class="code-bar"><span>shell</span><button class="copy-button" type="button" data-copy="debugbrief note &quot;the shared state is the suspect&quot;" disabled>Copy</button></div>
+<pre><code><span class="prompt">$</span> debugbrief note "the shared state is the suspect"
+Noted locally · 1 note · session 3f8a1c2d</code></pre></div>
+</section>
 
-      <section class="docs-section" id="end" data-doc-item>
-        <div class="docs-section-heading"><span>07</span><h2>end</h2></div>
-        <p>Finalize the session and write the selected report. PR reports are compact by default; <code>--detail full</code> keeps the complete record.</p>
-        <div class="docs-code-block"><div class="code-block-bar"><span>shell</span><button class="copy-button" type="button" data-copy="debugbrief end --mode pr">Copy</button></div><pre><code>debugbrief end --mode pr
-debugbrief end --mode handoff
-debugbrief end --mode incident</code></pre></div>
-      </section>
+<section class="doc-section" id="redo" data-doc-item>
+<h2>redo</h2>
+<p>Re-run the latest captured command in its original directory. This is a fresh execution using the current files, environment and dependencies, not a deterministic replay. Older sessions without a recorded directory use your current directory with a warning; a recorded directory that no longer exists is refused.</p>
+<div class="code-block"><div class="code-bar"><span>shell</span><button class="copy-button" type="button" data-copy="debugbrief redo" disabled>Copy</button></div>
+<pre><code><span class="prompt">$</span> debugbrief redo</code></pre></div>
+<div class="note-box"><span class="note-label">note</span><p><code>--dry-run</code> previews without executing. Destructive commands ask for confirmation; <code>--yes</code> bypasses it.</p></div>
+</section>
 
-      <section class="docs-section" id="modes" data-doc-item>
-        <div class="docs-section-heading"><span>08</span><h2>Report modes</h2></div>
-        <div class="docs-mode-table"><div><strong>PR</strong><span>Reproduce, verify, red → green, files, failures.</span></div><div><strong>Handoff</strong><span>Current state, notes, timeline, next steps.</span></div><div><strong>Incident</strong><span>Time window, observed error, resolution, follow-up.</span></div></div>
-      </section>
+<section class="doc-section" id="checks" data-doc-item>
+<h2>Checks and verification</h2>
+<p>Recognized test, build, lint and typecheck runners are classified automatically. A passing check needs a trustworthy zero exit code and a valid recorded timestamp. Evidence is verified when at least one eligible check passed and no check has a current failed or invalid result. A prior failure is not required. This verifies only the recorded checks, not the whole issue. Use <code>--verify</code> for a custom check.</p>
+<p>Help, version, collection-only and test-listing invocations never count as verification, even with <code>--verify</code>. A red-to-green window needs the same command to fail and later pass in the same directory; changed-file correlation additionally needs Git evidence. A later failure keeps the report unverified even if a historical window exists.</p>
+<p class="mono-list"><span>pytest</span> · <span>vitest</span> · <span>jest</span> · <span>bun test</span> · <span>deno test</span> · <span>node --test</span> · <span>go test</span> · <span>cargo test</span> · <span>npm/pnpm/yarn test</span> · <span>npm run build</span> · <span>tsc --noEmit</span> · <span>ruff</span> · <span>make check</span> · <span>tox</span> · <span>unittest</span> · <span>dotnet test</span> · <span>ctest</span> · <span>phpunit</span> · <span>mix test</span> · <span>swift test</span> · <span>rspec</span> · <span>mvn test</span> · <span>gradle test</span></p>
+</section>
 
-      <section class="docs-section" id="formats" data-doc-item>
-        <div class="docs-section-heading"><span>09</span><h2>Output formats</h2></div>
-        <div class="docs-command-table"><div><code>--format md</code><span>default Markdown brief</span></div><div><code>--format json</code><span>structured evidence</span></div><div><code>--format both</code><span>Markdown and JSON artifacts</span></div><div><code>--format html</code><span>self-contained browser report</span></div><div><code>--format all</code><span>all three artifacts</span></div></div>
-        <p>Every report exposes an explicit <strong>verified</strong> or <strong>unverified</strong> state and says when a root cause was not inferred.</p>
-      </section>
+<section class="doc-section" id="end" data-doc-item>
+<h2>end</h2>
+<p>Finalize the session and write the report. PR reports are compact by default; <code>--detail full</code> includes the full record in Markdown. JSON and HTML always keep the complete evidence.</p>
+<div class="code-block"><div class="code-bar"><span>shell</span><button class="copy-button" type="button" data-copy="debugbrief end --mode pr&#10;debugbrief end --mode handoff&#10;debugbrief end --mode incident" disabled>Copy</button></div>
+<pre><code><span class="prompt">$</span> debugbrief end --mode pr
+<span class="prompt">$</span> debugbrief end --mode handoff
+<span class="prompt">$</span> debugbrief end --mode incident</code></pre></div>
+</section>
 
-      <section class="docs-section" id="review" data-doc-item>
-        <div class="docs-section-heading"><span>10</span><h2>Review and share</h2></div>
-        <p>After <code>end</code>, the proof is local. Inspect the artifact before sending it anywhere. <code>preview --format html</code> lets you inspect the same self-contained view before finalizing.</p>
-        <div class="docs-code-block"><div class="code-block-bar"><span>shell</span><button class="copy-button" type="button" data-copy="debugbrief end --format html --open">Copy</button></div><pre><code>debugbrief end --format html --open
-debugbrief open --html
-debugbrief last --open</code></pre></div>
-        <p><code>open --html</code> selects the newest HTML brief explicitly. HTML artifacts also open in the system browser automatically; non-HTML reports open in <code>$EDITOR</code>.</p>
-      </section>
+<section class="doc-section" id="modes" data-doc-item>
+<h2>Report modes</h2>
+<div class="rows">
+<div><span>pr</span><span>Reproduce and verify commands, red to green window, changed files, failed attempts.</span></div>
+<div><span>handoff</span><span>Current status, your notes, timeline, next steps taken only from your notes.</span></div>
+<div><span>incident</span><span>Time window, observed error, resolution, follow-up items.</span></div>
+</div>
+</section>
 
-      <section class="docs-section" id="status" data-doc-item>
-        <div class="docs-section-heading"><span>11</span><h2>status and recovery</h2></div>
-        <p><code>status</code> shows the active session and any running captured command. If a process crashes, <code>recover</code> repairs stale state without deleting the session.</p>
-        <div class="docs-code-block"><div class="code-block-bar"><span>shell</span><button class="copy-button" type="button" data-copy="debugbrief status">Copy</button></div><pre><code>debugbrief status
-debugbrief doctor --fix
-debugbrief recover</code></pre></div>
-      </section>
+<section class="doc-section" id="formats" data-doc-item>
+<h2>Output formats</h2>
+<div class="rows">
+<div><code>--format md</code><span>Markdown brief (default)</span></div>
+<div><code>--format json</code><span>structured evidence</span></div>
+<div><code>--format both</code><span>Markdown and JSON</span></div>
+<div><code>--format html</code><span>self-contained browser report</span></div>
+<div><code>--format all</code><span>Markdown, JSON and HTML</span></div>
+</div>
+<p>Every report states whether it is verified or unverified and that the root cause was not inferred.</p>
+</section>
 
-      <section class="docs-section" id="privacy" data-doc-item>
-        <div class="docs-section-heading"><span>12</span><h2>Privacy and redaction</h2></div>
-        <p>Reports hide the absolute project root by default and show the repository basename. Pass <code>--include-full-path</code> only when the full local path is intentional.</p>
-        <p>Commands, output previews, titles, and notes pass through conservative redaction before persistence. Review every report before sharing it.</p>
-      </section>
+<section class="doc-section" id="review" data-doc-item>
+<h2>Review and share</h2>
+<p>Reports are saved locally after <code>end</code>. Read them before sending them anywhere. <code>preview --format html</code> shows the same view without ending the session.</p>
+<div class="code-block"><div class="code-bar"><span>shell</span><button class="copy-button" type="button" data-copy="debugbrief end --format html --open&#10;debugbrief open --html&#10;debugbrief last --open" disabled>Copy</button></div>
+<pre><code><span class="prompt">$</span> debugbrief end --format html --open
+<span class="prompt">$</span> debugbrief open --html
+<span class="prompt">$</span> debugbrief last --open</code></pre></div>
+<h3>Find a previous session</h3>
+<p><code>list</code> shows recorded sessions and <code>show</code> takes a full session id or an unambiguous prefix. Both accept <code>--json</code>.</p>
+<h3>Post a reviewed brief to a pull request</h3>
+<div class="code-block"><div class="code-bar"><span>shell</span><button class="copy-button" type="button" data-copy="debugbrief end --stdout | gh pr comment --body-file -" disabled>Copy</button></div>
+<pre><code><span class="prompt">$</span> debugbrief end --stdout | gh pr comment --body-file -</code></pre></div>
+<p>The GitHub CLI is optional and never required by DebugBrief.</p>
+</section>
 
-      <section class="docs-section" id="limitations" data-doc-item>
-        <div class="docs-section-heading"><span>13</span><h2>Limitations</h2></div>
-        <ul class="docs-limit-list"><li>No full-screen TUI capture such as <code>vim</code> or <code>htop</code>.</li><li>No passive shell-history capture.</li><li>No guaranteed secret detection.</li><li>No native Windows or PowerShell support.</li><li>No inferred root cause.</li></ul>
-      </section>
+<section class="doc-section" id="explorer" data-doc-item>
+<h2>Evidence Explorer</h2>
+<p>Export a JSON report, then open it in the <a href="explorer.html">Explorer</a> with the file picker or by dropping it on the page. Choose a generated report from <code>.debugbrief/reports/</code>, not a raw session file.</p>
+<div class="code-block"><div class="code-bar"><span>shell</span><button class="copy-button" type="button" data-copy="debugbrief end --format json&#10;debugbrief preview --format json &gt; report.json" disabled>Copy</button></div>
+<pre><code><span class="prompt">$</span> debugbrief end --format json
+<span class="comment"># or inspect an active session without ending it</span>
+<span class="prompt">$</span> debugbrief preview --format json &gt; report.json</code></pre></div>
+<p>Reports are parsed in the browser and held in memory until you clear them or reload the page. Report contents are never uploaded or saved to browser storage; only an explicitly chosen color theme is saved. One file up to 5 MiB, at most 2,000 entries per list.</p>
+<p>JSON schema version 1 adds per-attempt commands, bounded stdout and stderr previews, truncation flags and current failures. Older unversioned reports still open, and missing command history is flagged. The Explorer shows what the report claims; it does not re-verify it.</p>
+<p>Current reports attach a project-relative working directory to commands, verification, chronology and reproduce instructions. <code>.</code> means the project root. Older reports or locations that could not be recorded show an unknown directory; the Explorer does not assume the root.</p>
+</section>
 
-      <footer class="docs-footer"><span>Need the long form?</span><a href="https://github.com/harihkk/Debug-Brief/blob/main/docs/COMMANDS.md">Read the complete command reference ↗</a></footer>
-    </article>
+<section class="doc-section" id="status" data-doc-item>
+<h2>Status and recovery</h2>
+<p><code>status</code> shows the active session and any running captured command. If a process crashes, <code>recover</code> repairs stale state without deleting the session.</p>
+<p>Immediately after a crash, cleanup may still hold the command lock. Wait briefly and retry <code>status</code> and <code>recover</code>; recovery refuses to clear a held lock. A lost result remains unknown rather than becoming a pass.</p>
+<p>A separate supervisor stops the captured command's process group if the recorder is killed, including with <code>SIGKILL</code>. A lost command result stays unknown, and a child that deliberately starts its own session can outlive the capture.</p>
+<div class="code-block"><div class="code-bar"><span>shell</span><button class="copy-button" type="button" data-copy="debugbrief status&#10;debugbrief doctor --fix&#10;debugbrief recover" disabled>Copy</button></div>
+<pre><code><span class="prompt">$</span> debugbrief status
+<span class="prompt">$</span> debugbrief doctor --fix
+<span class="prompt">$</span> debugbrief recover</code></pre></div>
+<p><code>doctor</code> prints a health check and exits 0 when ready, 1 when usable with warnings and 2 on blocking issues. <code>--fix</code> only creates <code>.debugbrief/</code> and adds it to <code>.git/info/exclude</code>.</p>
+</section>
 
-    <aside class="docs-toc" aria-label="On this page">
-      <p>On this page</p>
-      <a href="#quickstart">Quickstart</a>
-      <a href="#run">run</a>
-      <a href="#redo">redo</a>
-      <a href="#end">end</a>
-      <a href="#formats">Formats</a>
-      <a href="#review">Review</a>
-      <a href="#privacy">Privacy</a>
-    </aside>
-  </main>
+<section class="doc-section" id="privacy" data-doc-item>
+<h2>Privacy and redaction</h2>
+<p>The project-root field shows the repository name by default. Pass <code>--include-full-path</code> only when you want the full root in a report. Absolute paths typed into commands, notes or captured output can still appear; hiding the project-root field does not scrub those paths.</p>
+<p>Commands, output previews, titles and notes go through conservative, best-effort redaction before anything is written, unless you pass <code>--no-redact</code>. Common secret patterns are masked, but detection is not guaranteed. Review every report before sharing it.</p>
+<p>DebugBrief sends no telemetry and uploads nothing. A command you choose to run can still use the network. Session directories use owner-only permissions where supported, writes are atomic, and commands are protected by session locks.</p>
+</section>
 
-  <footer class="site-footer">
-    <div class="shell footer-inner">
-      <div class="footer-brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>debugbrief</span></div>
-      <p>Record what happened. Share what you can prove.</p>
-      <div class="footer-links"><a href="index.html">Home</a><a href="https://github.com/harihkk/Debug-Brief">Repository ↗</a><a href="https://github.com/harihkk/Debug-Brief/blob/main/SECURITY.md">Security ↗</a></div>
-    </div>
-    <div class="shell footer-bottom"><span>Local-first debugging ledger</span><span>Built from explicit evidence</span></div>
-  </footer>
-  <div class="toast" role="status" aria-live="polite" data-toast></div>
-  <script src="app.js"></script>
+<section class="doc-section" id="config" data-doc-item>
+<h2>Configuration</h2>
+<p>An optional <code>.debugbrief.toml</code> in the project root sets defaults. A command flag wins over the file, and the file wins over the built-in default.</p>
+<div class="code-block"><div class="code-bar"><span>toml</span><button class="copy-button" type="button" data-copy="default_mode = &quot;pr&quot;&#10;timeout_seconds = 600&#10;detail = &quot;compact&quot;" disabled>Copy</button></div>
+<pre><code>default_mode = "pr"
+timeout_seconds = 600
+detail = "compact"</code></pre></div>
+<p>A missing file is ignored. A malformed file is ignored as a whole and flagged by <code>debugbrief doctor</code>. The config cannot enable the full project-root field; that requires the command flag. Paths inside recorded text are governed by the privacy limits above.</p>
+</section>
+
+<section class="doc-section" id="limitations" data-doc-item>
+<h2>Limitations</h2>
+<ul class="docs-limits">
+<li>No full-screen TUI capture, such as <code>vim</code> or <code>htop</code>.</li>
+<li>No passive shell-history capture.</li>
+<li>No guaranteed secret detection.</li>
+<li>No native Windows or PowerShell support.</li>
+<li>No inferred root cause or independent correctness audit.</li>
+<li>No reproducible environment capture: <code>redo</code> uses the current environment.</li>
+<li>Outside a Git repository, commands and notes still work, but Git state, changed files and Git-based correlation are unavailable.</li>
+</ul>
+</section>
+
+<section class="doc-section" id="reference" data-doc-item>
+<h2>Command reference</h2>
+<div class="rows ref">
+<div><span class="sig"><b>init</b></span><span>Set up the project and show the workflow. Never starts a session.</span></div>
+<div><span class="sig"><b>start</b> "&lt;title&gt;"</span><span>Start a session and record the initial Git state.</span></div>
+<div><span class="sig"><b>note</b> &lt;text&gt;</span><span>Record an observation. Quoting is optional.</span></div>
+<div><span class="sig"><b>run</b> [flags] -- &lt;command&gt;</span><span>Run and capture a command.</span><span class="flags"><code>--timeout SECONDS</code> <code>--shell</code> <code>--verify</code> <code>--no-redact</code></span></div>
+<div><span class="sig"><b>redo</b> [flags]</span><span>Re-run the last captured command.</span><span class="flags"><code>--dry-run</code> <code>--yes</code> <code>--timeout SECONDS</code> <code>--verify</code> <code>--no-redact</code></span></div>
+<div><span class="sig"><b>preview</b> [flags]</span><span>Print the report without ending the session.</span><span class="flags"><code>--mode pr|handoff|incident</code> <code>--format md|json|html</code> <code>--detail compact|full</code> <code>--include-full-path</code> <code>--no-include-full-path</code></span></div>
+<div><span class="sig"><b>end</b> [flags]</span><span>Finalize the session and write the report. <code>--open</code> needs <code>--format html</code> or <code>all</code>.</span><span class="flags"><code>--mode pr|handoff|incident</code> <code>--format md|json|html|both|all</code> <code>--detail compact|full</code> <code>--stdout</code> <code>--open</code> <code>--include-full-path</code> <code>--no-include-full-path</code></span></div>
+<div><span class="sig"><b>cancel</b> [--yes]</span><span>Abandon the session. No report is written; the record is kept.</span></div>
+<div><span class="sig"><b>status</b></span><span>Show the active session and any running command.</span></div>
+<div><span class="sig"><b>doctor</b> [--fix]</span><span>Health check. Exit 0 ready, 1 usable with warnings, 2 blocking.</span></div>
+<div><span class="sig"><b>recover</b></span><span>Repair a broken or stale session pointer. Never deletes session data.</span></div>
+<div><span class="sig"><b>last</b> [--open]</span><span>Show or open the most recent report.</span></div>
+<div><span class="sig"><b>open</b> [--last | --path PATH] [--html]</span><span>Open a report in $EDITOR, or an HTML report in the browser.</span></div>
+<div><span class="sig"><b>list</b> [--json]</span><span>List recorded sessions.</span></div>
+<div><span class="sig"><b>show</b> &lt;session_id&gt; [--json]</span><span>Show one session. Accepts an unambiguous id prefix.</span></div>
+</div>
+</section>
+
+<section class="doc-section" id="troubleshooting" data-doc-item>
+<h2>Troubleshooting</h2>
+<div class="rows">
+<div><span>Command not found after install</span><span>Make sure your installer's bin directory is on PATH. For pipx run <code>pipx ensurepath</code>; for uv run <code>uv tool update-shell</code>. Then open a new terminal.</span></div>
+<div><span>A captured executable is missing</span><span>Install that executable in the environment used by <code>run</code> and check PATH. Installing DebugBrief does not install pytest, Node or your project dependencies.</span></div>
+<div><span>Externally managed Python</span><span>Use pipx or uv, or install inside an activated virtual environment. Do not use sudo pip.</span></div>
+<div><span>A captured command was interrupted</span><span>Run <code>debugbrief status</code>, then <code>debugbrief recover</code> for stale state. Recovery keeps the session and never invents a command outcome.</span></div>
+<div><span>A command needs more time</span><span>The default timeout is 300 seconds. Raise it per command: <code>debugbrief run --timeout 900 -- pytest -q</code>.</span></div>
+<div><span>No passing verification listed</span><span>Run a recognized check, or declare your own with <code>debugbrief run --verify -- ./check.sh</code>. A failed or interrupted command cannot verify.</span></div>
+<div><span>Report import fails in the Explorer</span><span>Export with <code>--format json</code>. Raw session files, unsupported schema versions, oversized lists and malformed JSON are rejected. A report that was already open stays open.</span></div>
+</div>
+<p class="docs-end"><a href="https://github.com/hari-kancharla/Debug-Brief/blob/main/docs/COMMANDS.md">Full command reference on GitHub</a></p>
+</section>
+</article>
+</main>
+
+<dialog class="filter-dialog" data-doc-filter aria-labelledby="filter-title">
+<div class="filter-head"><label id="filter-title" for="filter-input">Find a section</label><button type="button" data-doc-filter-close>Close</button></div>
+<input id="filter-input" type="search" placeholder="run, redo, privacy" autocomplete="off" data-doc-filter-input aria-describedby="filter-status">
+<ul class="filter-results" data-doc-filter-results></ul>
+<p class="filter-status" id="filter-status" role="status" data-doc-filter-status></p>
+</dialog>
+
+<footer class="site-footer">
+<div class="footer-row">
+<nav class="footer-links" aria-label="Footer"><a href="docs.html">Docs</a><a href="explorer.html">Explorer</a><a href="https://github.com/hari-kancharla/Debug-Brief">GitHub</a><a href="https://pypi.org/project/debugbrief/">PyPI</a><a href="https://github.com/hari-kancharla/Debug-Brief/blob/main/CHANGELOG.md">Changelog</a><a href="https://github.com/hari-kancharla/Debug-Brief/blob/main/SECURITY.md">Security</a></nav>
+<span>MIT license</span>
+</div>
+<div class="footer-mark" aria-hidden="true">[db] DebugBrief</div>
+</footer>
+<div class="toast" role="status" aria-live="polite" data-toast></div>
 </body>
 </html>

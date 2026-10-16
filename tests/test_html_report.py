@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import re
+from html.parser import HTMLParser
+
+import pytest
+
 from debugbrief import cli
 from debugbrief.models import (
     COMMAND_STATUS_FAILED,
@@ -77,8 +84,34 @@ def test_html_report_is_self_contained_and_escaped():
     assert "MyRepo" in document
     assert "<tag>" not in document
     assert "&lt;tag&gt;" in document
-    assert "href=" not in document
+    class Assets(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            for name, value in attrs:
+                if name in {"href", "src"}:
+                    assert value.startswith("data:"), (tag, name, value)
+
+    Assets().feed(document)
     assert "http://" not in document and "https://" not in document
+    style = re.search(r"<style>(.*?)</style>", document, re.S).group(1)
+    digest = base64.b64encode(hashlib.sha256(style.encode()).digest()).decode()
+    assert f"style-src 'sha256-{digest}'" in document
+    assert "default-src 'none'" in document
+
+
+@pytest.mark.parametrize("seconds, expected", [
+    (0, "0s"),
+    (0.0000001, "&lt;0.001s"),
+    (0.418000000004, "0.418s"),
+    (46.74799990653992, "46.748s"),
+    (59.9999, "1m 0s"),
+    (77.217, "1m 17s"),
+])
+def test_html_command_and_timeline_durations_are_readable(seconds, expected):
+    session = _session()
+    session.command_events()[0].data["duration_seconds"] = seconds
+    document = render_report_html(session, "pr")
+    assert f"exit 0 · {expected}</p>" in document
+    assert f"[{expected}]" in document
 
 
 def test_html_report_wraps_narrow_metadata_and_timeline_content():
@@ -152,3 +185,67 @@ def test_end_writes_html_and_last_finds_it(tmp_path, monkeypatch, capsys):
     assert "reports:      pr" in capsys.readouterr().out
     assert cli.main(["show", session_id]) == 0
     assert ".html" in capsys.readouterr().out
+
+
+def test_html_shows_escaped_output_and_marks_failure_in_the_timeline():
+    session = _session()
+    command = session.events[-1].data
+    command.update(
+        exit_code=1, stdout_preview="first\n<script>unsafe</script>\nlast", stdout_truncated=True
+    )
+    command["classification"]["status"] = "failed"
+    document = render_report_html(session, "pr")
+    assert "<h2>Command output</h2>" in document
+    assert "<script>unsafe</script>" not in document
+    assert "first\n&lt;script&gt;unsafe&lt;/script&gt;\nlast" in document
+    assert "truncated preview" in document
+    assert 'class="command-event command-failed"' in document
+    assert '<details class="record">' in document
+
+
+def test_html_never_uses_a_passing_timeline_marker_for_a_failure():
+    session = _session()
+    session.events[-1].data["exit_code"] = 2
+    document = render_report_html(session, "pr")
+    assert 'class="command-event command-passed"' not in document
+    assert 'class="command-event command-failed"' in document
+
+
+def test_same_timestamp_outcomes_keep_distinct_timeline_statuses():
+    session = _session()
+    failure = CommandData.from_dict(session.events[-1].data)
+    failure.exit_code = 1
+    failure.classification.status = "failed"
+    failure.classification.is_verification = False
+    session.events.insert(1, Event.command(failure, session.events[-1].timestamp))
+    document = render_report_html(session, "pr")
+    assert 'class="command-event command-failed"' in document
+    assert 'class="command-event command-passed"' in document
+
+
+@pytest.mark.parametrize("extra_pass, expected_count", [(False, 1), (True, 2)])
+def test_verification_repeats_count_only_actual_passes(extra_pass, expected_count):
+    from debugbrief.reporters import build_context, render_report
+
+    session = _session()
+    passed = session.command_events()[0]
+    failure = CommandData.from_dict(passed.data)
+    failure.exit_code = 1
+    failure.classification.status = "failed"
+    failure.classification.is_verification = False
+    session.events.insert(1, Event.command(failure, passed.timestamp))
+    if extra_pass:
+        session.events.append(Event.command(CommandData.from_dict(passed.data), passed.timestamp))
+    context = build_context(session)
+    assert context.report_commands[0].count == expected_count + 1
+    assert context.verification_commands[0].verification_count == expected_count
+    html = render_report_html(session, "pr")
+    verification = html.split("<h2>Verification</h2>", 1)[1].split("</section>", 1)[0]
+    md = render_report(session, "pr")
+    md_verification = md.split("## Verification and tests", 1)[1].split("\n## ", 1)[0]
+    if expected_count == 1:
+        assert "×" not in verification
+        assert " x2" not in md_verification
+    else:
+        assert "×2" in verification
+        assert " x2" in md_verification

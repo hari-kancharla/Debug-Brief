@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+
 from debugbrief.models import (
     COMMAND_STATUS_FAILED,
     COMMAND_STATUS_PASSED,
@@ -18,6 +20,7 @@ from debugbrief.models import (
     Timestamps,
 )
 from debugbrief.reporters import build_context, render_report_json
+from debugbrief.reporters.base import report_working_directory
 from debugbrief.utils import to_iso8601, utc_now
 
 
@@ -43,15 +46,35 @@ def _session():
         title="Fix it",
         project_root="/repo",
         status=SessionStatus.COMPLETED.value,
-        git=GitState(is_repo=True, repo_root="/repo", initial_sha="aaa", final_sha="bbb", branch="main"),
+        git=GitState(
+            is_repo=True, repo_root="/repo", initial_sha="aaa", final_sha="bbb", branch="main"
+        ),
         timestamps=Timestamps(start=t0, end=t1),
     )
     s.events.append(Event.note("a hypothesis", t0))
     s.events.append(
-        _cmd("pytest", COMMAND_STATUS_FAILED, t0, 1, ["src/x.py"], stderr="AssertionError: nope", is_test=True, tool="pytest")
+        _cmd(
+            "pytest",
+            COMMAND_STATUS_FAILED,
+            t0,
+            1,
+            ["src/x.py"],
+            stderr="AssertionError: nope",
+            is_test=True,
+            tool="pytest",
+        )
     )
     s.events.append(
-        _cmd("pytest", COMMAND_STATUS_PASSED, t1, 0, ["src/x.py"], is_test=True, is_verification=True, tool="pytest")
+        _cmd(
+            "pytest",
+            COMMAND_STATUS_PASSED,
+            t1,
+            0,
+            ["src/x.py"],
+            is_test=True,
+            is_verification=True,
+            tool="pytest",
+        )
     )
     s.summary = Summary(
         modified_files=["src/x.py"],
@@ -120,6 +143,40 @@ def test_json_matches_markdown_derived_content():
     assert payload["changed_files"] == [{"status": "M", "path": "src/x.py"}]
 
 
+@pytest.mark.parametrize("cwd, expected", [
+    ("/repo", "."),
+    ("/repo/packages/cache", "packages/cache"),
+    ("/private/other-project", None),
+    ("/repo/../other-project", None),
+    ("relative/path", None),
+    (None, None),
+])
+def test_report_directories_are_relative_and_never_guessed(cwd, expected):
+    assert report_working_directory(_session(), cwd) == expected
+
+
+def test_all_report_formats_retain_where_the_check_actually_ran():
+    from debugbrief.reporters import render_report, render_report_html
+
+    session = _session()
+    for event in session.command_events():
+        event.data["invocation_cwd"] = "/repo/packages/cache"
+    original = session.to_dict()
+    for mode in ("pr", "handoff", "incident"):
+        payload = render_report_json(session, mode)
+        assert payload["reproduce_working_directory"] == "packages/cache"
+        assert payload["verify_working_directory"] == "packages/cache"
+        assert payload["red_to_green"]["working_directory"] == "packages/cache"
+        assert all(c["working_directory"] == "packages/cache" for c in payload["commands"])
+        assert all(c["working_directory"] == "packages/cache" for c in payload["verification"])
+        assert all(c["working_directory"] == "packages/cache" for c in payload["ruled_out"])
+        assert all(e["working_directory"] == "packages/cache" for e in payload["timeline"] if e["kind"] == "command")
+        assert "working directory: `packages/cache`" in render_report(session, mode)
+        assert "Working directory: packages/cache" in render_report_html(session, mode)
+        assert "/repo" not in str(payload)
+    assert session.to_dict() == original
+
+
 def test_json_preserves_structured_command_and_path_whitespace():
     session = _session()
     session.events[-1].data["command"] = "echo  a   b"
@@ -141,3 +198,36 @@ def render_to_md(session):
     from debugbrief.reporters import render_report
 
     return render_report(session, "pr")
+
+
+def test_structured_command_history_keeps_both_attempts_and_bounded_output():
+    session = _session()
+    session.events[1].data["stdout_preview"] = "failure details <script>"
+    session.events[1].data["stdout_truncated"] = True
+    session.events[1].data["invocation_cwd"] = "/private/workspace/repo"
+    payload = render_report_json(session, "pr")
+    assert payload["schema_version"] == 1
+    assert len(payload["commands"]) == 2
+    failed, passed = payload["commands"]
+    assert failed["status"] == "failed" and failed["exit_code"] == 1
+    assert failed["stdout_preview"] == "failure details <script>"
+    assert failed["stdout_truncated"] is True
+    assert passed["status"] == "passed" and passed["is_verification"] is True
+    assert "invocation_cwd" not in failed
+    assert "fingerprints" not in failed
+
+
+def test_structured_commands_do_not_promote_help_or_nonzero_exit_to_verification():
+    session = _session()
+    session.events[-1].data.update(command="pytest --help")
+    payload = render_report_json(session, "pr")
+    assert payload["commands"][-1]["is_verification"] is False
+
+
+def test_current_failures_remain_after_an_earlier_pass():
+    session = _session()
+    session.events[-1].data["exit_code"] = 1
+    payload = render_report_json(session, "pr")
+    assert payload["evidence"]["state"] == "unverified"
+    assert payload["currently_failing"][0]["exit_code"] == 1
+    assert all(not item["is_verification"] for item in payload["commands"])

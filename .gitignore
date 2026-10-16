@@ -26,3 +26,9 @@ htmlcov/
 *.swp
 .idea/
 .vscode/
+
+# Local product verification and browser tooling
+artifacts/
+node_modules/
+test-results/
+playwright-report/

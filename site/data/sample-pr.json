@@ -1,0 +1,194 @@
+{
+  "schema_version": 1,
+  "mode": "pr",
+  "session_id": "11111111-2222-4333-8444-555555555555",
+  "title": "Handle an expired cache entry",
+  "status": "COMPLETED",
+  "project_root": "cache-service",
+  "warnings": [],
+  "started_at": "2026-01-01T12:02:00Z",
+  "ended_at": "2026-01-01T12:06:00Z",
+  "git": {
+    "is_repo": true,
+    "branch": "fix/cache-expiry",
+    "detached_head": false,
+    "initial_sha": "a7c40e1",
+    "final_sha": "a7c40e1"
+  },
+  "counts": {
+    "notes": 2,
+    "commands": 3,
+    "failed_commands": 1
+  },
+  "line_stats": {
+    "added": 14,
+    "deleted": 3
+  },
+  "one_liner": "Failing check python -m pytest -q tests/test_cache.py passed; 3 commands recorded in the session over 4m 0s, changes touched src/cache.py, tests/test_cache.py.",
+  "evidence": {
+    "state": "verified",
+    "basis": "the same recorded check failed and later passed",
+    "command": "python -m pytest -q tests/test_cache.py",
+    "scope": "This verifies the recorded check, not the whole issue.",
+    "root_cause": "not_inferred",
+    "invalid_verification_commands": []
+  },
+  "reproduce_command": "python -m pytest -q tests/test_cache.py",
+  "verify_command": "python -m pytest -q tests/test_cache.py",
+  "reproduce_working_directory": null,
+  "verify_working_directory": null,
+  "red_to_green": {
+    "command": "python -m pytest -q tests/test_cache.py",
+    "failed_at": "2026-01-01T12:02:12Z",
+    "passed_at": "2026-01-01T12:04:12Z",
+    "window_seconds": 120.0,
+    "changed_files": [
+      "src/cache.py",
+      "tests/test_cache.py"
+    ],
+    "commit_boundary": false,
+    "working_directory": null
+  },
+  "observed_error": "E AssertionError: expired entry returned instead of a cache miss",
+  "ruled_out": [
+    {
+      "command": "python -m pytest -q tests/test_cache.py",
+      "status": "failed",
+      "exit_code": 1,
+      "timestamp": "2026-01-01T12:02:12Z",
+      "working_directory": null
+    }
+  ],
+  "timeline": [
+    {
+      "timestamp": "2026-01-01T12:02:00Z",
+      "kind": "snapshot",
+      "status": null,
+      "working_directory": null,
+      "text": "Session started."
+    },
+    {
+      "timestamp": "2026-01-01T12:02:12Z",
+      "kind": "command",
+      "status": "failed",
+      "working_directory": null,
+      "text": "python -m pytest -q tests/test_cache.py -> failed (exit 1) [0.4s]"
+    },
+    {
+      "timestamp": "2026-01-01T12:03:00Z",
+      "kind": "note",
+      "status": null,
+      "working_directory": null,
+      "text": "Expired entries still reach the read path. Check the expiry boundary."
+    },
+    {
+      "timestamp": "2026-01-01T12:04:00Z",
+      "kind": "note",
+      "status": null,
+      "working_directory": null,
+      "text": "Return a cache miss when the entry expires. Added the boundary case to the test."
+    },
+    {
+      "timestamp": "2026-01-01T12:04:12Z",
+      "kind": "command",
+      "status": "passed",
+      "working_directory": null,
+      "text": "python -m pytest -q tests/test_cache.py -> passed (exit 0) [0.4s]"
+    },
+    {
+      "timestamp": "2026-01-01T12:05:12Z",
+      "kind": "command",
+      "status": "passed",
+      "working_directory": null,
+      "text": "python -m ruff check src tests -> passed (exit 0) [0.08s]"
+    },
+    {
+      "timestamp": "2026-01-01T12:06:00Z",
+      "kind": "snapshot",
+      "status": null,
+      "working_directory": null,
+      "text": "Session ended."
+    }
+  ],
+  "changed_files": [
+    {
+      "status": "M",
+      "path": "src/cache.py"
+    },
+    {
+      "status": "M",
+      "path": "tests/test_cache.py"
+    }
+  ],
+  "verification": [
+    {
+      "command": "python -m pytest -q tests/test_cache.py",
+      "tool": "pytest",
+      "is_test": true,
+      "working_directory": null
+    },
+    {
+      "command": "python -m ruff check src tests",
+      "tool": "ruff",
+      "is_test": false,
+      "working_directory": null
+    }
+  ],
+  "commands": [
+    {
+      "command": "python -m pytest -q tests/test_cache.py",
+      "timestamp": "2026-01-01T12:02:12Z",
+      "status": "failed",
+      "exit_code": 1,
+      "duration_seconds": 0.4,
+      "is_test": true,
+      "is_verification": false,
+      "tool": "pytest",
+      "stdout_preview": "E AssertionError: expired entry returned instead of a cache miss\n1 failed",
+      "stderr_preview": "",
+      "stdout_truncated": false,
+      "stderr_truncated": false,
+      "redacted": false,
+      "working_directory": null
+    },
+    {
+      "command": "python -m pytest -q tests/test_cache.py",
+      "timestamp": "2026-01-01T12:04:12Z",
+      "status": "passed",
+      "exit_code": 0,
+      "duration_seconds": 0.4,
+      "is_test": true,
+      "is_verification": true,
+      "tool": "pytest",
+      "stdout_preview": "4 passed",
+      "stderr_preview": "",
+      "stdout_truncated": false,
+      "stderr_truncated": false,
+      "redacted": false,
+      "working_directory": null
+    },
+    {
+      "command": "python -m ruff check src tests",
+      "timestamp": "2026-01-01T12:05:12Z",
+      "status": "passed",
+      "exit_code": 0,
+      "duration_seconds": 0.08,
+      "is_test": false,
+      "is_verification": true,
+      "tool": "ruff",
+      "stdout_preview": "All checks passed!",
+      "stderr_preview": "",
+      "stdout_truncated": false,
+      "stderr_truncated": false,
+      "redacted": false,
+      "working_directory": null
+    }
+  ],
+  "currently_failing": [],
+  "notes": [
+    "Expired entries still reach the read path. Check the expiry boundary.",
+    "Return a cache miss when the entry expires. Added the boundary case to the test."
+  ],
+  "redaction_applied": false,
+  "command_capture_status": "full"
+}

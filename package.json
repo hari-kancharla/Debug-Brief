@@ -1,0 +1,17 @@
+{
+  "name": "debugbrief-site-checks",
+  "private": true,
+  "scripts": {
+    "test:site": "playwright test",
+    "test:site:firefox": "DEBUGBRIEF_BROWSER_ENGINE=firefox playwright test",
+    "test:site:webkit": "DEBUGBRIEF_BROWSER_ENGINE=webkit playwright test",
+    "format:site": "prettier --write site/index.html site/docs.html site/explorer.html site/*.css site/*.js scripts/*.mjs tests/browser/*.js playwright.config.js",
+    "check:links": "python3 scripts/check_site.py"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "axe-core": "4.14.0",
+    "lighthouse": "13.5.0",
+    "prettier": "3.9.10"
+  }
+}

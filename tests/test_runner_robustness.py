@@ -551,22 +551,38 @@ def test_repeated_sigint_persists_exactly_one_event(tmp_path):
         cwd=tmp_path, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
     )
     marker = f"db_stress_marker_{tmp_path.name}"
-    proc = subprocess.Popen(
-        [PY, "-m", "debugbrief", "run", "--", PY, "-c", f"import time; time.sleep(30)  # {marker}"],
-        cwd=tmp_path, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=True,
+    ready = tmp_path / "command-ready"
+    errors = tmp_path / "recorder-stderr"
+    command = (
+        "import time; from pathlib import Path; "
+        f"Path({str(ready)!r}).write_text('ready'); time.sleep(30)  # {marker}"
     )
-    time.sleep(1.5)
-    for _ in range(6):  # hammer Ctrl-C around exit and persistence
+    with errors.open("w") as stderr:
+        proc = subprocess.Popen(
+            [PY, "-m", "debugbrief", "run", "--", PY, "-c", command],
+            cwd=tmp_path, stdout=subprocess.DEVNULL, stderr=stderr,
+            start_new_session=True,
+        )
         try:
-            proc.send_signal(signal.SIGINT)
-        except ProcessLookupError:
-            break
-        time.sleep(0.04)
-    rc = proc.wait(timeout=15)
-    # The independent supervisor also cleans up if a repeated interrupt kills
-    # the recorder during teardown. Check before the helper's emergency cleanup.
-    assert not _wait_no_orphan(marker), "a child survived the interrupt storm"
+            # Interrupt the running recorder, not Python's startup on a busy host.
+            deadline = time.monotonic() + 15
+            while not ready.exists() and proc.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert ready.exists(), f"command never started: {errors.read_text()}"
+            for _ in range(6):  # hammer Ctrl-C around exit and persistence
+                try:
+                    proc.send_signal(signal.SIGINT)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.04)
+            rc = proc.wait(timeout=15)
+            # Check supervised cleanup before any emergency test cleanup.
+            assert not _wait_no_orphan(marker), "a child survived the interrupt storm"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+            _wait_no_orphan(marker)
 
     # A storm SIGINT can land at any instant. A clean catch returns 130 and
     # records the interrupted command; a SIGINT that lands during teardown or
@@ -575,7 +591,7 @@ def test_repeated_sigint_persists_exactly_one_event(tmp_path):
     # written or the child is reaped. Both are interrupted outcomes. The
     # guarantee for persistence under a storm is integrity, not that the write
     # wins the race. Process cleanup is independently supervised.
-    assert rc in (130, -signal.SIGINT), rc
+    assert rc in (130, -signal.SIGINT), f"{rc}: {errors.read_text()}"
     sessions = list((tmp_path / ".debugbrief" / "sessions").glob("*.json"))
     assert sessions
     data = json.loads(sessions[0].read_text())  # must remain valid JSON

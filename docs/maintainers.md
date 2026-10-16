@@ -59,9 +59,11 @@ environment requires checking both the workflow and the PyPI configuration.
 
 ## Release procedure
 
-1. Update the version in `pyproject.toml` and `src/debugbrief/__init__.py`, and add
-   the dated changelog entry. Review the README, command reference, security
-   policy and install examples against the actual behavior.
+1. Update the version in `pyproject.toml` and `src/debugbrief/__init__.py`, the
+   release version in the README's badge URL and PyPI link, and the dated
+   changelog entry. The badge reads that specific release from PyPI. Review the
+   README, command reference, security policy and install examples against the
+   actual behavior.
 2. Run the tests, fixture/link checks and package build. Install the built wheel
    in a clean environment and exercise capture, replay and report generation.
 3. Open a pull request. Wait for every CI and website job, inspect failures, then
@@ -74,7 +76,10 @@ environment requires checking both the workflow and the PyPI configuration.
    and check PyPI before retrying; a partial upload is not a completed release.
 6. Verify the public PyPI version, wheel and source hashes against the build
    artifacts. Install the version from official PyPI in another clean environment,
-   run the CLI checks, and verify the public README renders correctly.
+   run the CLI checks, and verify the public README renders correctly. Check the
+   badge image on both GitHub and PyPI, not just the release heading. GitHub
+   documents a [Camo cache purge](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/about-anonymized-urls#removing-an-image-from-camos-cache)
+   for stale images; a successful purge response still needs a visual check.
 
 Do not move a published version tag or overwrite release files. PyPI retains the
 metadata submitted for a version, so a corrected packaged README needs a new

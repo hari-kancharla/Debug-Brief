@@ -12,7 +12,8 @@ DebugBrief intentionally does NOT:
 - make network calls at runtime,
 - capture shell history,
 - run a background daemon,
-- ship a runtime web UI or TUI (the repository may contain a static product site),
+- run a web server as part of command capture. Self-contained HTML reports and
+  the separate static website are supported,
 - add new runtime dependencies. DebugBrief uses the standard library and native
   `git`, plus one conditional dependency: the `tomli` TOML parser on Python 3.9
   and 3.10, where the standard-library `tomllib` is not yet available.
@@ -45,6 +46,44 @@ deliberate):
 DEBUGBRIEF_UPDATE_SNAPSHOTS=1 pytest tests/test_snapshots.py
 ```
 
+Run the same lint and type checks as CI:
+
+```bash
+python -m ruff check src tests
+python -m mypy src/debugbrief
+```
+
+## Website changes
+
+The site is plain HTML, CSS and JavaScript; there is no build step. From the
+repository root, `python3 scripts/serve_site.py` starts an uncached preview at
+`http://127.0.0.1:8765`. Stop it when you finish.
+
+Check local links and the generated report fixtures:
+
+```bash
+python scripts/check_site.py
+python scripts/generate_samples.py --check
+```
+
+For browser tests, install Node.js and the pinned tools in `package-lock.json`:
+
+```bash
+npm ci
+npx playwright install --with-deps chromium
+npm run test:site
+```
+
+The browser suite checks imports, keyboard interaction, accessibility, reflow and
+report privacy. Firefox and WebKit checks are available through
+`npm run test:site:firefox` and `npm run test:site:webkit` after installing those
+Playwright engines. Engine tests do not replace physical-device or screen-reader
+checks.
+
+When report rendering changes, regenerate the nine illustrative site fixtures
+with `python scripts/generate_samples.py`, review the output, then run the check
+again. Do not edit generated reports by hand or pass them off as real executions.
+
 ## Build the wheel
 
 ```bash
@@ -76,7 +115,7 @@ python -m debugbrief --help
   runtime dependencies. If one is truly unavoidable, justify it clearly in the
   pull request and README.
 - Add or update tests for any behavior you change. Core logic must stay tested.
-- Keep CLI output plain and human-readable. 
+- Keep CLI output plain and readable.
 - Be honest in code and docs. Do not fabricate report content, root causes,
   test results, or verification, and do not claim a command was run unless it
   was actually run. Do not include AI-generated fake summaries or fabricated

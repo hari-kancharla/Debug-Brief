@@ -5,6 +5,20 @@ All notable changes to DebugBrief are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-10-16
+
+### Fixed
+
+- Corrected the security policy's process-cleanup and local file-access descriptions.
+- Made Git requirements and timestamp validation consistent across the README,
+  command reference and website docs. Added the missing recover reference and
+  clarified stdout formats and Explorer report imports.
+- Rewrote the README for a shorter introduction and practical examples. Added
+  contributor browser checks and documented the actual repository protections
+  and token-free PyPI release workflow.
+- Enabled the private vulnerability-reporting form referenced by the security policy.
+- Command capture and report behavior are unchanged from 1.4.0.
+
 ## [1.4.0] - 2026-10-16
 
 ### Added
@@ -12,17 +26,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reports now expose an explicit `verified` or `unverified` evidence state and
   preserve the important caveat that DebugBrief does not infer a root cause.
 - `end --format html` writes a self-contained browser report, and `--format all`
-  writes Markdown, JSON, and HTML together. HTML mode sections now follow the
-  selected reader and omit sections with no evidence.
+  writes Markdown, JSON, and HTML together. HTML sections follow the
+  selected report mode and omit sections with no evidence.
 - The static product site lives in `site/` and presents the real workflow,
   report modes, trust boundary, and limitations. Fonts and optional homepage animation libraries load from a CDN.
 - `end --format html --open` writes and opens a self-contained HTML brief, `open --html` opens
   the newest HTML report, and `last --open` provides a one-step review path.
-- `preview --format html|json` renders machine-readable or browser-ready proofs
+- `preview --format html|json` renders JSON or HTML previews
   without finalizing the active session.
 - PR and HTML reports now expose the verification scope and the captured failure
   excerpt, not only a pass/fail headline.
-- The supplied product-site design includes the animated red-to-green field,
+- The product site includes the animated red-to-green field,
   light and dark themes, report tabs, install copying and a keyboard-accessible
   documentation section finder.
 - The Evidence Explorer reads local JSON reports in memory, with command/output
@@ -54,7 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reports and JSON output now normalize untrusted legacy text without allowing
   modified filenames or tainted command/error fields to break Markdown structure.
   JSON scalar values remain plain, `last` handles malformed report files, and
-  absolute project paths are a CLI-only opt-in.
+  the absolute project-root field is a CLI-only opt-in.
 - Invalid command end timestamps fall back to validated event or start timestamps,
   malformed persisted leaves degrade to controlled values, and multiline notes
   remain intact in storage while being escaped at report-rendering time.

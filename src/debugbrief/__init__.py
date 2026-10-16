@@ -9,6 +9,6 @@ dependency: the ``tomli`` TOML parser on Python < 3.11 (3.11+ uses the
 standard-library ``tomllib``). No AI, no telemetry, no cloud sync, no daemon.
 """
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 __all__ = ["__version__"]

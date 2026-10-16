@@ -2,15 +2,17 @@
 
 [![CI](https://github.com/hari-kancharla/Debug-Brief/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/hari-kancharla/Debug-Brief/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/debugbrief?cacheSeconds=3600)](https://pypi.org/project/debugbrief/)
 
-Record what you do while debugging and turn it into an evidence-backed report for a pull request, a handoff, or an incident note.
+Record commands and notes while you debug, then turn them into a report for a
+pull request, a handoff, or an incident review.
 
-![A failing test streams live, the fix lands, redo passes, and the generated report appears](https://raw.githubusercontent.com/hari-kancharla/Debug-Brief/main/docs/demo.gif)
+DebugBrief keeps the actual commands, exit codes, output previews and Git changes.
+It does not use AI or infer a root cause. You decide what to run and what to share.
 
-DebugBrief captures the notes you write and the commands you run, then builds a report from what actually happened: what you tried, what failed, what passed, and which files changed in between. It does not use AI and does not infer a root cause or report a test result you did not get.
-
-The product site includes the workflow, command reference and a local JSON Evidence Explorer: [open the site source](https://github.com/hari-kancharla/Debug-Brief/tree/main/site), or run `python3 scripts/serve_site.py` for a local preview. The site uses CDN fonts and optional animation libraries; imported reports stay in the browser and are never uploaded. It is included in the source distribution and is intentionally repository/deployment content rather than runtime wheel data.
+![A failing test, a fix, a passing rerun and the generated report](https://raw.githubusercontent.com/hari-kancharla/Debug-Brief/main/docs/demo.gif)
 
 ## Install
+
+Python 3.9 or newer on Linux or macOS. The project you debug can use any language.
 
 ```bash
 pipx install debugbrief
@@ -18,116 +20,154 @@ pipx install debugbrief
 uv tool install debugbrief
 ```
 
-These examples require DebugBrief 1.4.0 or newer. Upgrade an older install with `pipx upgrade debugbrief` or `uv tool upgrade debugbrief`. Plain `pip install --upgrade debugbrief` works too inside an environment. DebugBrief needs Python 3.9 or newer. Native Git is used when available to capture repository metadata and changed files. The project you debug does not need to be Python; only DebugBrief runs on Python.
+Upgrade an existing installation with `pipx upgrade debugbrief` or
+`uv tool upgrade debugbrief`. Inside an activated Python environment, use
+`python -m pip install --upgrade debugbrief`.
+
+The HTML and Explorer workflows below require DebugBrief 1.4.0 or newer.
+Check your installed version with `debugbrief --version`. Install your project's
+test tools and dependencies separately; DebugBrief does not install them for you.
 
 ## Quickstart
 
+Run this from your project, replacing the pytest command with your usual check:
+
 ```bash
-debugbrief run -- pytest -q test_calc.py             # auto-starts a local session
-# make the fix
-debugbrief redo                                      # same test, now passes
-debugbrief end --format html --open                 # review the proof in your browser
+debugbrief run -- python -m pytest -q
+# If it fails, edit the files and run the same command again:
+debugbrief redo
+debugbrief end --format html --open
 ```
 
-A session title and notes are optional; add them when the output tells you something worth keeping. Everything after `--` runs exactly as you typed it, with its output streaming live to your terminal. DebugBrief flags (`--timeout`, `--shell`, `--no-redact`, `--verify`) go before the `--`. `redo` runs the last captured command again in its recorded directory using the current files and environment; use `redo --dry-run` to preview it without a lease or execution. Conservative destructive redos ask for confirmation, and `--yes` bypasses that prompt. `end` defaults to the `pr` report mode.
+The first `run` starts a session automatically. A title and notes are optional:
 
-Tip: a one-line alias makes the capture prefix disappear in daily use.
+```bash
+debugbrief start "Handle an expired cache entry"
+debugbrief note "Expired entries still reach the read path."
+```
+
+Use `start` before your first captured command if you want to set the title.
+Put DebugBrief flags before `--`; everything after it is the command to capture.
+An optional alias saves some typing:
 
 ```bash
 alias db="debugbrief run --"
 db pytest -q
 ```
 
-## What you get
+## Reports
 
-A report built only from recorded evidence. A short excerpt from a real run:
+| Mode | What it contains |
+| --- | --- |
+| `pr` | Reproduce and verify commands, changed files, failed attempts and a red-to-green window when available. |
+| `handoff` | Current status, notes, command history and next steps drawn from your notes. |
+| `incident` | A timeline, the recorded error, current outcome and follow-up notes. |
 
-```markdown
-## Summary
+`end` defaults to a compact PR report in Markdown. Use `--detail full` for the
+complete Markdown record. JSON and HTML always retain the complete evidence.
 
-Failing check `python -m pytest -q test_calc.py` passed after 2 attempts over 2s, changes touched calc.py.
-
-## Red to green
-
-A check failed at 12:02:09 and `python -m pytest -q test_calc.py` passed at 12:02:10 (window 1s).
-
-Between the failing and passing checks, these files changed (correlation, not proven cause):
-- `calc.py`
+```bash
+debugbrief end --format all    # Markdown, JSON and HTML
+debugbrief open --html         # open the newest HTML report
 ```
 
-Full samples: [PR](https://github.com/hari-kancharla/Debug-Brief/blob/main/examples/sample-pr.md), [handoff](https://github.com/hari-kancharla/Debug-Brief/blob/main/examples/sample-handoff.md), [incident](https://github.com/hari-kancharla/Debug-Brief/blob/main/examples/sample-incident.md).
+The other formats are `md`, `json`, `both` (Markdown and JSON), and `html`.
+Use `preview --format html` or `preview --format json` to inspect an active
+session without ending it.
 
-## How it works
+Current illustrative reports, generated by the report code:
+[PR](https://github.com/hari-kancharla/Debug-Brief/blob/main/site/data/sample-pr.md),
+[handoff](https://github.com/hari-kancharla/Debug-Brief/blob/main/site/data/sample-handoff.md),
+[incident](https://github.com/hari-kancharla/Debug-Brief/blob/main/site/data/sample-incident.md).
+The incident example deliberately retains a later failure and incomplete capture.
 
-- `run` executes a command under a pseudo-terminal so its output streams live, then records the real exit code, a bounded output preview, the duration, and a per-command `git` snapshot when the project is a repository.
-- Pass or fail comes only from the exit code. A command counts as verified when a recognized test, build, lint, or typecheck runner exits 0, or when you explicitly declare another command with `--verify` and its exit status is trustworthy. Help, version and collection/list modes do not count, even with `--verify`. A prior failure is not required, but a currently failed or invalid check keeps the report unverified.
-- It works with any language. A recognized runner (pytest, jest, vitest, go test, cargo test, dotnet test, make check, and more) is classified automatically. Any other command is still captured, and you mark it a check with `--verify`.
-- `end` derives the report from those events: an explicit evidence state, the red-to-green window, the reproduce and verify commands, a timeline, the observed error, and the failed attempts. PR reports are compact by default; pass `--detail full` for the complete record. Empty sections are omitted.
-- `end --format html` writes a self-contained browser view; `end --format all` writes Markdown, JSON, and HTML together. Review it with `debugbrief open --html`, or use `debugbrief last --open` for a one-step handoff.
-- Generated reports show only the local repository basename by default; pass `--include-full-path` to `end` or `preview` when the absolute project root is intentional. Absolute paths in recorded commands, notes and output can still appear. Reports retain project-relative working directories; missing legacy directory data remains unknown.
-- Secrets are redacted before anything is written to disk. Redaction is best effort; `--no-redact` opts out for a single command.
-
-Full command reference and the complete recognized-runner list: [docs/COMMANDS.md](https://github.com/hari-kancharla/Debug-Brief/blob/main/docs/COMMANDS.md). Security model and redaction details: [SECURITY.md](https://github.com/hari-kancharla/Debug-Brief/blob/main/SECURITY.md).
-
-Post a report straight to a pull request (GitHub CLI optional):
+Review a report before sharing it. To post a reviewed Markdown brief with the
+optional GitHub CLI:
 
 ```bash
 debugbrief end --stdout | gh pr comment --body-file -
 ```
 
+## What the evidence means
+
+- Verification needs an eligible passing check, valid recorded timestamps for all
+  verification candidates, and no currently failing check. A previous failure is
+  not required. Help, version and collection/list commands do not count, even
+  with `--verify`. Use that flag to declare a custom check.
+- A red-to-green window requires Git and the same command failing and then passing
+  in the same directory. Files changed during that window are a correlation,
+  not a proven cause. A later failure keeps the report unverified.
+- `redo` runs the stored command in its recorded directory using the current
+  files, environment and dependencies. It does not recreate an old environment.
+  `redo --dry-run` shows what would run; potentially destructive reruns ask for
+  confirmation. `--yes` skips that prompt.
+- Reports retain project-relative command directories. Missing directory data in
+  older reports stays unknown. The project-root field uses the repository name
+  by default; absolute paths inside commands, notes and output can still appear.
+- Stored text goes through best-effort secret redaction. Live command output is
+  shown as the command prints it. Redaction can miss secrets, and `--no-redact`
+  disables it for a captured command. Review reports before sharing.
+
+Verification covers the recorded checks, not the whole issue. Full capture and
+privacy details are in [SECURITY.md](https://github.com/hari-kancharla/Debug-Brief/blob/main/SECURITY.md).
+
 ## Commands
 
-The six you use most:
-
-| Command | What it does |
+| Command | Purpose |
 | --- | --- |
-| `start "<title>"` | Start a session |
-| `note <text>` | Record an observation |
-| `run -- <command>` | Run and capture a command |
-| `redo [--dry-run] [--yes]` | Re-run the last captured command, with a safe preview/confirmation gate |
-| `end [--mode pr\|handoff\|incident] [--format md\|json\|html\|both\|all]` | Finalize and write a report (default `pr`, Markdown) |
-| `open --html` / `last --open` | Review the saved proof in a browser or editor |
+| `init` | Set up local state and show the workflow. |
+| `start "<title>"` | Start a named session. |
+| `note <text>` | Record an observation. |
+| `run -- <command>` | Run and capture a command. |
+| `redo` | Run the last captured command again. |
+| `preview` | Print a report without ending the session. |
+| `end` | Finish the session and write reports. |
+| `cancel` | Abandon the session, keeping its local record. |
+| `status` | Inspect the active session and command. |
+| `doctor` | Check the project and local state. |
+| `recover` | Repair stale state after an interruption. |
+| `last` / `open` | Find or open a saved report. |
+| `list` / `show <id>` | Inspect earlier sessions. |
 
-The rest:
+See [the command reference](https://github.com/hari-kancharla/Debug-Brief/blob/main/docs/COMMANDS.md)
+for flags, configuration, recognized runners and recovery behavior.
 
-| Command | What it does |
-| --- | --- |
-| `init` | Set up the project and show the workflow |
-| `status` | Show the active session |
-| `preview [--mode ...] [--format md\|json\|html]` | Print a report preview without ending the session |
-| `cancel [--yes]` | Abandon the active session; no report, local record retained |
-| `doctor [--fix]` | Health-check the project and state |
-| `recover` | Repair a broken session pointer after a crash |
-| `last` | Show the most recent report path |
-| `open` | Open the most recent report |
-| `list` | List recorded sessions |
-| `show <id>` | Show a recorded session |
+## Dependencies and limits
 
-Full flags and behavior for each: [docs/COMMANDS.md](https://github.com/hari-kancharla/Debug-Brief/blob/main/docs/COMMANDS.md).
+The CLI uses the Python standard library and native Git. Python 3.9 and 3.10 also
+need `tomli`, installed automatically to read optional TOML configuration.
+DebugBrief itself sends no telemetry and makes no network requests. Commands you
+run can still use the network.
 
-## Dependencies
+Linux and macOS are tested in CI on Python 3.9–3.14. Native Windows and PowerShell
+are not supported. Capture is explicit through `run`; it does not read shell
+history or meaningfully capture full-screen programs such as vim or htop. Output
+previews are bounded, so reports are not complete terminal transcripts.
 
-DebugBrief uses the Python standard library and native `git`. On Python 3.11 and newer it needs nothing else. On Python 3.9 and 3.10 it uses the small `tomli` package to read an optional `.debugbrief.toml`. DebugBrief itself makes no network requests, uses no AI, and collects no telemetry.
+Ordinary background descendants are stopped during command cleanup. Deliberately
+detached processes can survive; run long-lived servers outside DebugBrief.
+Outside a Git repository, command and note capture still work, but Git state,
+changed-file correlation and red-to-green windows are unavailable.
 
-## Supported platforms
+## Website and development
 
-Linux and macOS are tested in CI across Python 3.9 through 3.14. Other Unix-like systems may work but are not currently tested. Native Windows and PowerShell are not supported.
+The static site includes a command reference and a JSON Evidence Explorer.
+Imported reports stay in memory in the browser; they are never uploaded or stored.
+An explicitly chosen color theme is saved. Fonts and optional homepage animations
+load from a CDN. Generated HTML reports are self-contained and need no CDN.
 
-## Limitations
+From a source checkout, preview the site with `python3 scripts/serve_site.py`.
+The site is included in the source archive, not the installed wheel.
 
-- Capture is explicit through `debugbrief run`. Output streams live while a bounded preview is stored for the report, so there is no full transcript.
-- Full-screen TUIs (a `vim` session, `htop`) are not meaningfully captured. Run those directly and record the outcome with `note`.
-- Redaction is conservative and best effort; it does not catch every secret.
-- Git sections need native `git`; outside a repository they are omitted.
-
-## Development
+For Python development:
 
 ```bash
-pip install -e ".[dev]"
-pytest
+python -m pip install -e ".[dev]"
+python -m pytest
 ```
 
-See [CONTRIBUTING.md](https://github.com/hari-kancharla/Debug-Brief/blob/main/CONTRIBUTING.md) for the full setup and contribution guidelines.
+[CONTRIBUTING.md](https://github.com/hari-kancharla/Debug-Brief/blob/main/CONTRIBUTING.md)
+covers setup, linting, types, browser checks and builds.
 
 ## License
 

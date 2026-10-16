@@ -21,7 +21,7 @@ body:
     attributes:
       label: DebugBrief version
       description: Output of `debugbrief --version`.
-      placeholder: debugbrief 1.3.0
+      placeholder: debugbrief 1.4.1
     validations:
       required: true
   - type: input

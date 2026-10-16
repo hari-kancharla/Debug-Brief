@@ -15,11 +15,16 @@ Design notes for the parts that are easy to get wrong:
   (a locked-down sandbox), capture falls back to plain pipes.
 
 - Process group: the command runs in its own session/process group
-  (``start_new_session``), so a timeout, a Ctrl-C, or a broken downstream pipe
+  led by an independent supervisor, so a timeout, a Ctrl-C, or a broken downstream pipe
   terminates the group with ``killpg``, not just the immediate process. Ordinary
   background children are cleaned up. A child that detaches into its own session
   and keeps a captured stream open is reported as a warning; one that also closes
   its inherited output descriptors can outlive the command undetectably.
+
+- Recorder death: the supervisor monitors a pipe held only by the recorder.
+  EOF after a hard crash triggers group termination, including SIGKILL escalation.
+  It anchors the group id throughout cleanup and is reaped on normal completion.
+  Recovery still reports a lost capture as unknown; cleanup cannot recover its result.
 
 - Broken downstream pipe: when DebugBrief's own stdout (the consumer side of
   ``debugbrief run ... | head``) closes, the command would otherwise keep writing
@@ -60,6 +65,7 @@ from pathlib import Path
 from typing import IO, Any, List, Optional, Union
 
 from . import filters
+from ._process_guard import SupervisedProcess
 from .models import COMMAND_STATUS_PASSED, CommandData
 from .redaction import redact_text
 from .utils import (
@@ -318,14 +324,17 @@ def _group_alive(pgid: Optional[int]) -> bool:
         return True
 
 
-def _still_running(process: "subprocess.Popen[Any]", pgid: Optional[int]) -> bool:
+def _still_running(
+    process: "Union[subprocess.Popen[Any], SupervisedProcess]", pgid: Optional[int]
+) -> bool:
     if pgid is not None:
         return _group_alive(pgid)
     return process.poll() is None
 
 
 def _terminate_group(
-    process: "subprocess.Popen[Any]", pgid: Optional[int], signals: "tuple[int, ...]"
+    process: "Union[subprocess.Popen[Any], SupervisedProcess]",
+    pgid: Optional[int], signals: "tuple[int, ...]"
 ) -> None:
     """Signal the process group, escalating until it is gone.
 
@@ -430,7 +439,7 @@ def _pump_fd(
 
 
 def _drive(
-    process: "subprocess.Popen[Any]",
+    process: SupervisedProcess,
     pgid: Optional[int],
     out_fd: int,
     err_fd: int,
@@ -577,14 +586,12 @@ def _capture_via_pty(
             pass
 
     try:
-        process = subprocess.Popen(
+        process = SupervisedProcess(
             popen_args,
-            cwd=str(cwd),
+            cwd=cwd,
             shell=use_shell,
             stdout=out_slave,
             stderr=err_slave,
-            start_new_session=True,
-            close_fds=True,
             pass_fds=pass_fds,
         )
     except (FileNotFoundError, PermissionError, OSError) as exc:
@@ -598,11 +605,16 @@ def _capture_via_pty(
             os.close(fd)
 
     try:
-        return _drive(
+        outcome = _drive(
             process, process.pid, out_master, err_master,
             out_bounded, err_bounded, echo, timeout_seconds,
         )
+        if process.error_message and not (outcome.timed_out or outcome.interrupted
+                                          or outcome.broken_pipe):
+            return _Outcome(error_message=process.error_message)
+        return outcome
     finally:
+        _ignore_interrupt(process.finish)
         for fd in (out_master, err_master):
             with contextlib.suppress(OSError):
                 os.close(fd)
@@ -621,15 +633,12 @@ def _capture_via_pipes(
 ) -> _Outcome:
     """Run with plain pipes (fallback when no pty is available)."""
     try:
-        process = subprocess.Popen(
+        process = SupervisedProcess(
             popen_args,
-            cwd=str(cwd),
+            cwd=cwd,
             shell=use_shell,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            start_new_session=True,
-            bufsize=0,
-            close_fds=True,
             pass_fds=pass_fds,
         )
     except (FileNotFoundError, PermissionError, OSError) as exc:
@@ -637,12 +646,17 @@ def _capture_via_pipes(
 
     assert process.stdout is not None and process.stderr is not None
     try:
-        return _drive(
+        outcome = _drive(
             process, process.pid,
             process.stdout.fileno(), process.stderr.fileno(),
             out_bounded, err_bounded, echo, timeout_seconds,
         )
+        if process.error_message and not (outcome.timed_out or outcome.interrupted
+                                          or outcome.broken_pipe):
+            return _Outcome(error_message=process.error_message)
+        return outcome
     finally:
+        _ignore_interrupt(process.finish)
         for stream in (process.stdout, process.stderr):
             with contextlib.suppress(OSError):
                 stream.close()
@@ -731,6 +745,12 @@ def run_command(
 
     ended_at = now_iso8601()
     duration = round(time.monotonic() - start_monotonic, 3)
+
+    # Spawn/parse errors have no child stderr. Keep the actual diagnostic in
+    # the captured record too, so reports explain why a command did not run.
+    # It passes through the same bounded buffer and redaction as child output.
+    if errored and outcome.error_message:
+        err_bounded.feed(_TerminalCleaner().feed(outcome.error_message + "\n"))
 
     # Output was cleaned (escapes and unsafe controls stripped, CR-LF normalized)
     # as it was read, so the bounded previews are already report-ready.

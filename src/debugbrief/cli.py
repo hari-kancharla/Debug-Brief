@@ -543,6 +543,11 @@ def _print_command_outcome(result: RunResult, timeout_seconds: int) -> None:
     data = result.command_data
     if result.errored:
         eprint(f"  error:     {_display(result.error_message)}")
+        if result.error_message and result.error_message.startswith("Command not found:"):
+            eprint(
+                "  hint:      check the executable is installed and available on PATH "
+                "in this terminal or virtual environment."
+            )
     elif result.interrupted:
         eprint("  status:    interrupted (recorded)")
     elif result.broken_pipe:

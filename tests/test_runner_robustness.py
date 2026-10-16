@@ -564,21 +564,17 @@ def test_repeated_sigint_persists_exactly_one_event(tmp_path):
             break
         time.sleep(0.04)
     rc = proc.wait(timeout=15)
-    # Best-effort cleanup, not an assertion. A storm SIGINT can kill debugbrief
-    # during teardown, before it terminates the child's own session; on a
-    # platform without a parent-death signal (macOS) that child is briefly
-    # orphaned until it exits on its own, so reap it here rather than require it
-    # never happens. The single-interrupt test (test_real_sigint_*) asserts the
-    # clean-up guarantee for the realistic one-Ctrl-C case, which is reliable.
-    _wait_no_orphan(marker)
+    # The independent supervisor also cleans up if a repeated interrupt kills
+    # the recorder during teardown. Check before the helper's emergency cleanup.
+    assert not _wait_no_orphan(marker), "a child survived the interrupt storm"
 
     # A storm SIGINT can land at any instant. A clean catch returns 130 and
     # records the interrupted command; a SIGINT that lands during teardown or
     # interpreter shutdown kills the process with signal 2 (wait() reports -2,
     # which a shell also surfaces as 130) and may do so before the event is
     # written or the child is reaped. Both are interrupted outcomes. The
-    # guarantee under a storm is integrity, not that cleanup or the write wins
-    # the race.
+    # guarantee for persistence under a storm is integrity, not that the write
+    # wins the race. Process cleanup is independently supervised.
     assert rc in (130, -signal.SIGINT), rc
     sessions = list((tmp_path / ".debugbrief" / "sessions").glob("*.json"))
     assert sessions

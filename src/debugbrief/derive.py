@@ -78,6 +78,8 @@ class CommandRecord:
     head_sha: Optional[str]
     redacted: bool
     invocation_cwd: Optional[str] = None
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
 
     @property
     def failed(self) -> bool:
@@ -116,6 +118,8 @@ class Derivation:
     one_liner: Optional[str] = None
     reproduce_command: Optional[str] = None
     verify_command: Optional[str] = None
+    reproduce_invocation_cwd: Optional[str] = None
+    verify_invocation_cwd: Optional[str] = None
     red_to_green: Optional[RedToGreen] = None
     observed_error: Optional[str] = None
     ruled_out: List[CommandRecord] = field(default_factory=list)
@@ -160,6 +164,8 @@ def _records(session: Session) -> List[CommandRecord]:
                 head_sha=data.git_head,
                 redacted=data.redacted,
                 invocation_cwd=data.invocation_cwd,
+                stdout_truncated=data.stdout_truncated,
+                stderr_truncated=data.stderr_truncated,
             )
         )
     records.sort(key=lambda r: _seconds(r.timestamp))
@@ -234,6 +240,10 @@ def _detect_red_to_green(
             if (
                 fingerprint is not None
                 and fingerprint != preexisting[path]
+                # Legacy snapshots can lack the later content fingerprint.
+                # With complete snapshots, compare against the failed check
+                # below, rather than attributing a pre-failure edit to this window.
+                and path not in passed.fingerprints
                 and path not in changed
             ):
                 changed.append(path)
@@ -241,10 +251,15 @@ def _detect_red_to_green(
         ts = _seconds(rec.timestamp)
         if fail_seconds < ts <= pass_seconds:
             for path in rec.changed_files:
-                if path in preexisting:
-                    fingerprint = rec.fingerprints.get(path)
-                    if fingerprint is None or fingerprint == preexisting[path]:
+                fingerprint = rec.fingerprints.get(path)
+                failed_fingerprint = first_fail.fingerprints.get(path)
+                if fingerprint is not None and failed_fingerprint is not None:
+                    if fingerprint == failed_fingerprint:
                         continue
+                elif path in preexisting and (
+                    fingerprint is None or fingerprint == preexisting[path]
+                ):
+                    continue
                 if path not in changed:
                     changed.append(path)
 
@@ -366,12 +381,14 @@ def _build_one_liner(
         )
         if later_failure is None:
             parts = [f"Failing check {code_span(red_to_green.command)} passed"]
+            if latest_failed:
+                parts.append("but another verification is still failing")
         else:
             parts = [
                 f"Check {code_span(red_to_green.command)} turned green, but the "
                 "latest recorded run still failed"
             ]
-        parts.append(f"after {n} {_attempts_word(n)}")
+        parts[-1] += f"; {n} command{'' if n == 1 else 's'} recorded in the session"
         if duration:
             parts.append(f"over {duration}")
         sentence = " ".join(parts)
@@ -384,7 +401,7 @@ def _build_one_liner(
         parts = [f"Verification {code_span(cmd)} passed"]
         if latest_failed:
             parts.append("but another verification is still failing")
-        parts.append(f"after {n} {_attempts_word(n)}")
+        parts[-1] += f"; {n} command{'' if n == 1 else 's'} recorded in the session"
         if duration:
             parts.append(f"over {duration}")
         sentence = " ".join(parts)
@@ -476,9 +493,9 @@ def derive(session: Session) -> Derivation:
     records = _records(session)
     red_to_green = _detect_red_to_green(session, records)
 
-    reproduce = next(
+    reproduce_record = next(
         (
-            r.command
+            r
             for r in reversed(records)
             if r.timestamp_valid and r.is_verification_candidate and r.failed
         ),
@@ -521,8 +538,12 @@ def derive(session: Session) -> Derivation:
 
     return Derivation(
         one_liner=_build_one_liner(session, records, red_to_green),
-        reproduce_command=reproduce,
+        reproduce_command=reproduce_record.command if reproduce_record is not None else None,
         verify_command=verify,
+        reproduce_invocation_cwd=(
+            reproduce_record.invocation_cwd if reproduce_record is not None else None
+        ),
+        verify_invocation_cwd=verify_record.invocation_cwd if verify_record is not None else None,
         red_to_green=red_to_green,
         observed_error=_extract_observed_error(records),
         ruled_out=[r for r in records if r.failed],

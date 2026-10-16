@@ -35,3 +35,19 @@ def test_ci_workflow_basic_structure():
     # Smoke checks exercise the CLI from the installed wheel.
     for fragment in ['"$db" start', '"$db" run --', '"$db" preview', '"$db" end', '"$db" cancel']:
         assert fragment in text
+
+
+def test_pages_deployment_is_manual_and_main_only():
+    workflow_dir = WORKFLOW.parent
+    pages = (workflow_dir / 'pages.yml').read_text()
+    assert 'workflow_dispatch:' in pages
+    assert 'pull_request' not in pages
+    assert "github.ref == 'refs/heads/main'" in pages
+    assert "github.repository == 'hari-kancharla/Debug-Brief'" in pages
+    assert 'needs: validate' in pages and 'needs: build' in pages
+    assert 'path: site' in pages
+    assert 'pages: write' in pages and 'id-token: write' in pages
+    checks = (workflow_dir / 'site.yml').read_text()
+    assert 'workflow_call:' in checks
+    assert 'npm run test:site' in checks
+    assert 'generate_samples.py --check' in checks

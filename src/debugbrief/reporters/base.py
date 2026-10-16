@@ -43,6 +43,8 @@ class TimelineEntry:
     kind: str
     text: str
     plain_text: Optional[str] = None
+    status: Optional[str] = None
+    working_directory: Optional[str] = None
 
 
 @dataclass
@@ -175,6 +177,8 @@ def _build_timeline(session: Session) -> List[TimelineEntry]:
                     "command",
                     f"{code_span(data.command)} -> {label} (exit {exit_repr}){duration}",
                     plain,
+                    status=data.classification.status,
+                    working_directory=report_working_directory(session, data.invocation_cwd),
                 )
             )
         elif event.type == EventType.WARNING.value:
@@ -215,10 +219,13 @@ def _fmt_duration(seconds: float) -> str:
         value = float(seconds)
     except (TypeError, ValueError, OverflowError):
         return "unknown"
-    if not math.isfinite(value):
+    if not math.isfinite(value) or value < 0:
         return "unknown"
-    if value < 10:
-        return f"{value:g}s"
+    rounded = round(value, 3)
+    if value > 0 and rounded == 0:
+        return "<0.001s"
+    if rounded < 60:
+        return f"{rounded:.3f}".rstrip("0").rstrip(".") + "s"
     return human_duration(value)
 
 
@@ -230,6 +237,28 @@ def report_project_root(session: Session, include_full_path: bool = False) -> st
     if not root:
         return "(unknown)"
     return Path(root).name or "."
+
+
+def report_working_directory(session: Session, invocation_cwd: Optional[str]) -> Optional[str]:
+    """Share only a recorded directory relative to the project, without disk access.
+
+    Legacy, malformed, or outside-project locations stay unknown. Never invent
+    the root as a fallback or resolve a historical symlink against today's disk.
+    """
+    if not invocation_cwd:
+        return None
+    cwd, root = Path(invocation_cwd), Path(session.project_root)
+    if not cwd.is_absolute() or not root.is_absolute() or ".." in cwd.parts:
+        return None
+    try:
+        return normalize_text(cwd.relative_to(root).as_posix())
+    except ValueError:
+        return None
+
+
+def _cwd_suffix(session: Session, invocation_cwd: Optional[str]) -> str:
+    directory = report_working_directory(session, invocation_cwd)
+    return f" (working directory: {code_span(directory)})" if directory is not None else ""
 
 
 def report_warnings(session: Session) -> List[str]:
@@ -401,8 +430,9 @@ class BaseReporter:
         for rc in verification:
             kind = "test" if rc.is_test else "check"
             tool = f" ({inline_text(rc.tool)})" if rc.tool else ""
-            repeat = f" x{rc.count}" if rc.count > 1 else ""
-            lines.append(f"- [passed] {kind}{tool}: {code_span(rc.command)}{repeat}")
+            repeat = f" x{rc.verification_count}" if rc.verification_count > 1 else ""
+            directory = _cwd_suffix(self.session, rc.invocation_cwd)
+            lines.append(f"- [passed] {kind}{tool}: {code_span(rc.command)}{repeat}{directory}")
         return lines
 
     def relevant_commands_section(
@@ -418,7 +448,7 @@ class BaseReporter:
             exit_repr = "n/a" if rc.exit_code is None else str(rc.exit_code)
             lines.append(
                 f"- {code_span(rc.command)}{repeat} -> {status_label(rc.status)} "
-                f"(exit {exit_repr})"
+                f"(exit {exit_repr}){_cwd_suffix(self.session, rc.invocation_cwd)}"
             )
         return lines
 
@@ -448,14 +478,20 @@ class BaseReporter:
             return []
         lines = ["## Reproduce and verify", ""]
         if d.reproduce_command:
-            lines.append(f"- Reproduce (failed): {code_span(d.reproduce_command)}")
+            lines.append(
+                f"- Reproduce (failed): {code_span(d.reproduce_command)}"
+                + _cwd_suffix(self.session, d.reproduce_invocation_cwd)
+            )
         if d.verify_command:
             label = (
                 "Verify (passed)"
                 if d.proof_state == "verified"
                 else "Verify (earlier pass; overall unverified)"
             )
-            lines.append(f"- {label}: {code_span(d.verify_command)}")
+            lines.append(
+                f"- {label}: {code_span(d.verify_command)}"
+                + _cwd_suffix(self.session, d.verify_invocation_cwd)
+            )
         return lines
 
     def red_to_green_section(self) -> List[str]:
@@ -499,7 +535,11 @@ class BaseReporter:
             return []
         lines = [heading, ""]
         for entry in entries:
-            lines.append(f"- `{_clock(entry.timestamp)}` ({entry.kind}) {entry.text}")
+            directory = (
+                f" (working directory: {code_span(entry.working_directory)})"
+                if entry.working_directory is not None else ""
+            )
+            lines.append(f"- `{_clock(entry.timestamp)}` ({entry.kind}) {entry.text}{directory}")
         return lines
 
     def observed_error_section(self) -> List[str]:
@@ -523,6 +563,7 @@ class BaseReporter:
             exit_repr = "n/a" if rec.exit_code is None else str(rec.exit_code)
             lines.append(
                 f"- {code_span(rec.command)} -> {status_label(rec.status)} (exit {exit_repr})"
+                + _cwd_suffix(self.session, rec.invocation_cwd)
             )
         return lines
 

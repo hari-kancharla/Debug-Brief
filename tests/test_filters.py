@@ -470,6 +470,7 @@ def test_dedup_within_window():
     assert len(report) == 1
     rc = report[0]
     assert rc.count == 2
+    assert rc.verification_count == 1
     assert rc.last_timestamp == t1
     assert rc.status == COMMAND_STATUS_PASSED  # most recent outcome kept
     assert rc.exit_code == 0

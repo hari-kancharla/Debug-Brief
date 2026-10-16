@@ -5,7 +5,7 @@ All notable changes to DebugBrief are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.4.0] - 2026-10-16
 
 ### Added
 
@@ -15,16 +15,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   writes Markdown, JSON, and HTML together. HTML mode sections now follow the
   selected reader and omit sections with no evidence.
 - The static product site lives in `site/` and presents the real workflow,
-  report modes, trust boundary, and limitations without external assets.
+  report modes, trust boundary, and limitations. Fonts and optional homepage animation libraries load from a CDN.
 - `end --format html --open` writes and opens a self-contained HTML brief, `open --html` opens
   the newest HTML report, and `last --open` provides a one-step review path.
 - `preview --format html|json` renders machine-readable or browser-ready proofs
   without finalizing the active session.
 - PR and HTML reports now expose the verification scope and the captured failure
   excerpt, not only a pass/fail headline.
-- The product site now opens in a dark proof-loop mode with a stateful run → edit
-  → redo → review demo, report-mode switcher, stronger install CTA, and no-JS
-  fallbacks that preserve the full content.
+- The supplied product-site design includes the animated red-to-green field,
+  light and dark themes, report tabs, install copying and a keyboard-accessible
+  documentation section finder.
+- The Evidence Explorer reads local JSON reports in memory, with command/output
+  search, outcome filters, directory context, timeline and explicit legacy-data
+  limits. Imported text is inert and a restrictive browser policy limits access.
+- Versioned JSON reports retain per-attempt output previews, truncation flags,
+  current failures and project-relative working directories.
+- An independent process supervisor terminates the captured process group after
+  a recorder crash, including SIGKILL; detached children remain a limitation.
 
 ### Changed
 
@@ -62,7 +69,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reach status, list, show, doctor, or recovery output.
 - Persisted JSON nesting is capped consistently across supported Python versions,
   and first-commit Git tests configure their own author identity.
-- Escape clears the docs search and restores every section without a script error.
+- The docs section finder supports slash, keyboard navigation and Escape while
+  keeping the complete reference available. Search/filter controls have visible
+  boundaries in both color themes.
+- Missing executables include an environment/PATH hint; crash recovery refuses
+  held command locks while cleanup completes.
 
 ## [1.3.0] - 2026-06-17
 

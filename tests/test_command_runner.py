@@ -28,22 +28,20 @@ def test_run_success(tmp_path):
 
 
 def test_run_failure_preserves_exit_code(tmp_path):
-    result = run_command(f"{PY} -c \"import sys; sys.exit(7)\"", cwd=tmp_path)
+    result = run_command(f'{PY} -c "import sys; sys.exit(7)"', cwd=tmp_path)
     assert result.command_data.exit_code == 7
     assert result.command_data.classification.status == COMMAND_STATUS_FAILED
     assert result.propagated_exit_code == 7
 
 
 def test_run_captures_stderr(tmp_path):
-    result = run_command(
-        f"{PY} -c \"import sys; sys.stderr.write('boom')\"", cwd=tmp_path
-    )
+    result = run_command(f"{PY} -c \"import sys; sys.stderr.write('boom')\"", cwd=tmp_path)
     assert "boom" in result.command_data.stderr_preview
 
 
 def test_run_timeout(tmp_path):
     result = run_command(
-        f"{PY} -c \"import time; time.sleep(5)\"",
+        f'{PY} -c "import time; time.sleep(5)"',
         cwd=tmp_path,
         timeout_seconds=1,
     )
@@ -156,7 +154,7 @@ def test_command_sees_a_tty(tmp_path):
     # The whole point of the pty: the child believes it is on a terminal, so it
     # line-buffers and streams live instead of block-buffering behind a pipe.
     result = run_command(
-        f"{PY} -c \"import sys; print(sys.stdout.isatty(), sys.stderr.isatty())\"",
+        f'{PY} -c "import sys; print(sys.stdout.isatty(), sys.stderr.isatty())"',
         cwd=tmp_path,
     )
     assert "True True" in result.command_data.stdout_preview
@@ -172,8 +170,7 @@ def test_ansi_color_stripped_from_stored_preview(tmp_path):
 
 def test_stdout_and_stderr_stay_separate(tmp_path):
     prog = (
-        "import sys; sys.stdout.write('TOOUT\\n'); sys.stdout.flush(); "
-        "sys.stderr.write('TOERR\\n')"
+        "import sys; sys.stdout.write('TOOUT\\n'); sys.stdout.flush(); sys.stderr.write('TOERR\\n')"
     )
     result = run_command(f'{PY} -c "{prog}"', cwd=tmp_path)
     assert "TOOUT" in result.command_data.stdout_preview
@@ -203,3 +200,18 @@ def test_pipe_fallback_when_pty_unavailable(tmp_path, monkeypatch):
     assert result.command_data.exit_code == 0
     # Captured through a pipe, so stdout is not a tty.
     assert "viapipe False" in result.command_data.stdout_preview
+
+
+def test_spawn_error_is_retained_in_report_evidence(tmp_path):
+    result = run_command("debugbrief_nonexistent_executable", cwd=tmp_path, echo=False)
+    assert result.errored is True
+    assert "Command not found" in result.command_data.stderr_preview
+    assert "debugbrief_nonexistent_executable" in result.command_data.stderr_preview
+    assert result.command_data.classification.is_verification is False
+
+
+def test_parse_error_diagnostic_is_redacted_before_storage(tmp_path):
+    result = run_command('echo password=secret-value "', cwd=tmp_path, echo=False)
+    assert result.errored is True
+    assert "Could not parse command" in result.command_data.stderr_preview
+    assert "secret-value" not in result.command_data.command

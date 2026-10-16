@@ -69,7 +69,7 @@ def test_full_cli_flow(repo):
     assert end.returncode == 0, end.stderr
 
     # Resolve to avoid macOS /var vs /private/var symlink mismatches.
-    reports_dir = (repo.resolve() / ".debugbrief" / "reports")
+    reports_dir = repo.resolve() / ".debugbrief" / "reports"
     reports = list(reports_dir.glob("*-pr.md"))
     assert len(reports) == 1
     report_path = reports[0]
@@ -109,6 +109,26 @@ def test_cli_help_and_version(repo):
     assert version.stdout.strip()
 
 
+def test_subdirectory_replay_exports_the_directory_needed_to_reproduce(repo):
+    import json
+
+    package = repo / "package"
+    package.mkdir()
+    (package / "test_location.py").write_text(
+        "from pathlib import Path\ndef test_location():\n    assert Path.cwd().name == 'package'\n"
+    )
+    result = _cli(["run", "--", sys.executable, "-m", "pytest", "-q", "test_location.py"], package)
+    assert result.returncode == 0, result.stderr
+    replay = _cli(["redo"], repo)
+    assert replay.returncode == 0, replay.stderr
+    assert _cli(["end", "--format", "all"], repo).returncode == 0
+    payload = json.loads(next((repo / ".debugbrief/reports").glob("*-pr.json")).read_text())
+    assert [c["working_directory"] for c in payload["commands"]] == ["package", "package"]
+    assert payload["verify_working_directory"] == "package"
+    assert payload["verification"][0]["working_directory"] == "package"
+    assert payload["evidence"]["state"] == "verified"
+
+
 def test_broken_pipe_exits_cleanly(tmp_path):
     # A consumer that closes our stdout early (debugbrief show ... | head -1)
     # must not produce a traceback; the CLI exits with 141 (128 + SIGPIPE).
@@ -138,3 +158,42 @@ def test_broken_pipe_exits_cleanly(tmp_path):
     assert "Traceback" not in stderr, stderr
     assert "BrokenPipeError" not in stderr, stderr
     assert rc == 141
+
+
+def test_real_failed_then_fixed_check_exports_inspectable_history(repo):
+    import json
+
+    (repo / "test_smoke.py").write_text("def test_smoke():\n    assert False\n", encoding="utf-8")
+    failure = _cli(["run", "--", sys.executable, "-m", "pytest", "-q"], repo)
+    assert failure.returncode == 1
+    (repo / "test_smoke.py").write_text("def test_smoke():\n    assert True\n", encoding="utf-8")
+    passed = _cli(["redo"], repo)
+    assert passed.returncode == 0
+    exported = _cli(["end", "--format", "all"], repo)
+    assert exported.returncode == 0, exported.stderr
+    reports = repo / ".debugbrief/reports"
+    payload = json.loads(next(reports.glob("*-pr.json")).read_text())
+    assert payload["schema_version"] == 1
+    assert [attempt["exit_code"] for attempt in payload["commands"]] == [1, 0]
+    assert "AssertionError" in payload["commands"][0]["stdout_preview"]
+    assert payload["commands"][1]["is_verification"] is True
+    assert payload["evidence"]["state"] == "verified"
+    html = next(reports.glob("*-pr.html")).read_text()
+    assert "Command output" in html and "AssertionError" in html
+    assert next(reports.glob("*-pr.md")).is_file()
+
+
+def test_file_unchanged_between_checks_is_not_attributed_to_the_fix_window(repo):
+    import json
+
+    assert _cli(['start', 'File correlation check'], repo).returncode == 0
+    (repo / 'app.py').write_text('x = 2\n', encoding='utf-8')
+    (repo / 'test_smoke.py').write_text('def test_smoke():\n    assert False\n', encoding='utf-8')
+    assert _cli(['run', '--', sys.executable, '-m', 'pytest', '-q'], repo).returncode == 1
+    (repo / 'test_smoke.py').write_text('def test_smoke():\n    assert 1 + 1 == 2\n', encoding='utf-8')
+    assert _cli(['redo'], repo).returncode == 0
+    assert _cli(['end', '--format', 'json'], repo).returncode == 0
+    report = next((repo / '.debugbrief/reports').glob('*.json'))
+    payload = json.loads(report.read_text())
+    assert payload['red_to_green']['changed_files'] == ['test_smoke.py']
+    assert {item['path'] for item in payload['changed_files']} == {'app.py', 'test_smoke.py'}

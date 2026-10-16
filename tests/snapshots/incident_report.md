@@ -2,7 +2,7 @@
 
 ## Summary
 
-Failing check `python -m pytest tests/test_auth.py` passed after 3 attempts over 1m 25s, changes touched src/auth/refresh.py, tests/test_auth.py, docs/old.md.
+Failing check `python -m pytest tests/test_auth.py` passed; 3 commands recorded in the session over 1m 25s, changes touched src/auth/refresh.py, tests/test_auth.py, docs/old.md.
 
 ## Evidence status
 
@@ -54,7 +54,7 @@ Session changes: 3 file(s) changed, +42 / -7 lines.
 
 ## Verification and tests
 
-- [passed] test (pytest): `python -m pytest tests/test_auth.py` x2
+- [passed] test (pytest): `python -m pytest tests/test_auth.py`
 - [passed] check (npm): `npm run build`
 
 ---

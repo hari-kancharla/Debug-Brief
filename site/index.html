@@ -1,97 +1,413 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f3f1e8">
-  <meta name="description" content="DebugBrief records the checks you ran, the files that changed, and the evidence behind the fix.">
-  <meta property="og:title" content="DebugBrief — Debug with evidence">
-  <meta property="og:description" content="A local debugging ledger for pull requests, handoffs, and incidents.">
-  <meta property="og:type" content="website">
-  <title>DebugBrief — Debug with evidence</title>
-  <link rel="stylesheet" href="ledger.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DebugBrief | Red, then green.</title>
+<meta name="description" content="DebugBrief records the commands you run and the notes you write while you debug, then turns them into a brief for a pull request, a handoff or an incident review. Local-first. No AI. No uploads.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="DebugBrief">
+<meta property="og:title" content="DebugBrief | Red, then green.">
+<meta property="og:description" content="A record of what actually happened while you debugged: commands, exit codes, notes and git changes, turned into a brief.">
+<meta property="og:image" content="social-preview.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Red, then green. DebugBrief">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#F3F2EE">
+<script>
+(function () {
+  var theme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  try { var saved = localStorage.getItem("debugbrief-theme"); if (saved === "light" || saved === "dark") theme = saved; } catch (e) {}
+  document.documentElement.dataset.theme = theme;
+  document.querySelector('meta[name="theme-color"]').content = theme === "dark" ? "#0D0D0C" : "#F3F2EE";
+})();
+</script>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource-variable/mona-sans@5.3.0/wdth.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/monaspace-neon@5.3.0/400.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/monaspace-neon@5.3.0/600.css">
+<link rel="stylesheet" href="site.css">
+<script defer src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/gsap.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/ScrollTrigger.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/ScrambleTextPlugin.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/DrawSVGPlugin.min.js"></script>
+<script defer src="stage.js"></script>
+<script defer src="site.js"></script>
 </head>
-<body class="report-site">
-  <a class="skip-link" href="#main">Skip to content</a>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
 
-  <header class="report-header">
-    <div class="report-shell report-header-inner">
-      <a class="report-brand" href="#top" aria-label="DebugBrief home"><span class="report-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>DebugBrief</span></a>
-      <nav class="report-nav" id="report-nav" aria-label="Primary navigation"><a href="#proof">The proof</a><a href="#runners">Runners</a><a href="#limits">Limits</a><a href="docs.html">Docs</a></nav>
-      <div class="report-header-status"><i aria-hidden="true"></i><span>local / no network</span></div>
-      <button class="report-menu" type="button" aria-expanded="false" aria-controls="report-nav"><span class="sr-only">Open navigation</span><i aria-hidden="true"></i><i aria-hidden="true"></i></button>
-    </div>
-  </header>
+<header class="site-header" data-state="neutral">
+<div class="header-inner">
+<a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true"><span class="brand-bracket">[</span>db<span class="brand-bracket">]</span></span><span>DebugBrief</span></a>
+<nav class="primary-nav" aria-label="Primary"><a href="docs.html">Docs</a><a href="explorer.html">Explorer</a><a href="#reports">Reports</a><a href="https://github.com/hari-kancharla/Debug-Brief">GitHub</a></nav>
+<button class="theme-toggle" type="button" data-theme-toggle aria-pressed="false" aria-label="Switch color theme" disabled>light</button>
+</div>
+</header>
 
-  <main id="main">
-    <section class="report-hero" id="top">
-      <div class="report-shell">
-        <div class="hero-grid">
-          <div class="hero-copy">
-            <p class="eyebrow"><span>01</span> local debugging evidence</p>
-            <h1>Debug with<br><em>evidence.</em></h1>
-            <p class="hero-lede">Record the checks, files, and pass behind your fix. One session your teammate can inspect.</p>
-            <div class="hero-actions"><a class="report-button report-button-dark" href="#install">Install the CLI <span aria-hidden="true">↘</span></a><a class="report-button" href="#proof">See the proof <span aria-hidden="true">↓</span></a></div>
-            <div class="command-box" aria-label="Recommended installation command"><span>macOS / Linux</span><code>pipx install debugbrief</code><button type="button" data-copy="pipx install debugbrief">Copy</button></div>
-            <div class="hero-facts"><span><b>01</b> No account</span><span><b>02</b> No telemetry</span><span><b>03</b> Explicit scope</span></div>
-          </div>
+<main id="main">
+<div class="hero-stage" data-stage>
+<section class="hero" aria-labelledby="hero-title">
+<h1 id="hero-title" data-hero-title><span class="word-red">Red,</span> then <span class="word-green">green.</span></h1>
+<div class="hero-details grid" data-field-start>
+<div class="hero-copy">
+<p class="hero-lead">DebugBrief records what you run and what you notice while you debug, then turns it into a brief for your pull request, your handoff, or your incident review. Every line comes from something that actually happened.</p>
+<p class="hero-assurance">No AI. No guessed root causes. No uploads.</p>
+<div class="install" data-install-block>
+<div class="install-switch" role="group" aria-label="Installer">
+<button type="button" data-install-provider="pipx" aria-pressed="true" disabled>pipx</button>
+<button type="button" data-install-provider="uv" aria-pressed="false" disabled>uv</button>
+<button type="button" data-install-provider="pip" aria-pressed="false" disabled>pip</button>
+</div>
+<div class="install-command"><code data-install-command>pipx install debugbrief</code><button class="copy-button" type="button" data-install-copy data-copy="pipx install debugbrief" aria-label="Copy install command" disabled>Copy</button></div>
+<p class="install-note">Python 3.9+ on macOS and Linux</p>
+<noscript><p class="install-note">Also: <code>uv tool install debugbrief</code> or <code>python -m pip install debugbrief</code></p></noscript>
+</div>
+</div>
+<div class="hero-run">
+<h2 class="sr-only">A recorded debugging session</h2>
+<div class="terminal stage-terminal" aria-hidden="true">
+<div class="terminal-bar"><span><span class="bar-project">cache-service · </span>fix/cache-expiry</span><span data-stage-diff>2 files changed, +14 -3</span></div>
+<pre><code data-terminal-transcript><span class="terminal-line" data-type-command data-pause-after="0.3"><span class="prompt">$</span> debugbrief start "Handle an expired cache entry"</span><span class="terminal-line">Started DebugBrief session.</span><span class="terminal-line" data-type-command data-pause-after="0.5"><span class="prompt">$</span> debugbrief run -- python -m pytest -q tests/test_cache.py</span><span class="terminal-line fail progress"><span>F</span><span>[100%]</span></span><span class="terminal-line fail">E AssertionError: expired entry returned instead of a cache miss</span><span class="terminal-line fail">1 failed in 0.40s</span><span class="terminal-line fail" data-terminal-state="fail">  status:    failed (exit 1)</span><span class="terminal-line dim" data-pause-after="0.9">  next:      edit, then debugbrief redo</span><span class="terminal-line" data-type-command data-terminal-note data-pause-after="0.2"><span class="prompt">$</span> debugbrief note "Expired entries still reach the read path. Check the expiry boundary."</span><span class="terminal-line" data-pause-after="0.9">Noted locally · 1 note · session 11111111</span><span class="terminal-line" data-type-command data-pause-after="0.2"><span class="prompt">$</span> debugbrief redo</span><span class="terminal-line" data-pause-after="0.4"><span class="prompt">$</span> python -m pytest -q tests/test_cache.py  (redo)</span><span class="terminal-line pass progress"><span>.</span><span>[100%]</span></span><span class="terminal-line pass">1 passed in 0.40s</span><span class="terminal-line pass" data-terminal-state="pass" data-pause-after="1.4">  status:    passed (exit 0)</span><span class="terminal-line" data-type-command data-pause-after="0.3"><span class="prompt">$</span> debugbrief end --format html --open</span><span class="terminal-line" data-terminal-complete>Session completed: Handle an expired cache entry</span><span class="terminal-line dim">  html:      .debugbrief/reports/11111111…-pr.html</span></code></pre>
+</div>
+<div class="stage-controls"><button type="button" data-stage-replay disabled>Replay</button><button type="button" data-stage-skip disabled>Skip</button></div>
+<pre class="sr-only">$ debugbrief start "Handle an expired cache entry"
+Started DebugBrief session.
+$ debugbrief run -- python -m pytest -q tests/test_cache.py
+F [100%]
+E AssertionError: expired entry returned instead of a cache miss
+1 failed in 0.40s
+  status:    failed (exit 1)
+  next:      edit, then debugbrief redo
+$ debugbrief note "Expired entries still reach the read path. Check the expiry boundary."
+Noted locally · 1 note · session 11111111
+$ debugbrief redo
+$ python -m pytest -q tests/test_cache.py  (redo)
+. [100%]
+1 passed in 0.40s
+  status:    passed (exit 0)
+$ debugbrief end --format html --open
+Session completed: Handle an expired cache entry
+  html:      .debugbrief/reports/11111111…-pr.html</pre>
+</div>
+</div>
+</section>
+</div>
 
-          <div class="report-window">
-            <div class="report-window-bar"><span><i aria-hidden="true"></i> actual generated report</span><a href="sample-report.html">open full report <span aria-hidden="true">→</span></a></div>
-            <iframe src="sample-report.html" title="Actual DebugBrief generated pull request report" loading="eager"></iframe>
-            <div class="report-window-caption"><span>fig. 01</span><span>Fix token refresh race · local HTML artifact</span><a href="sample-report.html">inspect <span aria-hidden="true">→</span></a></div>
-          </div>
-        </div>
-      </div>
-    </section>
+<section class="section" aria-labelledby="recorded-title">
+<h2 class="label" id="recorded-title"># what gets recorded</h2>
+<figure class="spec">
+<ol class="spec-lines">
+<li><code>{</code><span class="spec-note"></span></li>
+<li><code>  "command": "python -m pytest -q tests/test_cache.py",</code><span class="spec-note">// the exact command</span></li>
+<li><code>  "exit_code": 1,</code><span class="spec-note">// the real exit code, the only source of pass or fail</span></li>
+<li><code>  "status": "failed",</code><span class="spec-note"></span></li>
+<li><code>  "duration_seconds": 0.4,</code><span class="spec-note">// how long it ran</span></li>
+<li><code>  "stdout_preview": "E AssertionError: expired entry returned instead of a cache miss\n1 failed",</code><span class="spec-note">// a bounded preview of the output</span></li>
+<li><code>  "stdout_truncated": false,</code><span class="spec-note"></span></li>
+<li><code>  "redacted": false,</code><span class="spec-note">// secrets are masked before anything is written</span></li>
+<li><code>  "git": { "branch": "fix/cache-expiry", "initial_sha": "a7c40e1" }</code><span class="spec-note">// git state</span></li>
+<li><code>}</code><span class="spec-note"></span></li>
+</ol>
+<figcaption>Excerpt from data/sample-pr.json: the first recorded command and the session's git block.</figcaption>
+</figure>
+</section>
 
-    <section class="report-section proof-section" id="proof">
-      <div class="report-shell">
-        <div class="section-intro"><div class="section-index">02 / THE PROOF</div><div><h2>Red to green,<br>in the order it happened.</h2><p>The useful part is not a diagnosis. It is the narrow, reviewable path from what failed to what changed to what passed.</p></div><div class="section-aside"><span>RECORDED SESSION</span><strong>2026-01-01 · 12:02:08—12:02:22</strong><small>2 recorded runs · 1 failed attempt</small></div></div>
-        <div class="proof-layout">
-          <div class="proof-timeline" aria-label="Recorded command timeline">
-            <div class="proof-event proof-fail"><time>12:02:10</time><div><strong>failed</strong><code>pytest -q</code></div><small>exit 1 · 0.181s</small></div>
-            <div class="proof-note"><span>note</span><p>Token refreshed twice for the same session.</p></div>
-            <div class="proof-change"><span>observed between checks</span><strong>2 files changed</strong><code>src/auth/refresh.py · tests/test_auth.py</code></div>
-            <div class="proof-event proof-pass"><time>12:02:11</time><div><strong>passed</strong><code>pytest -q</code></div><small>exit 0 · 0.126s</small></div>
-            <button class="replay-proof" type="button" data-replay-proof><span class="replay-mark" aria-hidden="true">↻</span><span data-replay-label>Replay the proof</span></button>
-          </div>
-          <aside class="review-questions"><div class="review-questions-head"><span>review questions</span><strong>for the next person</strong></div><strong class="review-questions-title">Can a teammate answer these without asking you?</strong><ol><li><span>Did the same check fail first?</span><b>yes</b></li><li><span>What changed between runs?</span><b>2 files</b></li><li><span>What does this not prove?</span><b>root cause</b></li></ol><p>That is the handoff: evidence first, interpretation second.</p></aside>
-        </div>
-      </div>
-    </section>
+<section class="section" id="reports" aria-labelledby="reports-title">
+<h2 class="label" id="reports-title"># reports</h2>
+<div class="tabs" role="tablist" aria-label="Report mode">
+<button id="tab-pr" role="tab" type="button" aria-selected="true" aria-controls="panel-pr" tabindex="0">Pull request</button>
+<button id="tab-handoff" role="tab" type="button" aria-selected="false" aria-controls="panel-handoff" tabindex="-1">Handoff</button>
+<button id="tab-incident" role="tab" type="button" aria-selected="false" aria-controls="panel-incident" tabindex="-1">Incident</button>
+</div>
 
-    <section class="report-section runners-section" id="runners">
-      <div class="report-shell">
-        <div class="section-intro"><div class="section-index">03 / RUNNERS</div><div><h2>Works with the runner<br>you already trust.</h2><p>DebugBrief classifies the check from the command you run. Any command works; recognized runners get verification language automatically.</p></div><div class="section-aside"><span>LANGUAGE AGNOSTIC</span><strong>one recorder · many ecosystems</strong><small>no plugin required</small></div></div>
-        <div class="runner-tabs" role="tablist" aria-label="Supported test runners"><button type="button" role="tab" aria-selected="true" aria-controls="runner-pytest" id="runner-tab-pytest" data-runner-tab="pytest" class="is-active">pytest</button><button type="button" role="tab" aria-selected="false" aria-controls="runner-vitest" id="runner-tab-vitest" data-runner-tab="vitest" tabindex="-1">vitest</button><button type="button" role="tab" aria-selected="false" aria-controls="runner-go" id="runner-tab-go" data-runner-tab="go" tabindex="-1">go test</button><button type="button" role="tab" aria-selected="false" aria-controls="runner-cargo" id="runner-tab-cargo" data-runner-tab="cargo" tabindex="-1">cargo test</button><button type="button" role="tab" aria-selected="false" aria-controls="runner-make" id="runner-tab-make" data-runner-tab="make" tabindex="-1">make check</button></div>
-        <div class="runner-panels">
-          <article class="runner-panel is-active" id="runner-pytest" role="tabpanel" aria-labelledby="runner-tab-pytest" data-runner-panel="pytest"><div class="runner-panel-head"><span>classification / pytest</span><strong>recognized from the command</strong></div><div class="runner-panel-body"><div class="runner-command"><span>record</span><code>debugbrief run -- pytest -q</code><button type="button" data-copy="debugbrief run -- pytest -q">Copy</button></div><div class="runner-result runner-classification"><div><span>detected</span><strong class="result-neutral">pytest</strong><small>runner signature</small></div><i aria-hidden="true"></i><div><span>verification</span><strong>exit 0 only</strong><small>real status</small></div></div></div></article>
-          <article class="runner-panel" id="runner-vitest" role="tabpanel" aria-labelledby="runner-tab-vitest" data-runner-panel="vitest" hidden><div class="runner-panel-head"><span>classification / vitest</span><strong>recognized from the command</strong></div><div class="runner-panel-body"><div class="runner-command"><span>record</span><code>debugbrief run -- npm test -- --run</code><button type="button" data-copy="debugbrief run -- npm test -- --run">Copy</button></div><div class="runner-result runner-classification"><div><span>detected</span><strong class="result-neutral">vitest</strong><small>runner signature</small></div><i aria-hidden="true"></i><div><span>verification</span><strong>exit 0 only</strong><small>real status</small></div></div></div></article>
-          <article class="runner-panel" id="runner-go" role="tabpanel" aria-labelledby="runner-tab-go" data-runner-panel="go" hidden><div class="runner-panel-head"><span>classification / go test</span><strong>recognized from the command</strong></div><div class="runner-panel-body"><div class="runner-command"><span>record</span><code>debugbrief run -- go test ./...</code><button type="button" data-copy="debugbrief run -- go test ./...">Copy</button></div><div class="runner-result runner-classification"><div><span>detected</span><strong class="result-neutral">go test</strong><small>runner signature</small></div><i aria-hidden="true"></i><div><span>verification</span><strong>exit 0 only</strong><small>real status</small></div></div></div></article>
-          <article class="runner-panel" id="runner-cargo" role="tabpanel" aria-labelledby="runner-tab-cargo" data-runner-panel="cargo" hidden><div class="runner-panel-head"><span>classification / cargo test</span><strong>recognized from the command</strong></div><div class="runner-panel-body"><div class="runner-command"><span>record</span><code>debugbrief run -- cargo test</code><button type="button" data-copy="debugbrief run -- cargo test">Copy</button></div><div class="runner-result runner-classification"><div><span>detected</span><strong class="result-neutral">cargo test</strong><small>runner signature</small></div><i aria-hidden="true"></i><div><span>verification</span><strong>exit 0 only</strong><small>real status</small></div></div></div></article>
-          <article class="runner-panel" id="runner-make" role="tabpanel" aria-labelledby="runner-tab-make" data-runner-panel="make" hidden><div class="runner-panel-head"><span>classification / make check</span><strong>recognized from the command</strong></div><div class="runner-panel-body"><div class="runner-command"><span>record</span><code>debugbrief run -- make check</code><button type="button" data-copy="debugbrief run -- make check">Copy</button></div><div class="runner-result runner-classification"><div><span>detected</span><strong class="result-neutral">make check</strong><small>runner signature</small></div><i aria-hidden="true"></i><div><span>verification</span><strong>exit 0 only</strong><small>real status</small></div></div></div></article>
-        </div>
-        <div class="runner-footer"><span>Any other command still records output, exit state, duration, and notes.</span><a href="docs.html">See the full command model <span aria-hidden="true">→</span></a></div>
-      </div>
-    </section>
+<div id="panel-pr" role="tabpanel" aria-labelledby="tab-pr" tabindex="0">
+<figure class="strip" data-state="verified">
+<svg viewBox="0 0 1200 210" role="group" aria-labelledby="strip-pr-t strip-pr-d">
+<title id="strip-pr-t">Recorded session, 12:02:00 to 12:06:00</title>
+<desc id="strip-pr-d">pytest failed at 12:02:12 and passed at 12:04:12. ruff passed at 12:05:12. Two notes were recorded between the pytest attempts. Verified.</desc>
+<path class="s-rule" d="M80 112H1120" data-strip-draw/>
+<path class="s-bracket" d="M132 48V32H652V48" data-strip-draw/>
+<text x="392" y="20" text-anchor="middle">2m 0s</text>
+<text x="392" y="70" text-anchor="middle">src/cache.py · tests/test_cache.py</text>
+<path class="s-fail" d="M132 88V138" stroke-width="3" data-strip-draw/>
+<path class="s-pass" d="M652 88V138" stroke-width="3" data-strip-draw/>
+<path class="s-pass" d="M912 88V138" stroke-width="3" data-strip-draw/>
+<path class="s-end" d="M1120 104V120" stroke-width="3" data-strip-draw/>
+<g role="button" tabindex="0" aria-label="12:03:00 note: Expired entries still reach the read path. Check the expiry boundary." aria-controls="strip-note-pr" aria-expanded="false" data-strip-note="Expired entries still reach the read path. Check the expiry boundary." data-note-position="26"><circle cx="340" cy="112" r="20" fill="transparent"/><circle class="s-note" cx="340" cy="112" r="6" stroke-width="1.5"/></g>
+<g role="button" tabindex="0" aria-label="12:04:00 note: Return a cache miss when the entry expires. Added the boundary case to the test." aria-controls="strip-note-pr" aria-expanded="false" data-strip-note="Return a cache miss when the entry expires. Added the boundary case to the test." data-note-position="48"><circle cx="600" cy="112" r="20" fill="transparent"/><circle class="s-note" cx="600" cy="112" r="6" stroke-width="1.5"/></g>
+<text x="132" y="158" text-anchor="middle">pytest · exit 1</text>
+<text x="652" y="158" text-anchor="middle">pytest · exit 0</text>
+<text x="912" y="158" text-anchor="middle">ruff · exit 0</text>
+<text x="80" y="190">12:02:00</text>
+<text x="1120" y="190" text-anchor="end">12:06:00</text>
+</svg>
+<p class="strip-note" id="strip-note-pr" role="status" hidden></p>
+<ul class="strip-list">
+<li>12:02:12 pytest <span class="fail">failed, exit 1</span></li>
+<li>12:04:12 pytest <span class="pass">passed, exit 0</span></li>
+<li>12:05:12 ruff <span class="pass">passed, exit 0</span></li>
+<li>red to green: 2m 0s · src/cache.py, tests/test_cache.py</li>
+</ul>
+<figcaption>Files changed between the failing and passing check: correlation, not proven cause.</figcaption>
+</figure>
+<div class="report-layout grid">
+<dl class="report-meta">
+<div><dt>Mode</dt><dd>pull request</dd></div>
+<div><dt>Session</dt><dd>11111111-2222-4333-8444-555555555555</dd></div>
+<div><dt>Project</dt><dd>cache-service</dd></div>
+<div><dt>Branch</dt><dd>fix/cache-expiry</dd></div>
+<div><dt>Commit</dt><dd>a7c40e1</dd></div>
+<div><dt>Started</dt><dd>2026-01-01 12:02:00 UTC</dd></div>
+<div><dt>Ended</dt><dd>2026-01-01 12:06:00 UTC</dd></div>
+<div><dt>Commands</dt><dd>3 (1 failed)</dd></div>
+<div><dt>Notes</dt><dd>2</dd></div>
+</dl>
+<article class="report-sheet" aria-label="Sample pull request report">
+<h3 class="report-title">Handle an expired cache entry</h3>
+<h4>Summary</h4>
+<p>Failing check <code>python -m pytest -q tests/test_cache.py</code> passed; 3 commands recorded in the session over 4m 0s, changes touched src/cache.py, tests/test_cache.py.</p>
+<h4>Evidence status</h4>
+<p class="verdict pass">verified</p>
+<dl class="verdict-facts"><dt>Basis</dt><dd>the same recorded check failed and later passed</dd><dt>Scope</dt><dd>This verifies the recorded check, not the whole issue.</dd><dt>Root cause</dt><dd>Not inferred by DebugBrief.</dd></dl>
+<h4>Red to green</h4>
+<p>A check failed at <code>12:02:12</code> and <code>python -m pytest -q tests/test_cache.py</code> passed at <code>12:04:12</code> (window 2m 0s).</p>
+<p class="sheet-p">Between the failing and passing checks, these files changed (correlation, not proven cause):</p>
+<ul class="sheet-list"><li><code>src/cache.py</code></li><li><code>tests/test_cache.py</code></li></ul>
+<h4>Timeline</h4>
+<ol class="events">
+<li><time>12:02:12</time><span class="kind">command</span><span class="cmd">python -m pytest -q tests/test_cache.py <span class="fail">failed (exit 1)</span></span></li>
+<li><time>12:03:00</time><span class="kind">note</span><span>Expired entries still reach the read path. Check the expiry boundary.</span></li>
+<li><time>12:04:00</time><span class="kind">note</span><span>Return a cache miss when the entry expires. Added the boundary case to the test.</span></li>
+<li><time>12:04:12</time><span class="kind">command</span><span class="cmd">python -m pytest -q tests/test_cache.py <span class="pass">passed (exit 0)</span></span></li>
+<li><time>12:05:12</time><span class="kind">command</span><span class="cmd">python -m ruff check src tests <span class="pass">passed (exit 0)</span></span></li>
+</ol>
+<div class="report-foot"><p>Generated by DebugBrief. This report is built from explicitly recorded notes, executed commands, and Git state when available. DebugBrief does not use AI and does not infer root causes, intent, or results.</p></div>
+</article>
+<p class="report-links"><a href="sample-report.html">Full HTML report</a><a href="data/sample-pr.md">Markdown</a><a href="explorer.html?sample=pr">Open in Explorer</a></p>
+</div>
+</div>
 
-    <section class="limits-band" id="limits">
-      <div class="report-shell limits-grid">
-        <div class="limits-index">04 / LIMITS</div>
-        <div class="limits-copy"><p class="eyebrow"><span>●</span> the honest part</p><h2>What it<br>won’t claim.</h2><p>DebugBrief is an explicit foreground recorder. It does not watch your machine, call a model, or turn a file diff into a diagnosis.</p></div>
-        <div class="limits-list"><div><b>01</b><strong>No inferred root cause</strong><p>The report says what was recorded, not what you meant.</p></div><div><b>02</b><strong>No background watcher</strong><p>You choose the command. Nothing runs behind your back.</p></div><div><b>03</b><strong>No silent uploads</strong><p>Sessions and reports stay under your project’s <code>.debugbrief/</code> directory.</p></div></div>
-        <div class="limits-files"><div class="file-row file-head"><span>~/project/.debugbrief</span><span>local</span></div><div class="file-row"><b>▾</b><strong>sessions</strong><small>canonical records</small></div><div class="file-row"><b>◇</b><code>8df2…json</code><small>0600</small></div><div class="file-row"><b>▾</b><strong>reports</strong><small>reviewable artifacts</small></div><div class="file-row"><b>◇</b><code>8df2-pr.html</code><small>ready</small></div></div>
-      </div>
-    </section>
+<div id="panel-handoff" role="tabpanel" aria-labelledby="tab-handoff" tabindex="0" hidden>
+<figure class="strip" data-state="verified">
+<svg viewBox="0 0 1200 210" role="group" aria-labelledby="strip-ho-t strip-ho-d">
+<title id="strip-ho-t">Recorded session, 12:02:00 to 12:06:00</title>
+<desc id="strip-ho-d">pytest failed at 12:02:12 and passed at 12:04:12. ruff passed at 12:05:12. Two notes were recorded between the pytest attempts. Verified.</desc>
+<path class="s-rule" d="M80 112H1120" data-strip-draw/>
+<path class="s-bracket" d="M132 48V32H652V48" data-strip-draw/>
+<text x="392" y="20" text-anchor="middle">2m 0s</text>
+<text x="392" y="70" text-anchor="middle">src/cache.py · tests/test_cache.py</text>
+<path class="s-fail" d="M132 88V138" stroke-width="3" data-strip-draw/>
+<path class="s-pass" d="M652 88V138" stroke-width="3" data-strip-draw/>
+<path class="s-pass" d="M912 88V138" stroke-width="3" data-strip-draw/>
+<path class="s-end" d="M1120 104V120" stroke-width="3" data-strip-draw/>
+<g role="button" tabindex="0" aria-label="12:03:00 note: Expired entries still reach the read path. Check the expiry boundary." aria-controls="strip-note-ho" aria-expanded="false" data-strip-note="Expired entries still reach the read path. Check the expiry boundary." data-note-position="26"><circle cx="340" cy="112" r="20" fill="transparent"/><circle class="s-note" cx="340" cy="112" r="6" stroke-width="1.5"/></g>
+<g role="button" tabindex="0" aria-label="12:04:00 note: Return a cache miss when the entry expires. Added the boundary case to the test." aria-controls="strip-note-ho" aria-expanded="false" data-strip-note="Return a cache miss when the entry expires. Added the boundary case to the test." data-note-position="48"><circle cx="600" cy="112" r="20" fill="transparent"/><circle class="s-note" cx="600" cy="112" r="6" stroke-width="1.5"/></g>
+<text x="132" y="158" text-anchor="middle">pytest · exit 1</text>
+<text x="652" y="158" text-anchor="middle">pytest · exit 0</text>
+<text x="912" y="158" text-anchor="middle">ruff · exit 0</text>
+<text x="80" y="190">12:02:00</text>
+<text x="1120" y="190" text-anchor="end">12:06:00</text>
+</svg>
+<p class="strip-note" id="strip-note-ho" role="status" hidden></p>
+<ul class="strip-list">
+<li>12:02:12 pytest <span class="fail">failed, exit 1</span></li>
+<li>12:04:12 pytest <span class="pass">passed, exit 0</span></li>
+<li>12:05:12 ruff <span class="pass">passed, exit 0</span></li>
+<li>red to green: 2m 0s · src/cache.py, tests/test_cache.py</li>
+</ul>
+<figcaption>Files changed between the failing and passing check: correlation, not proven cause.</figcaption>
+</figure>
+<div class="report-layout grid">
+<dl class="report-meta">
+<div><dt>Mode</dt><dd>handoff</dd></div>
+<div><dt>Session</dt><dd>11111111-2222-4333-8444-555555555555</dd></div>
+<div><dt>Project</dt><dd>cache-service</dd></div>
+<div><dt>Branch</dt><dd>fix/cache-expiry</dd></div>
+<div><dt>Commit</dt><dd>a7c40e1</dd></div>
+<div><dt>Started</dt><dd>2026-01-01 12:02:00 UTC</dd></div>
+<div><dt>Ended</dt><dd>2026-01-01 12:06:00 UTC</dd></div>
+<div><dt>Commands</dt><dd>3 (1 failed)</dd></div>
+<div><dt>Notes</dt><dd>2</dd></div>
+</dl>
+<article class="report-sheet" aria-label="Sample handoff report">
+<h3 class="report-title">Handle an expired cache entry</h3>
+<h4>Summary</h4>
+<p>Failing check <code>python -m pytest -q tests/test_cache.py</code> passed; 3 commands recorded in the session over 4m 0s, changes touched src/cache.py, tests/test_cache.py.</p>
+<h4>Evidence status</h4>
+<p class="verdict pass">verified</p>
+<dl class="verdict-facts"><dt>Basis</dt><dd>the same recorded check failed and later passed</dd><dt>Scope</dt><dd>This verifies the recorded check, not the whole issue.</dd><dt>Root cause</dt><dd>Not inferred by DebugBrief.</dd></dl>
+<h4>Current status</h4>
+<p>At least one verification command passed and no recorded commands are currently failing.</p>
+<h4>Working hypotheses / findings</h4>
+<ul class="sheet-list"><li>Expired entries still reach the read path. Check the expiry boundary.</li><li>Return a cache miss when the entry expires. Added the boundary case to the test.</li></ul>
+<h4>Suggested next steps</h4>
+<p class="muted">Based only on the notes you recorded:</p>
+<ul class="sheet-list"><li>Expired entries still reach the read path. Check the expiry boundary.</li></ul>
+<div class="report-foot"><p>Generated by DebugBrief. This report is built from explicitly recorded notes, executed commands, and Git state when available. DebugBrief does not use AI and does not infer root causes, intent, or results.</p></div>
+</article>
+<p class="report-links"><a href="sample-handoff.html">Full HTML report</a><a href="data/sample-handoff.md">Markdown</a><a href="explorer.html?sample=handoff">Open in Explorer</a></p>
+</div>
+</div>
 
-    <section class="install-band" id="install">
-      <div class="report-shell install-grid"><div><span class="section-index">05 / START</span><h2>Keep your editor.<br>Keep your runner.<br><em>Add the evidence.</em></h2><p>Python 3.9+ · Linux and macOS · no account, daemon, or model key.</p></div><div class="install-command-large"><span>next step</span><strong>Read the docs, then run the command above.</strong><div class="install-panel-links"><a href="docs.html">Read the docs <span aria-hidden="true">→</span></a><a href="https://github.com/harihkk/Debug-Brief">View on GitHub <span aria-hidden="true">↗</span></a></div></div></div>
-    </section>
-  </main>
+<div id="panel-incident" role="tabpanel" aria-labelledby="tab-incident" tabindex="0" hidden>
+<figure class="strip" data-state="unverified">
+<svg viewBox="0 0 1200 210" role="group" aria-labelledby="strip-in-t strip-in-d">
+<title id="strip-in-t">Recorded session, 12:02:00 to 12:06:00</title>
+<desc id="strip-in-d">pytest failed at 12:02:12 and passed at 12:04:12. ruff failed at 12:05:12. Two notes were recorded between the pytest attempts. Unverified.</desc>
+<path class="s-rule" d="M80 112H1120" data-strip-draw/>
+<path class="s-bracket" d="M132 48V32H652V48" data-strip-draw/>
+<text x="392" y="20" text-anchor="middle">2m 0s</text>
+<text x="392" y="70" text-anchor="middle">src/cache.py · tests/test_cache.py</text>
+<path class="s-fail" d="M132 88V138" stroke-width="3" data-strip-draw/>
+<path class="s-pass" d="M652 88V138" stroke-width="3" data-strip-draw/>
+<path class="s-fail" d="M912 88V138" stroke-width="3" data-strip-draw/>
+<path class="s-end" d="M1120 104V120" stroke-width="3" data-strip-draw/>
+<g role="button" tabindex="0" aria-label="12:03:00 note: Expired entries still reach the read path. Check the expiry boundary." aria-controls="strip-note-in" aria-expanded="false" data-strip-note="Expired entries still reach the read path. Check the expiry boundary." data-note-position="26"><circle cx="340" cy="112" r="20" fill="transparent"/><circle class="s-note" cx="340" cy="112" r="6" stroke-width="1.5"/></g>
+<g role="button" tabindex="0" aria-label="12:04:00 note: Return a cache miss when the entry expires. Added the boundary case to the test." aria-controls="strip-note-in" aria-expanded="false" data-strip-note="Return a cache miss when the entry expires. Added the boundary case to the test." data-note-position="48"><circle cx="600" cy="112" r="20" fill="transparent"/><circle class="s-note" cx="600" cy="112" r="6" stroke-width="1.5"/></g>
+<text x="132" y="158" text-anchor="middle">pytest · exit 1</text>
+<text x="652" y="158" text-anchor="middle">pytest · exit 0</text>
+<text x="912" y="158" text-anchor="middle">ruff · exit 1</text>
+<text x="80" y="190">12:02:00</text>
+<text x="1120" y="190" text-anchor="end">12:06:00</text>
+</svg>
+<p class="strip-note" id="strip-note-in" role="status" hidden></p>
+<ul class="strip-list">
+<li>12:02:12 pytest <span class="fail">failed, exit 1</span></li>
+<li>12:04:12 pytest <span class="pass">passed, exit 0</span></li>
+<li>12:05:12 ruff <span class="fail">failed, exit 1</span></li>
+<li>red to green: 2m 0s · src/cache.py, tests/test_cache.py</li>
+</ul>
+<figcaption>Files changed between the failing and passing check: correlation, not proven cause.</figcaption>
+</figure>
+<div class="report-layout grid">
+<dl class="report-meta">
+<div><dt>Mode</dt><dd>incident</dd></div>
+<div><dt>Session</dt><dd>11111111-2222-4333-8444-555555555555</dd></div>
+<div><dt>Project</dt><dd>cache-service</dd></div>
+<div><dt>Branch</dt><dd>fix/cache-expiry</dd></div>
+<div><dt>Commit</dt><dd>a7c40e1</dd></div>
+<div><dt>Started</dt><dd>2026-01-01 12:02:00 UTC</dd></div>
+<div><dt>Ended</dt><dd>2026-01-01 12:06:00 UTC</dd></div>
+<div><dt>Commands</dt><dd>3 (2 failed)</dd></div>
+<div><dt>Notes</dt><dd>2</dd></div>
+</dl>
+<article class="report-sheet" aria-label="Sample incident report">
+<h3 class="report-title">Handle an expired cache entry</h3>
+<h4>Summary</h4>
+<p>Failing check <code>python -m pytest -q tests/test_cache.py</code> passed but another verification is still failing; 3 commands recorded in the session over 4m 0s, changes touched src/cache.py, tests/test_cache.py.</p>
+<h4>Evidence status</h4>
+<p class="verdict fail">unverified</p>
+<dl class="verdict-facts"><dt>Basis</dt><dd>python -m ruff check src tests is still failing in the latest recorded run</dd><dt>Scope</dt><dd>This describes recorded checks, not the whole issue.</dd><dt>Root cause</dt><dd>Not inferred by DebugBrief.</dd></dl>
+<h4>Warnings and limitations</h4>
+<ul class="sheet-list"><li>Command capture status: partial (some commands may not have been recorded).</li><li>Capture was incomplete; commands outside DebugBrief are not in this record.</li></ul>
+<h4>Resolution / current state</h4>
+<p>1 command(s) were failing at the end of the session; the incident does not appear fully resolved.</p>
+<p class="sheet-p">Session changes: 2 file(s) changed, +14 / -3 lines.</p>
+<h4>Follow-up items</h4>
+<ul class="sheet-list"><li>Resolve the failing command <code>python -m ruff check src tests</code>.</li></ul>
+<div class="report-foot"><p>Generated by DebugBrief. This report is built from explicitly recorded notes, executed commands, and Git state when available. DebugBrief does not use AI and does not infer root causes, intent, or results.</p></div>
+</article>
+<p class="report-links"><a href="sample-incident.html">Full HTML report</a><a href="data/sample-incident.md">Markdown</a><a href="explorer.html?sample=incident">Open in Explorer</a></p>
+</div>
+</div>
+</section>
 
-  <footer class="report-footer"><div class="report-shell"><div><a class="report-brand" href="#top"><span class="report-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>DebugBrief</span></a><p>Debug with evidence.</p></div><div class="footer-links"><a href="#proof">The proof</a><a href="#runners">Runners</a><a href="#limits">Limits</a><a href="docs.html">Docs</a></div><small>MIT licensed · local-first · built from explicit evidence</small></div></footer>
-  <div class="report-toast" role="status" aria-live="polite" data-toast></div>
-  <script src="ledger.js"></script>
+<section class="section" aria-labelledby="never-title">
+<h2 class="label" id="never-title"># what it will never do</h2>
+<div class="diff">
+<p class="diff-head">--- the usual way<br>+++ debugbrief</p>
+<ol class="principle-diff" data-principle-diff>
+<li class="diff-removed"><span class="mark" aria-hidden="true">-</span><span class="text">an AI summary of what probably happened</span></li>
+<li class="diff-added"><span class="mark" aria-hidden="true">+</span><span class="text">a record of what actually happened</span></li>
+<li class="diff-removed"><span class="mark" aria-hidden="true">-</span><span class="text">"tests pass" because someone said so</span></li>
+<li class="diff-added"><span class="mark" aria-hidden="true">+</span><span class="text">pass or fail from the exit code, nothing else</span></li>
+<li class="diff-removed"><span class="mark" aria-hidden="true">-</span><span class="text">a guessed root cause</span></li>
+<li class="diff-added"><span class="mark" aria-hidden="true">+</span><span class="text">Root cause: Not inferred by DebugBrief.</span></li>
+<li class="diff-removed"><span class="mark" aria-hidden="true">-</span><span class="text">your session uploaded somewhere</span></li>
+<li class="diff-added"><span class="mark" aria-hidden="true">+</span><span class="text">everything stays in .debugbrief/ on your machine</span></li>
+</ol>
+</div>
+</section>
+
+<section class="section" aria-labelledby="checks-title">
+<h2 class="label" id="checks-title"># works with your checks</h2>
+<ul class="runner-grid" aria-label="Recognized test, build, lint and typecheck runners">
+<li class="runner-cell" data-runner="pytest"><span>pytest</span></li>
+<li class="runner-cell" data-runner="vitest"><span>vitest</span></li>
+<li class="runner-cell" data-runner="jest"><span>jest</span></li>
+<li class="runner-cell" data-runner="bun test"><span>bun test</span></li>
+<li class="runner-cell" data-runner="deno test"><span>deno test</span></li>
+<li class="runner-cell" data-runner="node --test"><span>node --test</span></li>
+<li class="runner-cell" data-runner="go test"><span>go test</span></li>
+<li class="runner-cell" data-runner="cargo test"><span>cargo test</span></li>
+<li class="runner-cell" data-runner="npm/pnpm/yarn test"><span>npm/pnpm/yarn test</span></li>
+<li class="runner-cell" data-runner="npm run build"><span>npm run build</span></li>
+<li class="runner-cell" data-runner="tsc --noEmit"><span>tsc --noEmit</span></li>
+<li class="runner-cell" data-runner="ruff"><span>ruff</span></li>
+<li class="runner-cell" data-runner="make check"><span>make check</span></li>
+<li class="runner-cell" data-runner="tox"><span>tox</span></li>
+<li class="runner-cell" data-runner="unittest"><span>unittest</span></li>
+<li class="runner-cell" data-runner="dotnet test"><span>dotnet test</span></li>
+<li class="runner-cell" data-runner="ctest"><span>ctest</span></li>
+<li class="runner-cell" data-runner="phpunit"><span>phpunit</span></li>
+<li class="runner-cell" data-runner="mix test"><span>mix test</span></li>
+<li class="runner-cell" data-runner="swift test"><span>swift test</span></li>
+<li class="runner-cell" data-runner="rspec"><span>rspec</span></li>
+<li class="runner-cell" data-runner="mvn test"><span>mvn test</span></li>
+<li class="runner-cell" data-runner="gradle test"><span>gradle test</span></li>
+<li class="runner-cell is-muted"><span>--verify</span></li>
+</ul>
+<p class="runner-caption">Anything else counts as a check with <code>--verify</code>.</p>
+</section>
+
+<section class="section" aria-labelledby="explorer-title">
+<h2 class="label" id="explorer-title"># evidence explorer</h2>
+<div class="grid">
+<div class="teaser-copy">
+<p>Open a JSON report in your browser to search commands, read output and review changes. It is parsed in this tab only and is never uploaded or stored.</p>
+<a class="text-link" href="explorer.html">Open the Explorer</a>
+</div>
+<figure class="teaser-preview" aria-label="Explorer preview with the sample report">
+<div class="teaser-bar"><span>sample-pr.json</span><span>3 recorded attempts</span></div>
+<div class="teaser-body">
+<h3>Handle an expired cache entry</h3>
+<div class="teaser-row"><span class="fail">failed<br>exit 1</span><div><code>python -m pytest -q tests/test_cache.py</code><p>12:02:12 · 0.4s</p></div></div>
+<div class="teaser-row"><span class="pass">passed<br>exit 0</span><div><code>python -m pytest -q tests/test_cache.py</code><p>12:04:12 · 0.4s</p></div></div>
+<div class="teaser-row"><span class="pass">passed<br>exit 0</span><div><code>python -m ruff check src tests</code><p>12:05:12 · 0.08s</p></div></div>
+</div>
+</figure>
+</div>
+</section>
+
+<section class="section" aria-labelledby="limits-title">
+<div class="grid">
+<h2 class="label limits-label" id="limits-title"># limits</h2>
+<ul class="limits-list">
+<li>No full-screen TUI capture, such as <code>vim</code> or <code>htop</code>.</li>
+<li>No passive shell-history capture.</li>
+<li>Redaction is best effort. Review reports before sharing.</li>
+<li>No native Windows or PowerShell support.</li>
+<li>No inferred root cause.</li>
+</ul>
+</div>
+</section>
+
+<section class="section" aria-labelledby="install-title">
+<h2 class="label" id="install-title"># install</h2>
+<button class="install-big" type="button" data-copy="pipx install debugbrief" disabled><code>pipx install debugbrief</code><span>Copy</span></button>
+</section>
+</main>
+
+<footer class="site-footer">
+<div class="footer-row">
+<nav class="footer-links" aria-label="Footer"><a href="docs.html">Docs</a><a href="explorer.html">Explorer</a><a href="https://github.com/hari-kancharla/Debug-Brief">GitHub</a><a href="https://pypi.org/project/debugbrief/">PyPI</a><a href="https://github.com/hari-kancharla/Debug-Brief/blob/main/CHANGELOG.md">Changelog</a><a href="https://github.com/hari-kancharla/Debug-Brief/blob/main/SECURITY.md">Security</a></nav>
+<span>MIT license</span>
+</div>
+<div class="footer-mark" aria-hidden="true">[db] DebugBrief</div>
+</footer>
+<div class="toast" role="status" aria-live="polite" data-toast></div>
 </body>
 </html>

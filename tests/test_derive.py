@@ -96,7 +96,8 @@ def test_one_liner_all_present():
     s.events.append(_cmd("echo done", COMMAND_STATUS_PASSED, _ts(10), 0))
     d = derive(s)
     assert d.one_liner.startswith("Failing check `pytest` passed")
-    assert "after 3 attempts" in d.one_liner
+    assert "3 commands recorded in the session" in d.one_liner
+    assert "after 3 attempts" not in d.one_liner
     assert "over" in d.one_liner
     assert "changes touched src/auth.py" in d.one_liner
 
@@ -109,6 +110,22 @@ def test_one_liner_no_test():
     assert "no verification commands were run" in d.one_liner
     assert "1 command attempt" in d.one_liner
     assert "passed after" not in d.one_liner
+
+
+def test_summary_labels_session_commands_when_different_checks_are_mixed():
+    s = _session(is_repo=False)
+    s.events.extend([
+        _cmd("python -m pytest -q", COMMAND_STATUS_PASSED, _ts(1), 0,
+             is_test=True, is_verification=True, tool="pytest"),
+        _cmd("git diff --check", COMMAND_STATUS_PASSED, _ts(2), 0),
+        _cmd("python -m ruff check .", COMMAND_STATUS_FAILED, _ts(3), 1, tool="ruff"),
+    ])
+    d = derive(s)
+    assert d.red_to_green is None
+    assert "another verification is still failing" in d.one_liner
+    assert "3 commands recorded in the session" in d.one_liner
+    assert "after 3 attempts" not in d.one_liner
+    assert d.proof_state == "unverified"
 
 
 def test_one_liner_failed_but_never_passed():
@@ -156,6 +173,21 @@ def test_latest_failure_invalidates_a_historical_pass_in_summaries():
     s.events.append(_cmd("pytest", COMMAND_STATUS_FAILED, _ts(10), 1, is_test=True, tool="pytest"))
     d = derive(s)
     assert "latest recorded run still failed" in d.one_liner
+    assert d.proof_state == "unverified"
+
+
+def test_summary_keeps_another_failed_check_visible_after_red_to_green():
+    s = _session()
+    s.events.extend([
+        _cmd("pytest", COMMAND_STATUS_FAILED, _ts(0), 1, is_test=True, tool="pytest"),
+        _cmd("pytest", COMMAND_STATUS_PASSED, _ts(5), 0,
+             is_test=True, is_verification=True, tool="pytest"),
+        _cmd("ruff check .", COMMAND_STATUS_FAILED, _ts(10), 1, tool="ruff"),
+    ])
+    d = derive(s)
+    assert d.red_to_green is not None
+    assert "another verification is still failing" in d.one_liner
+    assert "3 commands recorded in the session" in d.one_liner
     assert d.proof_state == "unverified"
 
 
@@ -539,3 +571,35 @@ def test_next_step_notes_word_boundary():
     steps = next_step_notes(s)
     # "retry" must not be mistaken for the hint "try".
     assert steps == ["TODO: investigate the lock ordering."]
+
+
+def test_red_to_green_excludes_unchanged_content_present_before_failure():
+    s = _session(modified=['unchanged.py', 'fix.py'])
+    failure = _cmd('pytest', COMMAND_STATUS_FAILED, _ts(0), 1, ['unchanged.py', 'fix.py'], is_test=True, tool='pytest')
+    failure.data['git_fingerprints'] = {'unchanged.py': 'same', 'fix.py': 'before'}
+    passed = _cmd('pytest', COMMAND_STATUS_PASSED, _ts(5), 0, ['unchanged.py', 'fix.py'], is_test=True, is_verification=True, tool='pytest')
+    passed.data['git_fingerprints'] = {'unchanged.py': 'same', 'fix.py': 'after'}
+    s.events.extend([failure, passed])
+    assert derive(s).red_to_green.changed_files == ['fix.py']
+
+
+def test_red_to_green_does_not_claim_a_pre_failure_change_happened_in_the_window():
+    s = _session(modified=['preexisting.py'])
+    s.git.initial_dirty = {'preexisting.py': 'session-baseline'}
+    failure = _cmd('pytest', COMMAND_STATUS_FAILED, _ts(0), 1, ['preexisting.py'], is_test=True, tool='pytest')
+    failure.data['git_fingerprints'] = {'preexisting.py': 'changed-before-failure'}
+    passed = _cmd('pytest', COMMAND_STATUS_PASSED, _ts(5), 0, ['preexisting.py'], is_test=True, is_verification=True, tool='pytest')
+    passed.data['git_fingerprints'] = {'preexisting.py': 'changed-before-failure'}
+    s.events.extend([failure, passed])
+    assert derive(s).red_to_green.changed_files == []
+
+
+def test_red_to_green_keeps_a_preexisting_file_reverted_to_its_session_baseline():
+    s = _session(modified=['existing.py'])
+    s.git.initial_dirty = {'existing.py': 'baseline'}
+    failure = _cmd('pytest', COMMAND_STATUS_FAILED, _ts(0), 1, ['existing.py'], is_test=True, tool='pytest')
+    failure.data['git_fingerprints'] = {'existing.py': 'edited'}
+    passed = _cmd('pytest', COMMAND_STATUS_PASSED, _ts(5), 0, ['existing.py'], is_test=True, is_verification=True, tool='pytest')
+    passed.data['git_fingerprints'] = {'existing.py': 'baseline'}
+    s.events.extend([failure, passed])
+    assert derive(s).red_to_green.changed_files == ['existing.py']

@@ -24,6 +24,7 @@ from .models import (
     CommandData,
     Event,
     effective_event_timestamp,
+    valid_timestamp,
 )
 from .utils import parse_iso8601
 
@@ -842,6 +843,7 @@ class ReportCommand:
     stderr_truncated: bool = False
     stderr_preview: str = ""
     invocation_cwd: Optional[str] = None
+    verification_count: int = 0
 
     @property
     def failed(self) -> bool:
@@ -883,6 +885,11 @@ def build_report_commands(
 
         ts = effective_event_timestamp(event)
         ts_seconds = _event_seconds(event)
+        verification_pass = (
+            cls.is_verification
+            and status == COMMAND_STATUS_PASSED
+            and valid_timestamp(ts) is not None
+        )
 
         merged = False
         for existing in results:
@@ -899,6 +906,7 @@ def build_report_commands(
                 gap = dedup_window_seconds + 1
             if 0 <= gap <= dedup_window_seconds:
                 existing.count += 1
+                existing.verification_count += int(verification_pass)
                 existing.last_timestamp = ts
                 existing.exit_code = data.exit_code
                 existing.status = status
@@ -929,6 +937,7 @@ def build_report_commands(
                 stderr_truncated=data.stderr_truncated,
                 stderr_preview=data.stderr_preview,
                 invocation_cwd=data.invocation_cwd,
+                verification_count=int(verification_pass),
             )
         )
 
